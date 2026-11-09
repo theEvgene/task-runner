@@ -19,6 +19,7 @@ import {
 } from "./lib.mjs";
 import {
   fetchResult,
+  assertKeyOutside,
   readJob,
   resolveBridge,
   resolvePython,
@@ -61,6 +62,10 @@ if (!receipt?.refFull) {
 const keyFormat = opts["--key-format"] ?? "raw";
 const bridge = resolveBridge(opts);
 const python = resolvePython(opts);
+assertKeyOutside(opts["--key-file"], [
+  opts["--queue"],
+  ...(opts["--protect"] ?? []),
+]);
 
 try {
   const job = readJob({

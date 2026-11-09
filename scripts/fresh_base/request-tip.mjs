@@ -8,6 +8,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import {
   BRANCH_RE,
   TOKEN_RE,
+  assertSafeCommandPart,
   fail,
   parseArgs,
   safeName,
@@ -61,18 +62,26 @@ const request = {
 };
 const text = `${JSON.stringify(request)}\n`;
 const requestPath = join(shared, opts["--request-name"]);
-mkdirSync(shared, { recursive: true });
-writeFileSync(requestPath, text);
-
-const digest = createHash("sha256")
-  .update(Buffer.from(text, "utf8"))
-  .digest("hex");
 const driver = join(
   opts["--lenovo-skill-dir"],
   "scripts",
   "fresh_base",
   "lenovo-tip-read.mjs"
 );
+for (const [label, value] of [
+  ["--node", opts["--node"]],
+  ["lenovo driver path", driver],
+  ["request path", requestPath],
+  ["--command-file", opts["--command-file"]],
+]) {
+  assertSafeCommandPart(label, value);
+}
+mkdirSync(shared, { recursive: true });
+writeFileSync(requestPath, text);
+
+const digest = createHash("sha256")
+  .update(Buffer.from(text, "utf8"))
+  .digest("hex");
 const command = `"${opts["--node"]}" "${driver}" --request "${requestPath}" --request-sha256 ${digest}`;
 writeFileSync(opts["--command-file"], `${command}\n`);
 

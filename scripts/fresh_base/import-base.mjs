@@ -26,7 +26,9 @@ import {
   JOB_RE,
   SHA_RE,
   SHA256_RE,
+  TOKEN_RE,
   fail,
+  isInside,
   parseArgs,
   safeName,
   BASE_EXPORT_SCHEMA,
@@ -71,11 +73,8 @@ for (const n of ["queue", "repo", "shared"]) {
     usage(`--${n} must be absolute: the key is proven outside it`);
 }
 const repoOut = resolve(opts["--repo-out"]);
-if (
-  resolve(opts["--receipt"])
-    .toLowerCase()
-    .startsWith(`${repoOut.toLowerCase()}\\`)
-) {
+const receiptPath = resolve(opts["--receipt"]);
+if (isInside(receiptPath, repoOut)) {
   usage("--receipt must stay outside the imported copy");
 }
 const branch = opts["--branch"] ?? "main";
@@ -226,6 +225,18 @@ for (const n of ["bundleName", "manifestName"]) {
   if (!safeName(exported[n]))
     finish(1, "mismatch", "request-malformed", `${n} unsafe`);
 }
+// Request binding: the sealed artifacts must be the ones this token names,
+// so a result cannot smuggle in files from another request.
+if (!TOKEN_RE.test(String(exported.token ?? ""))) {
+  finish(1, "mismatch", "request-malformed", "token is not factual");
+}
+if (
+  exported.bundleName !== `fresh-base-${exported.token}.bundle` ||
+  exported.manifestName !== `fresh-base-${exported.token}.manifest.json` ||
+  exported.bundleRef !== `refs/fresh-base/${exported.token}`
+) {
+  finish(1, "mismatch", "request-malformed", "artifacts do not match token");
+}
 if (!String(exported.refFull ?? "").startsWith("refs/heads/")) {
   finish(
     1,
@@ -318,7 +329,12 @@ try {
     }).trim();
   git(["init", "-q"]);
   git(["bundle", "verify", bundlePath]);
-  git(["fetch", "-q", bundlePath, `${exported.refFull}:refs/heads/${branch}`]);
+  git([
+    "fetch",
+    "-q",
+    bundlePath,
+    `${exported.bundleRef}:refs/heads/${branch}`,
+  ]);
   const head = git(["rev-parse", `refs/heads/${branch}`]).toLowerCase();
   if (head !== tip)
     finish(

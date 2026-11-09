@@ -9,7 +9,9 @@ import { isAbsolute, join, resolve } from "node:path";
 import {
   BRANCH_RE,
   TOKEN_RE,
+  assertSafeCommandPart,
   fail,
+  isInside,
   parseArgs,
   safeName,
   BASE_REQUEST_SCHEMA,
@@ -54,17 +56,8 @@ if (!safeName(opts["--request-name"] ?? ""))
   refuse("--request-name must be one contained file name");
 const shared = resolve(opts["--shared"]);
 if (!existsSync(shared)) refuse(`shared directory does not exist: ${shared}`);
-if (
-  opts["--repo"] &&
-  resolve(opts["--repo"]).toLowerCase() === shared.toLowerCase()
-) {
+if (opts["--repo"] && isInside(shared, opts["--repo"])) {
   refuse("shared directory must stay outside the checkout");
-}
-if (opts["--repo"]) {
-  const rel = shared
-    .toLowerCase()
-    .startsWith(`${resolve(opts["--repo"]).toLowerCase()}/`);
-  if (rel) refuse("shared directory must stay outside the checkout");
 }
 
 const request = {
@@ -78,18 +71,26 @@ const request = {
 };
 const text = `${JSON.stringify(request)}\n`;
 const requestPath = join(shared, opts["--request-name"]);
-mkdirSync(shared, { recursive: true });
-writeFileSync(requestPath, text);
-
-const digest = createHash("sha256")
-  .update(Buffer.from(text, "utf8"))
-  .digest("hex");
 const driver = join(
   opts["--lenovo-skill-dir"],
   "scripts",
   "fresh_base",
   "lenovo-base-export.mjs"
 );
+for (const [label, value] of [
+  ["--node", opts["--node"]],
+  ["lenovo driver path", driver],
+  ["request path", requestPath],
+  ["--command-file", opts["--command-file"]],
+]) {
+  assertSafeCommandPart(label, value);
+}
+mkdirSync(shared, { recursive: true });
+writeFileSync(requestPath, text);
+
+const digest = createHash("sha256")
+  .update(Buffer.from(text, "utf8"))
+  .digest("hex");
 const command = `"${opts["--node"]}" "${driver}" --request "${requestPath}" --request-sha256 ${digest}`;
 writeFileSync(opts["--command-file"], `${command}\n`);
 

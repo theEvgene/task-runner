@@ -3,16 +3,24 @@
 // SHA from an import receipt. Verifies HEAD == base afterwards.
 // Never checks out a shared branch (always --detach) and refuses to reuse an
 // existing path, so the source copy and other worktrees are left alone.
-// Exit 0 on success; 1 on any problem (fail closed, no guessed base).
+// The input receipt is never modified: the worktree binding is written to
+// the explicit --receipt-out path. Exit 0 on success; 1 on any problem
+// (fail closed, no guessed base).
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { SHA_RE, fail, parseArgs, shortSha, runGit } from "./lib.mjs";
 
-const opts = parseArgs(process.argv.slice(2), {
-  "--repo": "required",
-  "--receipt": "required",
-  "--worktree": "required",
-  "--receipt-out": "optional",
-});
+let opts;
+try {
+  opts = parseArgs(process.argv.slice(2), {
+    "--repo": "required",
+    "--receipt": "required",
+    "--worktree": "required",
+    "--receipt-out": "required",
+  });
+} catch (error) {
+  fail(`usage: ${error.message}`);
+  process.exit(2);
+}
 
 let receipt;
 try {
@@ -66,10 +74,7 @@ const updated = {
   worktreeHead: head.stdout.trim(),
 };
 try {
-  writeFileSync(
-    opts["--receipt-out"] ?? opts["--receipt"],
-    `${JSON.stringify(updated, null, 2)}\n`
-  );
+  writeFileSync(opts["--receipt-out"], `${JSON.stringify(updated, null, 2)}\n`);
 } catch (error) {
   fail(`worktree created but receipt write failed: ${error.message}`);
   process.exit(1);

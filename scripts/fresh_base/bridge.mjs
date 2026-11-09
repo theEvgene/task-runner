@@ -5,9 +5,9 @@
 // execute inside that client; nothing here reimplements them. Key placement
 // is additionally proven outside every caller-named root before delegating.
 import { spawnSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fail } from "./lib.mjs";
+import { existsSync } from "node:fs";
+import { dirname } from "node:path";
+import { fail, isInside } from "./lib.mjs";
 
 export function resolvePython(opts) {
   return opts["--python"] ?? process.env.FRESH_BASE_PYTHON ?? "python";
@@ -28,25 +28,11 @@ export function resolveBridge(opts) {
   return bridge;
 }
 
-function canonical(p) {
-  try {
-    return (existsSync(p) ? realpathSync(p) : resolve(p)).toLowerCase();
-  } catch {
-    return resolve(p).toLowerCase();
-  }
-}
-
 // Path placement only (no crypto): the key must not sit where the queue, a
 // checkout, or the share can carry it. The client re-checks its own roots.
 export function assertKeyOutside(keyFile, roots) {
-  const keyId = canonical(resolve(keyFile));
   for (const root of roots) {
-    const rootId = canonical(resolve(root));
-    if (
-      keyId === rootId ||
-      keyId.startsWith(`${rootId}\\`) ||
-      keyId.startsWith(`${rootId}/`)
-    ) {
+    if (isInside(keyFile, root)) {
       fail(`refusing key inside protected root: ${root}`);
       process.exit(2);
     }

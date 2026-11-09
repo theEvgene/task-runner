@@ -44,7 +44,7 @@ export function readJson(path) {
 // Builds: bare origin, a fixture Lenovo checkout (the only reader of the
 // remote), an empty Dell home (Dell never clones the remote), a queue dir, a
 // 32-byte key outside all roots, and a LAN share dir.
-export function makeWorld() {
+export function makeWorld({ keyFormat = "raw" } = {}) {
   const root = mkdtempSync(join(tmpdir(), "fresh-base-"));
   const remote = join(root, "origin.git");
   git(["init", "--bare", "--initial-branch=main", remote], root);
@@ -52,6 +52,8 @@ export function makeWorld() {
   git(["clone", remote, lenovo], root);
   commitFile(lenovo, "base.txt", "v1\n", "base");
   git(["push", "origin", "main"], lenovo);
+  const seed = join(root, "seed");
+  git(["clone", remote, seed], root);
   const dellHome = join(root, "dell");
   const queue = join(root, "queue");
   const share = join(root, "share");
@@ -61,8 +63,33 @@ export function makeWorld() {
   mkdirSync(dellHome, { recursive: true });
   const keyFile = join(root, "keys", "queue.key");
   mkdirSync(join(root, "keys"), { recursive: true });
-  writeFileSync(keyFile, randomBytes(32));
-  return { root, remote, lenovo, dellHome, queue, share, keyFile };
+  const raw = randomBytes(32);
+  writeFileSync(keyFile, keyFormat === "base64" ? raw.toString("base64") : raw);
+  return {
+    root,
+    remote,
+    lenovo,
+    seed,
+    dellHome,
+    queue,
+    share,
+    keyFile,
+    keyFormat,
+  };
+}
+
+// Advance the remote WITHOUT touching the Lenovo checkout: the checkout's
+// local ref goes stale, modelling a target branch that moved after Lenovo
+// last looked. Returns the new remote tip.
+export function advanceOrigin(w, name, content, message, seedDir = "seed") {
+  const seed = join(w.root, seedDir);
+  if (!existsSync(seed)) git(["clone", w.remote, seed], w.root);
+  git(["fetch", "origin"], seed);
+  git(["checkout", "-q", "main"], seed);
+  git(["reset", "-q", "--hard", "origin/main"], seed);
+  commitFile(seed, name, content, message);
+  git(["push", "origin", "main"], seed);
+  return git(["rev-parse", "HEAD"], seed);
 }
 
 export function scriptPath(name) {
@@ -95,6 +122,7 @@ export function cli(script, args) {
 export function submitJob({
   queue,
   keyFile,
+  keyFormat = "raw",
   commandFile,
   cwd,
   timeout = 300,
@@ -108,6 +136,8 @@ export function submitJob({
     queue,
     "--key-file",
     keyFile,
+    "--key-format",
+    keyFormat,
     "--command-file",
     commandFile,
     "--cwd",
@@ -129,20 +159,20 @@ export function submitJob({
 
 const SHOW_JOB = `
 import json, sys
-bridge_dir, queue, key_file, job_id = sys.argv[1:5]
+bridge_dir, queue, key_file, key_format, job_id = sys.argv[1:6]
 sys.path.insert(0, bridge_dir)
 import lan_bridge
-key = lan_bridge.load_key(key_file, "raw", queue)
+key = lan_bridge.load_key(key_file, key_format, queue)
 raw = lan_bridge.read(queue + "/jobs", job_id)
 print(json.dumps(lan_bridge.open_envelope(raw, key, "job", job_id)))
 `;
 
 const SEAL_RESULT = `
 import sys
-bridge_dir, queue, key_file, job_id, exit_code, stdout_file = sys.argv[1:7]
+bridge_dir, queue, key_file, key_format, job_id, exit_code, stdout_file = sys.argv[1:8]
 sys.path.insert(0, bridge_dir)
 import lan_bridge
-key = lan_bridge.load_key(key_file, "raw", queue)
+key = lan_bridge.load_key(key_file, key_format, queue)
 with open(stdout_file, encoding="utf-8") as fh:
     stdout = fh.read()
 payload = lan_bridge.build_result_payload(job_id, "ok" if int(exit_code) == 0 else "error",
@@ -150,14 +180,46 @@ payload = lan_bridge.build_result_payload(job_id, "ok" if int(exit_code) == 0 el
 lan_bridge.publish(queue + "/results", job_id, lan_bridge.seal(payload, key))
 `;
 
+// Seal an arbitrary stdout object as this job's result through the real
+// client (valid MAC, bound id). Proves Dell-side content checks against a
+// sealed-but-wrong payload.
+export function sealCustomResult({
+  queue,
+  keyFile,
+  keyFormat = "raw",
+  jobId,
+  stdoutText,
+  exitCode = 0,
+}) {
+  const outFile = join(dirname(queue), `custom-${jobId}.txt`);
+  writeFileSync(outFile, stdoutText);
+  execFileSync(PYTHON, [
+    "-c",
+    SEAL_RESULT,
+    dirname(BRIDGE),
+    queue,
+    keyFile,
+    keyFormat,
+    jobId,
+    String(exitCode),
+    outFile,
+  ]);
+}
+
 // Fixture Lenovo worker: opens the sealed job with the actual client,
 // executes the documented driver command it carries, and seals the result
 // with the actual client. Unknown commands are never executed.
-export function serveFixture({ queue, keyFile, jobId, allow }) {
+export function serveFixture({
+  queue,
+  keyFile,
+  keyFormat = "raw",
+  jobId,
+  allow,
+}) {
   const job = JSON.parse(
     execFileSync(
       PYTHON,
-      ["-c", SHOW_JOB, dirname(BRIDGE), queue, keyFile, jobId],
+      ["-c", SHOW_JOB, dirname(BRIDGE), queue, keyFile, keyFormat, jobId],
       { encoding: "utf8" }
     )
   );
@@ -189,6 +251,7 @@ export function serveFixture({ queue, keyFile, jobId, allow }) {
     dirname(BRIDGE),
     queue,
     keyFile,
+    keyFormat,
     jobId,
     String(exitCode),
     outFile,

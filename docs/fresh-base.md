@@ -15,10 +15,14 @@ Target branch may have advanced between base selection and work start
 
 ## Required inputs (owner-provided, never invented)
 
-Queue dir + 32-byte key file (both outside every repo, the queue, and the
+Queue dir + 32-byte key file (raw bytes, or base64 text with
+`--key-format base64`; both outside every repo, the queue, and the
 LAN share), LAN share dir, Lenovo checkout path, Lenovo skill dir, Node on
 Lenovo, Python on Dell (runs the existing `lan_bridge.py` client), project
 path for `--expected-project`.
+
+Paths interpolated into the signed command must not contain `"`, `$`,
+backtick, or `%` (PowerShell/cmd expansion); spaces are fine.
 
 ## Exact commands
 
@@ -63,11 +67,12 @@ node scripts/fresh_base/import-base.mjs --queue <queue> --key-file <key>
   --bridge <lan_bridge.py> --python <python> --provenance fixture|live
 ```
 
-5. Cut one detached task worktree (Dell):
+5. Cut one detached task worktree (Dell; never modifies the input receipt):
 
 ```text
 node scripts/fresh_base/create-worktree.mjs --repo <new-source-copy>
   --receipt <receipt>.json --worktree <task-worktree>
+  --receipt-out <worktree-receipt>.json
 ```
 
 6. Before push, re-probe the tip (Dell + Lenovo worker) and gate on it:
@@ -88,7 +93,21 @@ node scripts/fresh_base/preflight.mjs --queue <queue> --key-file <key>
   never a new one.
 - `preflight`: `0` fresh; `2` moved/stale (rebase required); `1` verify
   failure; `3` unknown (re-fetch the SAME job id).
-- `create-worktree`: `0` with `HEAD == baseSha`; `1` otherwise.
+- `create-worktree`: `0` with `HEAD == baseSha` written to the explicit
+  `--receipt-out`; `1` otherwise; missing `--receipt-out` is a usage error.
+  The input receipt is never modified.
+
+## Freshness semantics
+
+Lenovo drivers observe the ACTUAL remote tip: `ls-remote` on the origin URL
+plus a fetch of that exact ref into an isolated per-job temp bare repo
+(`--no-write-fetch-head`, dedicated `refs/fresh-base/<token>`), then bind
+object+branch by rev-parse. The shared checkout is never written: no
+FETCH_HEAD, no ref updates, no worktree touch — concurrent jobs cannot race
+each other. A stale Lenovo checkout therefore cannot pass off its old ref;
+unreachable remote refuses. The bundle is created from the observed SHA, so
+it cannot drift from it. Residual race (remote moves after the read) is
+fail-closed by the mandatory signed `preflight` before push.
 
 ## Boundaries
 
@@ -98,6 +117,8 @@ node scripts/fresh_base/preflight.mjs --queue <queue> --key-file <key>
   modified (only new slots are appended).
 - The key travels via `--key-file` only and is refused inside the queue, a
   checkout, or the share; it never enters a receipt.
+- Sealed artifacts are bound to the request token (`fresh-base-<token>.*`,
+  `refs/fresh-base/<token>`); a result naming another token's files is refused.
 - An early verified SHA is NOT a push-time guarantee: branch motion after
   the check is expected, and the signed `preflight` before push is
   mandatory. A receipt marked `provenance: fixture` is never live evidence.
@@ -105,11 +126,15 @@ node scripts/fresh_base/preflight.mjs --queue <queue> --key-file <key>
 ## Verification (local fixtures only)
 
 ```text
-node --test tests/fresh_base/
+node --test tests/fresh_base/bridge-client.test.mjs tests/fresh_base/fresh-base.test.mjs tests/fresh_base/movement.test.mjs
 ```
 
 Covers: signed happy path with HEAD binding, unknown branch, swapped
-bundle bytes, timeout-then-same-id recovery, probe-fresh vs probe-moved,
-and preservation of copy, sibling worktree, key, and sealed slots.
-Fixtures use a local bare remote plus a fixture Lenovo checkout; they
-never reach Lenovo, Jira, or the network.
+bundle bytes, sealed-but-mismatched artifact names, timeout-then-same-id
+recovery, probe-fresh vs probe-moved, stale-checkout still yielding the
+actual remote tip, concurrent probes with no shared state, unreachable
+remote, base64 keys, separator-independent path guards, command-quoting
+refusals, explicit receipt-out, and preservation of copy, sibling
+worktree, key, and sealed slots.
+Fixtures use a local bare remote plus fixture Lenovo checkouts (a stale
+one included); they never reach Lenovo, Jira, or the network.
