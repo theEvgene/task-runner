@@ -139,9 +139,14 @@ python scripts/dell_lan/stage_bundle.py \
 
 Completion: receipt `dell-bundle-stage/1` with `outcome: staged` and the
 bundle tip equal to the task commit. Every attempt stages a fresh unique
-name: an existing bundle file is never replaced, and a raw SHA `--ref` is
+name: an existing bundle, manifest, or receipt file is never replaced (a
+concurrent writer that wins the name also wins), and a raw SHA `--ref` is
 refused (a bundle needs an advertised ref, so stage from a branch name or
-`HEAD`). Pass the staged `--bundle`/`--manifest` paths of this attempt to
+`HEAD`). `--bundle-name` and `--manifest-name` are required and must differ;
+a handled failure removes the temporaries and any artifact this attempt
+published, so a refused stage leaves no partial orphan. `--receipt` must be
+absolute and outside the task worktree, the shared folder, and every Git
+checkout. Pass the staged `--bundle`/`--manifest` paths of this attempt to
 the publish request below; never re-stage over another attempt's files.
 
 The external issue-517 bundle stager from the personal-agent-toolkit stays

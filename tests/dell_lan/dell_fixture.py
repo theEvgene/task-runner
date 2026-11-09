@@ -251,7 +251,7 @@ class Workspace:
         tag = os.urandom(4).hex()
         bundle_name = f"transfer-{tag}.bundle"
         manifest_name = f"transfer-{tag}.manifest.json"
-        receipt = self.shared / f"bundle-receipt-{tag}.json"
+        receipt = self.root / f"bundle-receipt-{tag}.json"
         proc = run([
             sys.executable, str(STAGE_BUNDLE), "--worktree", str(self.worktree),
             "--shared", str(self.shared), "--bundle-name", bundle_name,

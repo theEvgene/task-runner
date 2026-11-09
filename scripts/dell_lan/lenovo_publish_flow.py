@@ -21,6 +21,9 @@ from pathlib import Path
 
 from dell_lan_common import DETAIL_MAX, Stop
 
+PAGE_SIZE = 100
+MAX_PAGES = 50
+
 
 def load_flow(flow_dir: Path):
     """Import the existing flow modules from their checked-in directory."""
@@ -37,30 +40,64 @@ def load_flow(flow_dir: Path):
     return api, identity, publisher
 
 
+def _paged_fallback(api, host: str, path: str) -> list:
+    """Read every page through ``api_get`` when the client has no reader.
+
+    The legacy client only exposes ``api_get``; a single call would silently
+    return page one. Pages are requested until a short page proves the end of
+    the list. A failed page, a non-array page, or more than ``MAX_PAGES`` full
+    pages proves nothing, so the call fails closed with
+    ``mr-list-incomplete`` instead of treating the read as empty.
+    """
+
+    separator = "&" if "?" in path else "?"
+    items: list = []
+    for page_number in range(1, MAX_PAGES + 1):
+        try:
+            payload = api.api_get(
+                host, f"{path}{separator}per_page={PAGE_SIZE}&page={page_number}")
+        except api.GitlabUnavailable as error:
+            raise Stop("mr-list-incomplete", detail=(
+                f"page {page_number} unreadable: {error}")[:DETAIL_MAX])
+        if not isinstance(payload, list):
+            raise Stop("mr-list-incomplete", detail=(
+                f"page {page_number} did not return a JSON array")[:DETAIL_MAX])
+        items.extend(row for row in payload if isinstance(row, dict))
+        if len(payload) < PAGE_SIZE:
+            return items
+    raise Stop("mr-list-incomplete", detail=(
+        f"open-MR list truncated after {MAX_PAGES} pages")[:DETAIL_MAX])
+
+
 def find_open_mr(api, host: str, project: str, branch: str) -> dict | None:
     """The open merge request for this source branch, or None.
 
     The list endpoint is read through the flow client's own paged reader so
     a match past the first page is still found: creating while a match exists
-    would open a second MR for one branch. More than one match is an
-    ambiguity this flow refuses instead of guessing, and an incomplete list
-    is refused instead of treated as empty.
+    would open a second MR for one branch. A client without that reader is
+    paged through ``api_get`` here, and only a short page proves completeness.
+    More than one match is an ambiguity this flow refuses instead of guessing,
+    and an incomplete list is refused instead of treated as empty.
     """
 
     base = api.project_api_base(host, project)
     path = f"{base}/merge_requests?state=opened"
     paginate = getattr(api, "paginate", None)
     if paginate is None:
-        try:
-            found = api.api_get(host, path)
-        except api.GitlabUnavailable as error:
-            raise Stop("gitlab-unavailable", detail=str(error)[:DETAIL_MAX])
+        found = _paged_fallback(api, host, path)
     else:
-        page = paginate(host, path)
-        if not isinstance(page, dict) or not page.get("complete"):
+        try:
+            page = paginate(host, path)
+        except api.GitlabUnavailable as error:
             raise Stop("mr-list-incomplete", detail=(
-                (page or {}).get("error")
-                or f"open-MR list truncated after {(page or {}).get('pages')} pages")[:DETAIL_MAX])
+                f"open-MR list unreadable: {error}")[:DETAIL_MAX])
+        if not isinstance(page, dict):
+            raise Stop("mr-list-incomplete",
+                       detail="paged reader returned no completeness record")
+        if page.get("complete") is not True:
+            raise Stop("mr-list-incomplete", detail=(
+                page.get("error")
+                or f"open-MR list truncated after {page.get('pages')} pages")[:DETAIL_MAX])
         found = page.get("items")
     if not isinstance(found, list):
         raise Stop("gitlab-unavailable", detail="MR list is not a JSON array")
