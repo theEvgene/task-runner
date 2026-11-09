@@ -130,6 +130,76 @@ class ProbeTests(unittest.TestCase):
         with self.assertRaises(gate.GateInputError):
             probe_mod.load_live_client(Path("C:/no/such/dir/definitely"))
 
+    def test_trace_read_uses_job_project(self) -> None:
+        from testkit import PROJECT, SINGLE_LOG, run_probe
+        calls: list[tuple] = []
+        fake = FakeGitlab(heads=[SHA1],
+                          pipelines=[pipe(1, SHA1, "failed")],
+                          details={1: pipe(1, SHA1, "failed")},
+                          jobs={1: [job("unit", "failed", 11)]},
+                          traces={11: SINGLE_LOG})
+        receipt = run_probe(
+            fake, SHA1, prof(["unit"]),
+            read_log=lambda h, p, j: (calls.append((h, p, j)),
+                                      SINGLE_LOG)[1])
+        self.assertEqual(receipt["verdict"], "failed")
+        self.assertEqual(calls, [("gitlab.example", PROJECT, 11)])
+        self.assertEqual(receipt["failed_job"]["project"], PROJECT)
+        self.assertTrue(receipt["diagnosis"]["log_available"])
+
+    def test_trace_read_uses_child_project(self) -> None:
+        from testkit import SINGLE_LOG, bridge_entry, run_probe
+        calls: list[tuple] = []
+        fake = FakeGitlab(
+            heads=[SHA1],
+            pipelines=[pipe(1, SHA1, "failed")],
+            details={1: pipe(1, SHA1, "failed")},
+            jobs={1: [job("unit", "success", 11)]},
+            bridges={1: [bridge_entry("playwright", "failed", 9)]},
+            child_details={9: pipe(9, SHA1, "failed")},
+            child_jobs={9: [job("e2e", "failed", 71)]},
+            traces={71: SINGLE_LOG})
+        receipt = run_probe(
+            fake, SHA1, prof(["unit"], [{"name": "playwright",
+                                         "required_jobs": ["e2e"]}]),
+            read_log=lambda h, p, j: (calls.append((h, p, j)),
+                                      SINGLE_LOG)[1])
+        self.assertEqual(receipt["verdict"], "failed")
+        self.assertEqual(receipt["failed_job"]["name"],
+                         "child:playwright/e2e")
+        self.assertEqual(calls, [("gitlab.example", 42, 71)])
+
+    def test_pending_and_missing_carry_no_diagnosis(self) -> None:
+        from testkit import run_probe
+        running = FakeGitlab(heads=[SHA1],
+                             pipelines=[pipe(1, SHA1, "running")],
+                             details={1: pipe(1, SHA1, "running")},
+                             jobs={1: [job("unit", "running", 11)]})
+        pending = run_probe(running, SHA1, prof(["unit"]))
+        self.assertEqual(pending["verdict"], "pending")
+        self.assertNotIn("diagnosis", pending)
+        green = FakeGitlab(heads=[SHA1],
+                           pipelines=[pipe(1, SHA1, "success")],
+                           details={1: pipe(1, SHA1, "success")},
+                           jobs={1: [job("unit", "success", 11)]},
+                           bridges={1: []})
+        missing = run_probe(green, SHA1,
+                            prof(["unit"], [{"name": "playwright"}]))
+        self.assertEqual(missing["verdict"], "missing_required_check")
+        self.assertNotIn("diagnosis", missing)
+
+    def test_failed_carries_stop_diagnosis(self) -> None:
+        from testkit import SINGLE_LOG, run_probe
+        fake = FakeGitlab(heads=[SHA1],
+                          pipelines=[pipe(1, SHA1, "failed")],
+                          details={1: pipe(1, SHA1, "failed")},
+                          jobs={1: [job("unit", "failed", 11)]},
+                          traces={11: SINGLE_LOG})
+        receipt = run_probe(fake, SHA1, prof(["unit"]))
+        self.assertEqual(receipt["verdict"], "failed")
+        self.assertEqual(receipt["diagnosis"]["decision"], "stop")
+        self.assertTrue(receipt["diagnosis"]["log_available"])
+
     def test_probe_main_runs_against_fixture_client(self) -> None:
         import json
         import os

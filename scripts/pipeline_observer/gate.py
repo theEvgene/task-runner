@@ -218,7 +218,7 @@ def observe(mr_url: str, profile: dict[str, Any] | None,
             return _receipt(canonical, sha, None, None, "pending",
                             "no_pipeline_for_sha",
                             "no pipeline exists for the current SHA yet",
-                            required, [], None, None)
+                            required, [], None, None, project=proj)
         usable = [p for p in same if _pipeline_id(p) is not None]
         if not usable:
             raise GitlabUnavailable(
@@ -250,7 +250,8 @@ def observe(mr_url: str, profile: dict[str, Any] | None,
                                     "url": job.get("web_url")})
             if state == "failed":
                 failed.append({"name": name, "id": job.get("id"),
-                               "url": job.get("web_url")})
+                               "url": job.get("web_url"),
+                               "project": proj})
             elif state == "pending":
                 if outcome == "passed":
                     outcome = "pending"
@@ -293,7 +294,7 @@ def observe(mr_url: str, profile: dict[str, Any] | None,
                                         "pipeline_id": child_id})
                 if cstate == "failed":
                     failed.append({"name": f"child:{cname}",
-                                   "id": child_id})
+                                   "id": child_id, "project": cproj})
                 elif cstate == "pending" and outcome == "passed":
                     outcome = "pending"
                 elif cstate not in ("success", "pending") and outcome in (
@@ -314,7 +315,8 @@ def observe(mr_url: str, profile: dict[str, Any] | None,
                                         "url": job.get("web_url")})
                 if state == "failed":
                     failed.append({"name": label, "id": job.get("id"),
-                                   "url": job.get("web_url")})
+                                   "url": job.get("web_url"),
+                                   "project": cproj})
                 elif state == "pending" and outcome == "passed":
                     outcome = "pending"
                 elif state != "success" and outcome in ("passed", "pending"):
@@ -336,7 +338,7 @@ def observe(mr_url: str, profile: dict[str, Any] | None,
                             "the MR head moved during the observation; "
                             "prior evidence is invalidated",
                             required, required_checks, None,
-                            None, new_sha=new_sha or None)
+                            None, new_sha=new_sha or None, project=proj)
         failed_job = failed[0] if failed else None
         if outcome == "passed":
             reason = "gate_passed"
@@ -356,12 +358,12 @@ def observe(mr_url: str, profile: dict[str, Any] | None,
             error = f"a required check is {outcome}"
         return _receipt(canonical, sha, pid, pipeline_url, outcome, reason,
                         error, required, required_checks, failed_job,
-                        missing or [])
+                        missing or [], project=proj)
     except GitlabUnavailable as error:
         return {"schema": "pipeline-observer-gate/1", "read_only": True,
                 "mr_url": canonical, "sha": None, "pipeline_id": None,
                 "pipeline_url": None, "outcome": "unavailable",
-                "reason": "gitlab_unavailable",
+                "reason": "gitlab_unavailable", "project": proj,
                 "error": str(error)[:300], "required_checks": [],
                 "missing_required_checks": [],
                 "failed_job": None}
@@ -373,11 +375,13 @@ def _receipt(mr_url: str, sha: str | None, pid: Any, purl: Any,
              checks: list[dict[str, Any]],
              failed_job: dict[str, Any] | None,
              missing: list[str] | None,
-             new_sha: str | None = None) -> dict[str, Any]:
+             new_sha: str | None = None,
+             project: Any = None) -> dict[str, Any]:
     receipt: dict[str, Any] = {
         "schema": "pipeline-observer-gate/1", "read_only": True,
         "mr_url": mr_url, "sha": sha, "pipeline_id": pid,
         "pipeline_url": purl, "outcome": outcome, "reason": reason,
+        "project": project,
         "required_checks": checks,
         "missing_required_checks": list(missing or []),
         "failed_job": failed_job,

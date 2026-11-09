@@ -103,26 +103,33 @@ def probe(url: str, expected_sha: str, profile: dict[str, Any] | None,
         if status.get(key) is not None:
             base[key] = status.get(key)
     failed = status.get("failed_job") or {}
-    trace = None
-    try:
-        if failed.get("id") is not None:
-            host = canonical.split("/")[2]
-            trace = read_log(host, None, failed.get("id"))
-    except Exception:
+    # A diagnosis is attached only when a concrete failed job is pinned.
+    # Waiting states (pending) and missing checks carry no diagnosis:
+    # there is nothing to diagnose yet, and "stop" would misdirect
+    # the operator away from waiting or re-probing.
+    if isinstance(failed, dict) and failed.get("id") is not None:
+        project = failed.get("project") or status.get("project")
         trace = None
-    signature = classify_trace(
-        trace if isinstance(trace, str) else None, str(failed.get("name", "")))
-    base["diagnosis"] = {
-        "log_available": signature["log_available"],
-        "cause": signature["kind"],
-        "test": signature["test"],
-        "error": signature["error"],
-        "built_in_repeats": signature["built_in_repeats"],
-        "decision": "stop",
-        "decision_reason": ("log_unavailable"
-                            if not signature["log_available"]
-                            else "diagnose_first"),
-    }
+        try:
+            if project is not None:
+                host = canonical.split("/")[2]
+                trace = read_log(host, project, failed.get("id"))
+        except Exception:
+            trace = None
+        signature = classify_trace(
+            trace if isinstance(trace, str) else None,
+            str(failed.get("name", "")))
+        base["diagnosis"] = {
+            "log_available": signature["log_available"],
+            "cause": signature["kind"],
+            "test": signature["test"],
+            "error": signature["error"],
+            "built_in_repeats": signature["built_in_repeats"],
+            "decision": "stop",
+            "decision_reason": ("log_unavailable"
+                                if not signature["log_available"]
+                                else "diagnose_first"),
+        }
     if base["verdict"] == "passed":  # defensive: only the gate passes
         base["verdict"] = "unavailable"
         base["reason"] = "unexpected_gate_outcome"

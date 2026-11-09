@@ -86,6 +86,9 @@ new head. Parallel calls must use separate request/command/receipt files.
   as `pending`.
 - MR binding uses canonical form, so a trailing slash or `/diffs`
   suffix on the expected URL still binds.
+- A `diagnosis` (with a `stop`/diagnose decision) is attached only
+  when a concrete failed job is pinned; waiting states carry no
+  diagnosis. Trace reads use the failed job's own project.
 - Key stays with the standard client; never printed or stored in receipts.
 - Fixture tests are local only and never live evidence; live runs need
   separate authorization.

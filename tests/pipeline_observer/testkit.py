@@ -224,14 +224,15 @@ class FixtureBridge:
             time.sleep(poll_seconds)
 
 
-def run_probe(fake: FakeGitlab, expected: str, profile: dict) -> dict:
+def run_probe(fake: FakeGitlab, expected: str, profile: dict,
+              read_log=None) -> dict:
     def get(host: str, path: str):
         try:
             return fake.get(host, path)
         except FixtureUnavailable as error:
             raise gate.GitlabUnavailable(str(error)) from error
     return probe_mod.probe(URL, expected, profile, get=get,
-                           read_log=fake.read_log)
+                           read_log=read_log or fake.read_log)
 
 
 def passed_probe_receipt(mr_url: str = URL, sha: str = SHA1) -> dict:
