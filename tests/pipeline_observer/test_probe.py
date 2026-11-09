@@ -200,6 +200,29 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(receipt["diagnosis"]["decision"], "stop")
         self.assertTrue(receipt["diagnosis"]["log_available"])
 
+    def test_bare_child_failure_pins_no_job_id(self) -> None:
+        from testkit import SINGLE_LOG, run_probe
+        calls: list[tuple] = []
+        fake = FakeGitlab(
+            heads=[SHA1],
+            pipelines=[pipe(1, SHA1, "failed")],
+            details={1: pipe(1, SHA1, "failed")},
+            jobs={1: [job("unit", "success", 11)]},
+            bridges={1: [bridge_entry("playwright", "failed", 9)]},
+            child_details={9: pipe(9, SHA1, "failed")},
+            child_jobs={9: [job("e2e", "failed", 71)]},
+            traces={71: SINGLE_LOG})
+        receipt = run_probe(
+            fake, SHA1, prof(["unit"], [{"name": "playwright"}]),
+            read_log=lambda h, p, j: (calls.append((h, p, j)),
+                                      SINGLE_LOG)[1])
+        self.assertEqual(receipt["verdict"], "failed")
+        self.assertEqual(receipt["failed_job"]["name"],
+                         "child:playwright")
+        self.assertIsNone(receipt["failed_job"]["id"])
+        self.assertEqual(calls, [])
+        self.assertNotIn("diagnosis", receipt)
+
     def test_probe_main_runs_against_fixture_client(self) -> None:
         import json
         import os

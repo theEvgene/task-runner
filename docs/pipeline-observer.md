@@ -88,7 +88,8 @@ new head. Parallel calls must use separate request/command/receipt files.
   suffix on the expected URL still binds.
 - A `diagnosis` (with a `stop`/diagnose decision) is attached only
   when a concrete failed job is pinned; waiting states carry no
-  diagnosis. Trace reads use the failed job's own project.
+  diagnosis. A bare child-pipeline failure pins no job ID, so no
+  trace is read for it. Trace reads use the failed job's own project.
 - Key stays with the standard client; never printed or stored in receipts.
 - Fixture tests are local only and never live evidence; live runs need
   separate authorization.

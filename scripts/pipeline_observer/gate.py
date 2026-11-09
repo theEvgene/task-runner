@@ -293,8 +293,11 @@ def observe(mr_url: str, profile: dict[str, Any] | None,
                                         "status": cstate,
                                         "pipeline_id": child_id})
                 if cstate == "failed":
+                    # Pipeline-level failure: child_id is a pipeline id,
+                    # not a job id, so no job is pinned and the probe
+                    # issues no trace read for it.
                     failed.append({"name": f"child:{cname}",
-                                   "id": child_id, "project": cproj})
+                                   "id": None, "project": cproj})
                 elif cstate == "pending" and outcome == "passed":
                     outcome = "pending"
                 elif cstate not in ("success", "pending") and outcome in (
