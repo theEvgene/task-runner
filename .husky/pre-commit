@@ -1,2 +1,3 @@
+set -e
 npx lint-staged
 node scripts/check-file-tokens.mjs --exclude 'package-lock.json'
