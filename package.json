@@ -1,0 +1,15 @@
+{
+  "name": "task-runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Task runner agent setup: minimal agent tooling baseline (empty repo, no runtime source yet).",
+  "scripts": {
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "husky": "9.1.7",
+    "lint-staged": "17.6.0",
+    "prettier": "3.9.10"
+  }
+}
