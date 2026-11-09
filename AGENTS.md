@@ -2,6 +2,15 @@
 
 Empty repository baseline. Agent tooling only; no runtime source yet.
 
+## Agent entry
+
+Externally invoked agents start here explicitly; this repo assumes no global auto-discovery. Use only the script your intent needs:
+
+- Monitor a GitLab MR pipeline via the signed Dell-to-Lenovo queue -> `docs/pipeline-observer.md`.
+- Verify the target base and create a task worktree -> `docs/fresh-base.md`.
+
+Corporate routing and the signed queue apply where those docs state them. Do not pass secrets through task scripts, and rely only on guarantees those docs state.
+
 ## Agent skills
 
 ### Issue tracker
