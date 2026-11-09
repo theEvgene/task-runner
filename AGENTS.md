@@ -8,6 +8,8 @@ Externally invoked agents start here explicitly; this repo assumes no global aut
 
 - Monitor a GitLab MR pipeline via the signed Dell-to-Lenovo queue -> `docs/pipeline-observer.md`.
 - Verify the target base and create a task worktree -> `docs/fresh-base.md`.
+- Send one signed command through the LAN queue -> `docs/lan-bridge.md`.
+- Run the full Dell-to-Lenovo dev loop (base, local work, publish, readback) -> `docs/dell-lan.md`.
 
 Corporate routing and the signed queue apply where those docs state them. Do not pass secrets through task scripts, and rely only on guarantees those docs state.
 
