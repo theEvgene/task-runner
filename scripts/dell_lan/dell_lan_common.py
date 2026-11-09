@@ -183,7 +183,7 @@ def safe_name(value: str) -> bool:
 
 
 def manifest_digest(files: list) -> str:
-    """The issue-517 manifest digest: SHA-256 of the compact entry array."""
+    """The bundle manifest digest: SHA-256 of the compact entry array."""
 
     return sha256_bytes(json.dumps(files, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 

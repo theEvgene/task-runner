@@ -7,7 +7,7 @@ that already hosts the queue, and only the request's SHA-256 travels inside the
 HMAC-signed job payload. The Lenovo side re-hashes the file and refuses a
 request that the job did not name.
 
-Two requests exist, both in [the workflow](../../../SKILL.md):
+Two requests exist, both in [the workflow](../../docs/dell-lan.md):
 
 - ``base`` asks Lenovo for a git bundle of the published base ref;
 - ``publish`` asks Lenovo to import the staged task bundle and run the existing

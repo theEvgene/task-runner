@@ -30,8 +30,8 @@ BUNDLE_SCHEMA = "git-bundle-manifest/1"
 PUBLISH_RESULT_SCHEMA = "dell-lan-publish-result/1"
 GITLAB_READBACK = "gitlab-mr-flow/scripts/mr_identity.py capture"
 QUEUE_VERIFY = "lan-task-bridge/scripts/lan_bridge.py fetch (open_envelope: MAC + kind/id)"
-BUNDLE_TOOL = "scripts/issue-517/bundle-stage-verify-apply.mjs"
-PUBLISH_DRIVER = "skills/dell-lan-local-dev/scripts/lenovo_publish.py"
+BUNDLE_TOOL = "scripts/dell_lan/stage_bundle.py"
+PUBLISH_DRIVER = "scripts/dell_lan/lenovo_publish.py"
 DETAIL_MAX = 400
 
 
@@ -49,7 +49,7 @@ NEXT_ACTION = {
     "git-failed": "repair repository access and re-read the working tree state",
     "worktree-unregistered": "recreate the task worktree from the anchored base and re-verify",
     "worktree-head-mismatch": "re-cut the task commit in the task worktree and re-verify",
-    "bundle-manifest-malformed": "rebuild the bundle manifest with the issue-517 stager",
+    "bundle-manifest-malformed": "re-stage the bundle and manifest with scripts/dell_lan/stage_bundle.py (docs/dell-lan.md step 4); the external issue-517 stager stays an accepted alternative",
     "bundle-path-refused": "rebuild the manifest with contained relative paths and re-verify",
     "bundle-missing": "re-stage the bundle from the intact origin and re-verify",
     "bundle-mismatch": "re-stage the bundle from the intact origin and re-verify",

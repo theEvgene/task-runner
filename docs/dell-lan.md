@@ -53,7 +53,11 @@ request without `push` or `mr` cannot publish even if it is submitted, and a
 - the external publication flow checkout on Lenovo (preflight, writer,
   readback), named per run via `--lenovo-flow-dir` or `DELL_LAN_FLOW_DIR`;
   without it the driver fails closed with `flow-unavailable` and publishes
-  nothing.
+  nothing;
+- working remote credentials on Lenovo for that external flow (its own
+  credential setup, e.g. an authenticated CLI or token in the Lenovo user
+  context). No credential ever travels the queue or the share: Dell holds
+  only the queue key, and the signed jobs carry digests, never secrets.
 
 If any item is missing, stop and name that item. Do not substitute another
 channel, another machine, or a remembered path.
@@ -121,18 +125,31 @@ npm cache with `scripts/dell_lan/dell_npm_probe.py` (disposable scratch copy,
 
 ## 4. Stage the task bundle
 
-Create one git bundle of the worktree tip plus its manifest on the share:
+Stage the worktree tip with the repository's staging script (bundle create
+plus verify, per-file hashes, atomic manifest write):
 
 ```text
-git -C <task-worktree> bundle create <lan-share>\transfer.bundle HEAD
-git bundle verify <lan-share>\transfer.bundle
+python scripts/dell_lan/stage_bundle.py \
+  --worktree <task-worktree> --shared <lan-share> \
+  --bundle-name transfer-<16hex>.bundle \
+  --manifest-name transfer-<16hex>.manifest.json \
+  --expected-tip <task-commit> \
+  --receipt <outside-every-checkout>\bundle-receipt.json
 ```
 
-then write `<lan-share>\transfer.manifest.json` with
-`version: git-bundle-manifest/1`, the bundle file name, its SHA-256, byte
-count, and the `manifestDigest` over the file entries (the digest function
-lives in `scripts/dell_lan/dell_lan_common.py`). The Lenovo driver re-verifies
-the manifest digest, every file hash, and the bundle tip before importing.
+Completion: receipt `dell-bundle-stage/1` with `outcome: staged` and the
+bundle tip equal to the task commit. Every attempt stages a fresh unique
+name: an existing bundle file is never replaced, and a raw SHA `--ref` is
+refused (a bundle needs an advertised ref, so stage from a branch name or
+`HEAD`). Pass the staged `--bundle`/`--manifest` paths of this attempt to
+the publish request below; never re-stage over another attempt's files.
+
+The external issue-517 bundle stager from the personal-agent-toolkit stays
+an accepted alternative when its prerequisite holds (a toolkit checkout
+with Node on Dell); it writes the same `git-bundle-manifest/1` shape the
+Lenovo driver verifies. Either way, the driver re-verifies the manifest
+digest, every file hash, and the bundle tip before importing — staging is
+transport, never trust.
 
 ## 5. Write the publish request with per-action consent
 
@@ -143,8 +160,8 @@ python scripts/dell_lan/dell_request.py publish \
   --lenovo-driver-dir <abs-dell-lan-dir-on-lenovo> \
   --lenovo-flow-dir <abs-flow-scripts-dir-on-lenovo> \
   --python <abs-python-on-lenovo> \
-  --manifest <lan-share>\transfer.manifest.json \
-  --bundle <lan-share>\transfer.bundle \
+  --manifest <lan-share>\transfer-<16hex>.manifest.json \
+  --bundle <lan-share>\transfer-<16hex>.bundle \
   --description-file <lan-share>\mr-description.md \
   --expected-base <base-sha> --expected-commit <task-commit> \
   [--expected-previous <prior-task-sha>] \
@@ -218,9 +235,22 @@ the task commit), `simulated` (the same chain labelled a fixture), `stale`,
 - Secrets: the key travels through `--key-file` only, and every driver
   refuses a key it cannot prove is outside the checkout, the queue, and the
   shared folder. Those roots are mandatory arguments, never optional hints.
-- Receipt labels keep their historic spellings (bridge path, driver name,
-  stager name) so existing receipts stay comparable.
+  Remote credentials live only in the Lenovo user context for the external
+  flow; they are never written to a request, a command file, or a receipt.
+- Receipt labels keep the task-runner path spellings (`scripts/dell_lan/…`,
+  `scripts/lan_bridge/…`) so receipts from this home stay comparable.
 - A receipt marked `provenance: fixture` is never live evidence.
+
+## Sharing receipts outside the loop
+
+Receipts embed remote topology: the base-export result carries `remotes`
+(the checkout's remote URLs), and readback/publication receipts carry
+`mrUrl`, `gitlabHost`/`projectPath`, branch names, SHAs, and capture times.
+Before pasting any receipt into an issue, chat, or public report, strip the
+`remotes` object and weigh every URL-bearing field (`mrUrl`, remote hosts,
+project paths): keep them only when the audience is entitled to the remote.
+SHAs, verdicts, reasons, and digests carry no topology and are safe to
+quote.
 
 ## Relation to the other scenarios
 

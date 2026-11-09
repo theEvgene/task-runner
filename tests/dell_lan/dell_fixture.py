@@ -33,13 +33,13 @@ SCRIPTS = ROOT / "scripts" / "dell_lan"
 READBACK = SCRIPTS / "dell_readback.py"
 BASE_IMPORT = SCRIPTS / "dell_base_import.py"
 REQUEST_CLI = SCRIPTS / "dell_request.py"
+STAGE_BUNDLE = SCRIPTS / "stage_bundle.py"
 BRIDGE_CLI = ROOT / "scripts" / "lan_bridge" / "lan_bridge.py"
 FIXTURE_FLOW = TESTS_DIR / "fixture_flow"
 
 sys.path.insert(0, str(BRIDGE_CLI.parent))
 sys.path.insert(0, str(SCRIPTS))
 import lan_bridge  # noqa: E402  (reviewed library used as-is)
-from dell_lan_common import manifest_digest  # noqa: E402  (module under test)
 
 GITLAB_HOST = "gitlab.fixture.invalid"
 PROJECT = "group/project"
@@ -92,6 +92,8 @@ class Workspace:
         self.key_bytes = os.urandom(32)
         self.base = ""
         self.task = ""
+        self.bundle_file: Path | None = None
+        self.manifest_file: Path | None = None
         self.extra_env: dict[str, str] = {}
 
     # -- setup ---------------------------------------------------------
@@ -237,34 +239,33 @@ class Workspace:
         return previous, self.task
 
     def stage_bundle(self) -> dict:
-        """Stage the task worktree as one git bundle plus its manifest.
+        """Stage the task worktree through the real staging script.
 
-        Plain ``git bundle`` plus a ``git-bundle-manifest/1`` manifest written
-        directly: the driver verifies the manifest digest, the file hashes,
-        and ``git bundle list-heads`` itself, so no separate stager is needed
-        in this repository. The bundle is verified sound before staging.
+        Every attempt stages fresh unique paths (never re-staging over an
+        existing bundle): the staging script enforces immutable creation, so
+        the fixture names one new pair per attempt and tracks it for the
+        publish request and readback that follow. These tests exercise the
+        real staging interface the driver verifies.
         """
 
-        bundle = self.shared / "transfer.bundle"
-        manifest_path = self.shared / "transfer.manifest.json"
-        proc = run(["git", "-C", str(self.worktree), "bundle", "create",
-                    str(bundle), "HEAD"])
+        tag = os.urandom(4).hex()
+        bundle_name = f"transfer-{tag}.bundle"
+        manifest_name = f"transfer-{tag}.manifest.json"
+        receipt = self.shared / f"bundle-receipt-{tag}.json"
+        proc = run([
+            sys.executable, str(STAGE_BUNDLE), "--worktree", str(self.worktree),
+            "--shared", str(self.shared), "--bundle-name", bundle_name,
+            "--manifest-name", manifest_name,
+            "--expected-tip", self.task, "--receipt", str(receipt),
+        ])
         if proc.returncode != 0:
-            raise AssertionError(f"bundle create failed: {proc.stdout} {proc.stderr}")
-        verify = run(["git", "bundle", "verify", str(bundle)], cwd=self.worktree)
-        if verify.returncode != 0:
-            raise AssertionError(f"bundle verify failed: {verify.stdout} {verify.stderr}")
-        data = bundle.read_bytes()
-        files = [{"path": bundle.name,
-                  "sha256": hashlib.sha256(data).hexdigest(),
-                  "bytes": len(data)}]
-        manifest = {"version": "git-bundle-manifest/1", "revs": self.task,
-                    "bundle": bundle.name, "files": files,
-                    "manifestDigest": manifest_digest(files)}
-        manifest_path.write_text(
-            json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
-            encoding="utf-8")
-        return manifest
+            raise AssertionError(f"bundle stage failed: {proc.stdout} {proc.stderr}")
+        data = json.loads(receipt.read_text(encoding="utf-8"))
+        if data.get("outcome") != "staged":
+            raise AssertionError(f"bundle stage outcome: {data}")
+        self.bundle_file = self.shared / bundle_name
+        self.manifest_file = self.shared / manifest_name
+        return data
 
     def build_ready(self, token: str = "0123456789abcdef") -> "Workspace":
         """Import the base, cut the task worktree, and stage the task bundle."""
@@ -294,8 +295,8 @@ class Workspace:
             "--token", token, "--lenovo-skill-dir", str(ROOT),
             "--lenovo-driver-dir", str(SCRIPTS), "--python", sys.executable,
             "--lenovo-flow-dir", str(FIXTURE_FLOW),
-            "--manifest", str(self.shared / "transfer.manifest.json"),
-            "--bundle", str(self.shared / "transfer.bundle"),
+            "--manifest", str(self.manifest_file),
+            "--bundle", str(self.bundle_file),
             "--description-file", str(description),
             "--expected-base", self.base, "--expected-commit", self.task,
             "--branch", TASK_BRANCH, "--target-branch", BASE_BRANCH,
@@ -352,7 +353,7 @@ class Workspace:
             sys.executable, str(READBACK),
             "--repo", str(self.dell), "--expected-base", self.base,
             "--task-commit", self.task, "--worktree", str(self.worktree),
-            "--bundle-manifest", str(self.shared / "transfer.manifest.json"),
+            "--bundle-manifest", str(self.manifest_file),
             "--bundle-dir", str(self.shared), "--shared", str(self.shared),
             "--receipt", str(receipt), *extra,
         ]

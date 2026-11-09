@@ -1,9 +1,9 @@
-"""Compose the existing ``gitlab-mr-flow`` publication flow for one Lenovo task.
+"""Compose the external publication flow for one Lenovo task.
 
-Nothing here re-implements GitLab access: the MR write is
+Nothing here re-implements remote access: the MR write is
 ``publish_mr.publish`` and the readback is ``mr_identity.capture_identity``
-from ``skills/t-bank/gitlab-mr-flow``. This module only adds the two things the
-queue job needs around them:
+from the external flow directory (``--flow-dir``). This module only adds the
+two things the queue job needs around them:
 
 - a *find* before a *create*, so a repeated run after an unknown outcome
   reconciles the existing merge request instead of opening a second one;
@@ -40,17 +40,28 @@ def load_flow(flow_dir: Path):
 def find_open_mr(api, host: str, project: str, branch: str) -> dict | None:
     """The open merge request for this source branch, or None.
 
-    The list endpoint is queried without an ``&``-joined query string so the
-    same call also works through a shell-wrapped client, and the branch filter
-    is applied to the returned rows. More than one match is an ambiguity this
-    flow refuses instead of guessing.
+    The list endpoint is read through the flow client's own paged reader so
+    a match past the first page is still found: creating while a match exists
+    would open a second MR for one branch. More than one match is an
+    ambiguity this flow refuses instead of guessing, and an incomplete list
+    is refused instead of treated as empty.
     """
 
     base = api.project_api_base(host, project)
-    try:
-        found = api.api_get(host, f"{base}/merge_requests?state=opened")
-    except api.GitlabUnavailable as error:
-        raise Stop("gitlab-unavailable", detail=str(error)[:DETAIL_MAX])
+    path = f"{base}/merge_requests?state=opened"
+    paginate = getattr(api, "paginate", None)
+    if paginate is None:
+        try:
+            found = api.api_get(host, path)
+        except api.GitlabUnavailable as error:
+            raise Stop("gitlab-unavailable", detail=str(error)[:DETAIL_MAX])
+    else:
+        page = paginate(host, path)
+        if not isinstance(page, dict) or not page.get("complete"):
+            raise Stop("mr-list-incomplete", detail=(
+                (page or {}).get("error")
+                or f"open-MR list truncated after {(page or {}).get('pages')} pages")[:DETAIL_MAX])
+        found = page.get("items")
     if not isinstance(found, list):
         raise Stop("gitlab-unavailable", detail="MR list is not a JSON array")
     matching = [row for row in found

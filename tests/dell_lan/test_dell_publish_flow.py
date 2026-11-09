@@ -92,7 +92,8 @@ class TwoDirectionFlowTests(unittest.TestCase):
         self.assertTrue(publication["mrCreated"])
         self.assertTrue(publication["mrUrl"].endswith("/merge_requests/1"))
         self.assertEqual(publication["driverStage"], "readback")
-        self.assertIn("lenovo_publish.py", publication["driver"])
+        self.assertEqual(publication["driver"],
+                         "scripts/dell_lan/lenovo_publish.py")
 
     def test_consent_is_required_per_action(self):
         ws = build_to_publish("3333333333333333")
@@ -197,7 +198,7 @@ class TwoDirectionFlowTests(unittest.TestCase):
     def test_tampered_bundle_blocks_the_publication_job(self):
         ws = build_to_publish("6666666666666666")
         self.addCleanup(ws.cleanup)
-        bundle = ws.shared / "transfer.bundle"
+        bundle = ws.bundle_file
         original = bundle.read_bytes()
         try:
             bundle.write_bytes(original + b"tampered")

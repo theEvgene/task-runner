@@ -24,7 +24,8 @@ manifest before importing it. A bundle swapped on the share is refused
 ## Direction one: `lenovo_base_export.py`
 
 Read-only with respect to Git history. It resolves `refs/heads/<base-branch>`,
-creates `<shared>/dell-base-<token>.bundle`, writes the issue-517 manifest,
+creates `<shared>/dell-base-<token>.bundle`, writes the `git-bundle-manifest/1`
+manifest,
 and prints one JSON line with `tipSha`, `sha256`, `bytes`, `manifestDigest`,
 and the checkout's remotes. The manifest is declared as a return file, so a
 small MAC-bound artifact also arrives in-band.

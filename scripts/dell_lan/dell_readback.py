@@ -14,9 +14,9 @@ The verdict never exceeds its evidence. ``ready`` means transfer-ready only.
 keeps the one queue slot: reconcile before any retry.
 
 Evidence sources, composed as-is:
-- ``lan-task-bridge/scripts/lan_bridge.py`` verifies the sealed result;
-- ``gitlab-mr-flow/scripts/mr_identity.py capture`` produced the receipt;
-- ``scripts/issue-517`` produced the staged bundle and its manifest.
+- ``scripts/lan_bridge/lan_bridge.py`` verifies the sealed result;
+- the external flow's ``mr_identity.py capture`` produced the receipt;
+- ``scripts/dell_lan/stage_bundle.py`` produced the staged bundle and manifest.
 """
 
 from __future__ import annotations

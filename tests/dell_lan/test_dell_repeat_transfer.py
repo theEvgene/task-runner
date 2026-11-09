@@ -69,6 +69,8 @@ class RepeatTransferTests(unittest.TestCase):
         proc, data = ws.readback(*ws.queue_args(job))
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(data["publication"]["headSha"], new)
+        self.assertEqual(data["publication"]["driver"],
+                         "scripts/dell_lan/lenovo_publish.py")
 
     def test_repeat_without_previous_is_refused_and_branch_stays(self):
         ws = build_published("c3c3c3c3c3c3c3c3")

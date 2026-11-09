@@ -19,7 +19,7 @@ disabled-scripts run is never silent.
 
 This script performs no online fill and contacts no registry: an offline miss
 is reported, not repaired. The online fill is a separate, explicitly networked
-step in [the reference](../references/npm-offline-deps.md).
+step in [the reference](references/npm-offline-deps.md).
 """
 
 from __future__ import annotations

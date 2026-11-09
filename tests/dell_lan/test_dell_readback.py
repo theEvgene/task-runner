@@ -70,7 +70,8 @@ class LocalReadbackTests(unittest.TestCase):
         self.assertEqual(data["reason"], "worktree-head-mismatch")
 
     def test_bundle_hash_drift_fails_closed(self):
-        staged = Path(self.ws.shared) / "transfer.bundle"
+        assert self.ws.bundle_file is not None
+        staged = self.ws.bundle_file
         original = staged.read_bytes()
         try:
             staged.write_bytes(original + b"tampered")
@@ -82,7 +83,8 @@ class LocalReadbackTests(unittest.TestCase):
 
     def test_bundle_path_escape_refused(self):
         escaping = Path(self.ws.root) / "escaping.manifest.json"
-        manifest = json.loads((Path(self.ws.shared) / "transfer.manifest.json").read_text(encoding="utf-8"))
+        assert self.ws.manifest_file is not None
+        manifest = json.loads(self.ws.manifest_file.read_text(encoding="utf-8"))
         manifest["files"][0]["path"] = "../escape.bundle"
         manifest["manifestDigest"] = sha256_bytes(json.dumps(
             manifest["files"], separators=(",", ":")).encode("utf-8"))
@@ -95,7 +97,8 @@ class LocalReadbackTests(unittest.TestCase):
         self.assertEqual(data["reason"], "bundle-path-refused")
 
     def test_missing_bundle_stops_before_claiming(self):
-        staged = Path(self.ws.shared) / "transfer.bundle"
+        assert self.ws.bundle_file is not None
+        staged = self.ws.bundle_file
         original = staged.read_bytes()
         try:
             staged.unlink()
@@ -106,7 +109,8 @@ class LocalReadbackTests(unittest.TestCase):
         self.assertEqual(data["reason"], "bundle-missing")
 
     def test_stale_bundle_is_flagged_not_hidden(self):
-        manifest = Path(self.ws.shared) / "transfer.manifest.json"
+        assert self.ws.manifest_file is not None
+        manifest = self.ws.manifest_file
         old = time.time() - 30 * 3600
         try:
             os.utime(manifest, (old, old))
@@ -144,7 +148,8 @@ class LocalReadbackTests(unittest.TestCase):
         self.assertFalse(receipt.exists())
 
     def test_manifest_digest_must_cover_the_entries(self):
-        manifest_path = Path(self.ws.shared) / "transfer.manifest.json"
+        assert self.ws.manifest_file is not None
+        manifest_path = self.ws.manifest_file
         original = manifest_path.read_bytes()
         try:
             manifest = json.loads(original)

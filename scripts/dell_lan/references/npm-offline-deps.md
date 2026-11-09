@@ -3,7 +3,7 @@
 How a Dell agent evaluates a changed `package-lock.json` against an owned npm
 cache without touching the real worktree and without claiming more than the
 probe proves. This reference is reached only from the npm branch of
-[the workflow](../SKILL.md): every other run never loads it.
+[the workflow](../../docs/dell-lan.md): every other run never loads it.
 
 ## Owned cache and disposable probe
 
