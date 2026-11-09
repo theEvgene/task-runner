@@ -7,6 +7,13 @@ classification) and binds the result to the canonical MR URL and the one
 expected source SHA. Nothing here mutates anything: no retry, no rebase,
 no MR change. Every GitLab read is a GET through the injected callable.
 
+Live reads reuse the existing gitlab-mr-flow checkout on Lenovo:
+``--client-dir`` points at its ``scripts`` directory, which provides
+``gitlab_api.api_get(host, path)`` and
+``mr_pipeline_recover_support.live_read_log(host, project, job_id)``.
+Without ``--client-dir`` the probe imports those modules from
+``sys.path`` (Lenovo skill setup). No vendored copy lives in this repo.
+
 Exit codes: 0 means verified ``passed`` for the expected SHA, 1 means
 any other receipt, 2 means usage or a bad profile.
 """
@@ -14,6 +21,7 @@ any other receipt, 2 means usage or a bad profile.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import sys
@@ -121,17 +129,63 @@ def probe(url: str, expected_sha: str, profile: dict[str, Any] | None,
     return base
 
 
+def _load_module(client_dir: Path | None, name: str):
+    """Load one live-client module from the skill scripts dir or sys.path."""
+    if client_dir is None:
+        try:
+            module = __import__(name)
+        except ImportError as error:
+            raise GateInputError(
+                f"live GitLab client unavailable: no module {name!r} on "
+                "sys.path; pass --client-dir pointing at the existing "
+                "gitlab-mr-flow scripts directory") from error
+        return module
+    path = Path(client_dir) / f"{name}.py"
+    if not path.is_file():
+        raise GateInputError(
+            f"live GitLab client unavailable: {path} not found; "
+            "--client-dir must point at the existing gitlab-mr-flow "
+            "scripts directory")
+    spec = importlib.util.spec_from_file_location(
+        f"pipeline_observer_client_{name}", str(path))
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        raise GateInputError(f"cannot load live client module {name!r}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[f"pipeline_observer_client_{name}"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_live_client(client_dir: Path | None
+                     ) -> tuple[Callable, Callable]:
+    """Return (api_get, live_read_log) from the existing skill checkout."""
+    gitlab_api = _load_module(client_dir, "gitlab_api")
+    support = _load_module(client_dir, "mr_pipeline_recover_support")
+    api_get = getattr(gitlab_api, "api_get", None)
+    read_log = getattr(support, "live_read_log", None)
+    if not callable(api_get) or not callable(read_log):
+        raise GateInputError(
+            "live GitLab client must provide gitlab_api.api_get(host, "
+            "path) and "
+            "mr_pipeline_recover_support.live_read_log(host, project, "
+            "job_id)")
+    return api_get, read_log
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="probe.py", description=__doc__)
     parser.add_argument("--url", required=True)
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--expected-sha", required=True)
+    parser.add_argument("--client-dir", type=Path, default=None,
+                        help="existing gitlab-mr-flow scripts directory "
+                             "providing gitlab_api + recover support")
     parser.add_argument("--receipt-out", type=Path, default=None)
     args = parser.parse_args(argv)
     try:
-        from gitlab_get import api_get, live_read_log
-    except ImportError as error:
-        parser.error(f"live GitLab client unavailable: {error}")
+        api_get, live_read_log = load_live_client(args.client_dir)
+    except GateInputError as error:
+        parser.error(str(error))
     try:
         profile = load_profile(args.profile)
     except GateInputError as error:

@@ -55,8 +55,26 @@ def load_bridge(bridge_dir: Path):
 
 def verify(payload: dict[str, Any], job_id: str,
            expected_mr_url: str, expected_sha: str) -> dict[str, Any]:
-    """Bind one fetched result payload to the expected MR + SHA."""
+    """Bind one fetched result payload to the expected MR + SHA.
+
+    Canonical form is used for the MR comparison, so a non-canonical
+    but valid expected URL (trailing slash, /diffs suffix) still binds.
+    The pipeline id is required only for a ``passed`` verdict; other
+    verdicts (e.g. pending with no pipeline yet) are carried as-is.
+    A receipt that carries no SHA and no ``passed`` verdict (e.g. a
+    Lenovo-side outage) is ``unknown`` -- keep the slot and reconcile --
+    not ``mismatch``.
+    """
     want = (expected_sha or "").lower()
+    try:
+        from gate import canonical_url
+    except ImportError:  # package-style invocation from the repo root
+        from pipeline_observer.gate import (  # type: ignore[no-redef]
+            canonical_url)
+    try:
+        want_mr = canonical_url(expected_mr_url)
+    except Exception:
+        want_mr = expected_mr_url
     base: dict[str, Any] = {
         "schema": SCHEMA, "read_only": True, "job_id": job_id,
         "mr_url": expected_mr_url, "expected_sha": want,
@@ -108,25 +126,43 @@ def verify(payload: dict[str, Any], job_id: str,
                               "the slot and reconcile",
                         stderr=str(payload.get("stderr") or "")[:400])
         return base
-    if receipt.get("mr_url") != expected_mr_url:
+    if receipt.get("mr_url") != want_mr:
         base.update(verdict="mismatch", reason="mr-mismatch",
                     error="the probe receipt names another merge request",
                     probe=receipt)
         return base
-    if ((receipt.get("expected_sha") or "").lower() != want
-            or (receipt.get("observed_sha") or "").lower() != want):
+    verdict = receipt.get("verdict")
+    observed = (receipt.get("observed_sha") or "")
+    expected = (receipt.get("expected_sha") or "")
+    if not observed or not expected:
+        # No SHA bound (e.g. Lenovo-side read outage): never a mismatch.
+        # A claimed pass without a SHA is inconsistent; anything else is
+        # carried as unknown so the slot is kept and reconciled.
+        if verdict == "passed":
+            base.update(verdict="mismatch", reason="probe-inconsistent",
+                        error="the probe claims passed without a bound "
+                              "SHA",
+                        probe=receipt)
+        else:
+            base.update(
+                verdict="unknown",
+                reason=receipt.get("reason") or "probe_unavailable",
+                error="the probe receipt carries no SHA; keep the slot "
+                      "and reconcile",
+                probe=receipt)
+        return base
+    if expected.lower() != want or observed.lower() != want:
         base.update(verdict="mismatch", reason="sha-mismatch",
                     error="the probe receipt is not bound to the "
                           "expected SHA",
                     probe=receipt)
         return base
-    if receipt.get("pipeline_id") is None:
-        base.update(verdict="unknown", reason="pipeline-unbound",
-                    error="the probe receipt names no pipeline; keep "
-                          "the slot and reconcile",
+    if verdict == "passed" and receipt.get("pipeline_id") is None:
+        base.update(verdict="unknown", reason="probe-inconsistent",
+                    error="the probe claims passed but names no "
+                          "pipeline; keep the slot and reconcile",
                     probe=receipt)
         return base
-    verdict = receipt.get("verdict")
     if verdict == "passed":
         if exit_code != 0 or status not in ("ok", "completed"):
             base.update(

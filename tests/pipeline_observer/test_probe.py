@@ -106,5 +106,60 @@ class ProbeTests(unittest.TestCase):
                             get=fake.get, read_log=fake.read_log)
 
 
+    def test_empty_profile_refused_strict(self) -> None:
+        fake = FakeGitlab(heads=[SHA1],
+                          pipelines=[pipe(1, SHA1, "success")],
+                          details={1: pipe(1, SHA1, "success")},
+                          jobs={1: [job("unit", "success", 11)]})
+        with self.assertRaises(gate.GateInputError):
+            run_probe(fake, SHA1, prof([]))
+        with self.assertRaises(gate.GateInputError):
+            gate.normalize_profile(None)
+
+    def test_malformed_pipeline_id_is_unavailable_not_crash(self) -> None:
+        fake = FakeGitlab(heads=[SHA1],
+                          pipelines=[{"id": None, "sha": SHA1,
+                                      "status": "success",
+                                      "web_url": URL}],
+                          details={}, jobs={})
+        receipt = run_probe(fake, SHA1, prof(["unit"]))
+        self.assertEqual(receipt["verdict"], "unavailable")
+        self.assertNotEqual(receipt.get("verdict"), "passed")
+
+    def test_live_client_missing_dir_refused(self) -> None:
+        with self.assertRaises(gate.GateInputError):
+            probe_mod.load_live_client(Path("C:/no/such/dir/definitely"))
+
+    def test_probe_main_runs_against_fixture_client(self) -> None:
+        import json
+        import os
+        import sys
+        import tempfile
+        from testkit import (passed_client_fixture, profile_file,
+                             write_fixture_client)
+        import probe as probe_main
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        client = write_fixture_client(root / "client",
+                                      passed_client_fixture())
+        env_key = "PIPELINE_OBSERVER_FIXTURE_JSON"
+        old = os.environ.get(env_key)
+        os.environ[env_key] = str(client / "fixture.json")
+        self.addCleanup(lambda: (
+            os.environ.pop(env_key, None),
+            old is not None and os.environ.__setitem__(env_key, old)))
+        profile = profile_file(root)
+        out = root / "receipt.json"
+        code = probe_main.main([
+            "--url", URL, "--profile", str(profile),
+            "--expected-sha", SHA1, "--client-dir", str(client),
+            "--receipt-out", str(out)])
+        self.assertEqual(code, 0)
+        receipt = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual(receipt["verdict"], "passed")
+        self.assertEqual(receipt["expected_sha"], SHA1)
+
+
 if __name__ == "__main__":
     unittest.main()

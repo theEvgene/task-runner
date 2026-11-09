@@ -73,9 +73,13 @@ def canonical_url(url: str) -> str:
 
 
 def normalize_profile(profile: dict[str, Any] | None) -> dict[str, Any]:
+    # Strict gate: a profile must declare at least one required check.
+    # An empty profile would make ``passed`` vacuous (zero checks green),
+    # so it fails closed instead of green-lighting any green parent.
     if profile is None:
-        return {"schema": PROFILE_SCHEMA, "source": "none",
-                "required_jobs": [], "child_pipelines": []}
+        raise GateInputError(
+            "required-check profile is required: declare at least one "
+            "required job or child pipeline")
     if not isinstance(profile, dict):
         raise GateInputError("required-check profile must be a JSON object")
     if profile.get("schema", PROFILE_SCHEMA) != PROFILE_SCHEMA:
@@ -108,9 +112,15 @@ def normalize_profile(profile: dict[str, Any] | None) -> dict[str, Any]:
                 "must be a list of job names")
         children.append({"name": entry["name"].strip(),
                          "required_jobs": [j.strip() for j in cjobs]})
+    jobs = [j.strip() for j in jobs]
+    if not jobs and not children:
+        raise GateInputError(
+            "required-check profile must declare at least one required "
+            "job or child pipeline; an empty profile cannot confirm "
+            "a strict passed")
     return {"schema": PROFILE_SCHEMA,
             "source": profile.get("source") or "inline",
-            "required_jobs": [j.strip() for j in jobs],
+            "required_jobs": jobs,
             "child_pipelines": children}
 
 
@@ -138,6 +148,17 @@ def _wrap(get: Callable[[str, str], Any], host: str, path: str) -> Any:
         raise
     except Exception as error:
         raise GitlabUnavailable(str(error)[:300]) from error
+
+
+def _pipeline_id(entry: dict[str, Any]) -> int | None:
+    """Usable numeric pipeline id, or None for malformed payloads."""
+    value = entry.get("id")
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _newest_by_name(jobs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -198,7 +219,11 @@ def observe(mr_url: str, profile: dict[str, Any] | None,
                             "no_pipeline_for_sha",
                             "no pipeline exists for the current SHA yet",
                             required, [], None, None)
-        root = max(same, key=lambda p: int(p.get("id", -1)))
+        usable = [p for p in same if _pipeline_id(p) is not None]
+        if not usable:
+            raise GitlabUnavailable(
+                "pipeline list for this SHA carries no usable id")
+        root = max(usable, key=lambda p: int(p["id"]))
         pid = root.get("id")
         detail = _wrap(get, host, f"/projects/{proj}/pipelines/{pid}")
         jobs_raw = _wrap(

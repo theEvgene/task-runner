@@ -240,3 +240,129 @@ def passed_probe_receipt(mr_url: str = URL, sha: str = SHA1) -> dict:
             "status_outcome": "passed", "verdict": "passed",
             "reason": "gate_passed", "pipeline_id": 1,
             "pipeline_url": "https://gitlab.example/team/app/-/pipelines/1"}
+
+
+# --- Fixture live-client dir (answers probe main() without GitLab) ---
+#
+# probe.py main() loads ``gitlab_api.api_get`` and
+# ``mr_pipeline_recover_support.live_read_log`` from --client-dir. This
+# builder writes fixture-only stand-ins of those two modules answering
+# from one JSON file named by PIPELINE_OBSERVER_FIXTURE_JSON. Production
+# uses the existing gitlab-mr-flow scripts directory instead.
+
+FIXTURE_API_MODULE = '''
+"""Fixture-only gitlab_api stand-in (offline tests, never live)."""
+import json as _json
+import os as _os
+
+
+class GitlabUnavailable(Exception):
+    pass
+
+
+def _fixture():
+    path = _os.environ.get("PIPELINE_OBSERVER_FIXTURE_JSON", "")
+    with open(path, encoding="utf-8") as _handle:
+        return _json.load(_handle)
+
+
+def api_get(host, path):
+    fx = _fixture()
+    bare = path.split("?")[0]
+    if "/merge_requests/" in bare and bare.endswith("/pipelines"):
+        return list(fx.get("pipelines", []))
+    if "/merge_requests/" in bare and "/pipelines" not in bare:
+        return {"sha": fx["mr_sha"], "web_url": fx["mr_url"]}
+    if bare.endswith("/jobs"):
+        pid = bare.split("/pipelines/")[1].split("/")[0]
+        jobs = fx.get("jobs") or {}
+        return list(jobs.get(str(pid), []))
+    if bare.endswith("/bridges"):
+        pid = bare.split("/pipelines/")[1].split("/")[0]
+        bridges = fx.get("bridges") or {}
+        return list(bridges.get(str(pid), []))
+    if "/pipelines/" in bare:
+        pid = bare.rsplit("/", 1)[1]
+        details = fx.get("details") or {}
+        child = fx.get("child_details") or {}
+        if str(pid) in details:
+            return dict(details[str(pid)])
+        if str(pid) in child:
+            return dict(child[str(pid)])
+        raise GitlabUnavailable("unknown pipeline in fixture: %s" % pid)
+    raise GitlabUnavailable("unknown fixture endpoint: %s" % path)
+'''
+
+FIXTURE_SUPPORT_MODULE = '''
+"""Fixture-only recover-support stand-in (offline tests, never live)."""
+import json as _json
+import os as _os
+
+
+def live_read_log(host, project, job_id):
+    path = _os.environ.get("PIPELINE_OBSERVER_FIXTURE_JSON", "")
+    with open(path, encoding="utf-8") as _handle:
+        fx = _json.load(_handle)
+    return (fx.get("traces") or {}).get(str(job_id))
+'''
+
+
+def write_fixture_client(directory, fixture: dict) -> Path:
+    """Write fixture.json + two stand-in client modules; return the dir."""
+    target = Path(directory)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "gitlab_api.py").write_text(
+        FIXTURE_API_MODULE + "\n", encoding="utf-8")
+    (target / "mr_pipeline_recover_support.py").write_text(
+        FIXTURE_SUPPORT_MODULE + "\n", encoding="utf-8")
+    fixture_path = target / "fixture.json"
+    fixture_path.write_text(json.dumps(fixture, ensure_ascii=False),
+                            encoding="utf-8")
+    return target
+
+
+def passed_client_fixture(mr_url: str = URL, sha: str = SHA1) -> dict:
+    """One green parent pipeline fixture for the stand-in client."""
+    pid = 1
+    return {
+        "mr_url": mr_url, "mr_sha": sha,
+        "pipelines": [{"id": pid, "sha": sha, "status": "success",
+                       "web_url": mr_url.replace(
+                           "/-/merge_requests/7",
+                           "/-/pipelines/%d" % pid)}],
+        "details": {str(pid): {"id": pid, "sha": sha, "status": "success",
+                               "web_url": "https://gitlab.example/x/%d"
+                                           % pid}},
+        "jobs": {str(pid): [{"id": 11, "name": "unit", "status": "success",
+                             "web_url": "https://gitlab.example/x/11"}]},
+        "bridges": {str(pid): []},
+        "child_details": {}, "child_jobs": {}, "traces": {},
+    }
+
+
+def profile_file(directory, jobs=("unit",), children=()) -> Path:
+    path = Path(directory) / "required-checks.json"
+    path.write_text(json.dumps(
+        {"schema": "pipeline-observer-checks/1",
+         "required_jobs": list(jobs),
+         "required_child_pipelines": [dict(c) for c in children]},
+        ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def find_real_bridge_dir() -> Path | None:
+    """Locate the existing signed bridge client (read-only check)."""
+    candidates = [os.environ.get("PIPELINE_OBSERVER_REAL_BRIDGE_DIR")]
+    home = Path.home()
+    candidates += [
+        str(home / ".agents" / "skills" / "lan-task-bridge" / "scripts"),
+    ]
+    for candidate in candidates:
+        if candidate and (Path(candidate) / "lan_bridge.py").is_file():
+            return Path(candidate)
+    return None
+
+
+def powershell_exe() -> str | None:
+    import shutil
+    return shutil.which("powershell") or shutil.which("pwsh")

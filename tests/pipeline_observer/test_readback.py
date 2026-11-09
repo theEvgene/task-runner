@@ -146,5 +146,53 @@ class ReadbackTests(unittest.TestCase):
         self.assertNotEqual(receipt.get("verdict"), "passed")
 
 
+    def test_pending_without_pipeline_is_carried(self) -> None:
+        job_id = "b" * 32
+        pending = dict(passed_probe_receipt())
+        pending.update(verdict="pending", reason="checks_pending",
+                       pipeline_id=None, status_outcome="pending")
+        self._plant(job_id, self._result(job_id, json.dumps(pending),
+                                         exit_code=1))
+        payload = self.bridge.fetch_result(
+            self.queue, self.key, job_id, timeout_seconds=5,
+            poll_seconds=0.05)
+        receipt = readback.verify(payload, job_id, URL, SHA1)
+        self.assertEqual(receipt.get("verdict"), "pending")
+        self.assertNotEqual(receipt.get("verdict"), "passed")
+        self.assertNotEqual(receipt.get("verdict"), "unknown")
+
+    def test_sha_less_unavailable_is_unknown_not_mismatch(self) -> None:
+        job_id = "c" * 31 + "1"
+        payload = self.bridge.build_result_payload(
+            job_id, "error", 1, stdout=json.dumps({
+                "schema": "pipeline-observer-probe/1", "read_only": True,
+                "mr_url": URL, "verdict": "unavailable",
+                "reason": "gitlab_unavailable"}), stderr="")
+        receipt = readback.verify(payload, job_id, URL, SHA1)
+        self.assertEqual(receipt["verdict"], "unknown")
+        self.assertNotEqual(receipt.get("reason"), "sha-mismatch")
+
+    def test_non_canonical_expected_url_still_binds(self) -> None:
+        job_id = "c" * 31 + "2"
+        self._plant(job_id, self._result(
+            job_id, json.dumps(passed_probe_receipt())))
+        payload = self.bridge.fetch_result(
+            self.queue, self.key, job_id, timeout_seconds=5,
+            poll_seconds=0.05)
+        receipt = readback.verify(payload, job_id, URL + "/", SHA1)
+        self.assertEqual(receipt["verdict"], "passed")
+
+    def test_passed_without_pipeline_is_not_passed(self) -> None:
+        job_id = "c" * 31 + "3"
+        claimed = dict(passed_probe_receipt())
+        claimed.update(pipeline_id=None)
+        self._plant(job_id, self._result(job_id, json.dumps(claimed)))
+        payload = self.bridge.fetch_result(
+            self.queue, self.key, job_id, timeout_seconds=5,
+            poll_seconds=0.05)
+        receipt = readback.verify(payload, job_id, URL, SHA1)
+        self.assertNotEqual(receipt.get("verdict"), "passed")
+
+
 if __name__ == "__main__":
     unittest.main()
