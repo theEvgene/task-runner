@@ -75,17 +75,35 @@ def run_npm(npm_bin: str, args: list[str], cwd: Path,
 
 
 def npm_child_env() -> dict[str, str]:
-    """Child environment with any inherited ignore-scripts setting removed.
+    """Child environment with proxy, auth, and ignore-scripts settings removed.
 
     npm merges CLI, environment, and rc files with CLI winning, but removing
     the inherited ``npm_config_ignore_scripts`` value makes the effective
-    scripts state depend only on the explicit flag this probe passes, so the
+    scripts state depend only on the explicit flag the caller passes, so the
     receipt's ``ignoreScripts`` field is truthful.
+
+    Proxy variables (any case) are stripped so npm talks directly to the
+    named public registry or the localhost stub: a corporate proxy that
+    serves both public and closed packages must never become an implicit
+    fetch path around the signed-queue transfer. Registry auth material is
+    stripped for the same reason — Dell holds no corporate credentials, and
+    anything the lock needs beyond the named public host travels the queue.
+    Residual limit, stated honestly: ``--offline`` constrains npm registry
+    access only, and lifecycle scripts run with the network up during the
+    explicitly networked fill step, so script sockets are not sandboxed.
     """
 
     env = dict(os.environ)
     for key in list(env.keys()):
-        if key.lower() == "npm_config_ignore_scripts":
+        low = key.lower()
+        if low == "npm_config_ignore_scripts":
+            del env[key]
+        elif low in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+            del env[key]
+        elif low in ("npm_token", "npm_auth_token"):
+            del env[key]
+        elif low.startswith("npm_config_") and (
+                "proxy" in low or "auth" in low or "token" in low):
             del env[key]
     return env
 
