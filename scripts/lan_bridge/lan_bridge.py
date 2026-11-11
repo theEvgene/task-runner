@@ -32,6 +32,11 @@ KEY_BYTES = 32
 ID_HEX_LEN = 32
 PUBLISH_MAX = 2 * 1024 * 1024
 DEFAULT_READ_MAX = 2 * 1024 * 1024
+# Owner wait defaults (#12/#13): fetch waits up to 240 s, checking every
+# 30 s. Explicit --timeout/--poll stay allowed (shorter or longer). This is
+# the *result wait*; `submit --timeout` separately limits remote execution.
+DEFAULT_FETCH_TIMEOUT_SECONDS = 240.0
+DEFAULT_FETCH_POLL_SECONDS = 30.0
 
 _JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
@@ -381,25 +386,56 @@ def submit_job(queue_dir: str, key: bytes, command: str,
     return job_id
 
 
+def _validate_wait(timeout_seconds: float, poll_seconds: float) -> None:
+    """Fail fast on unusable waits."""
+    for name, value in (("timeout", timeout_seconds),
+                        ("poll", poll_seconds)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise BridgeError(f"{name} must be a number of seconds")
+        if not (value > 0) or value != value or value in (float("inf"),
+                                                          float("-inf")):
+            raise BridgeError(f"{name} must be positive and finite")
+
+
+def _require_queue(queue_dir: str) -> str:
+    q = Path(queue_dir)
+    if not q.is_dir():
+        raise BridgeError(f"queue unavailable at {queue_dir}: check path/mount")
+    r = q / "results"
+    if r.exists() and not r.is_dir():
+        raise BridgeError(f"queue unavailable at {r}: check path/mount")
+    return str(r.resolve())
+
+
 def fetch_result(queue_dir: str, key: bytes, job_id: str,
-                 timeout_seconds: float = 660,
-                 poll_seconds: float = 10) -> dict:
-    """Wait for the sealed result and verify its MAC + id binding."""
+                 timeout_seconds: float = DEFAULT_FETCH_TIMEOUT_SECONDS,
+                 poll_seconds: float = DEFAULT_FETCH_POLL_SECONDS) -> dict:
+    """Wait for the sealed result; verify MAC + id binding.
+
+    Never publishes (same-id re-read); expiry is "unknown", never "running".
+    """
     _validate_job_id(job_id)
-    if timeout_seconds <= 0 or poll_seconds <= 0:
-        raise BridgeError("timeout and poll must be positive")
-    deadline = time.monotonic() + timeout_seconds
-    results_dir = str(Path(queue_dir) / "results")
+    _validate_wait(timeout_seconds, poll_seconds)
+    _validate_key(key)
+    deadline = time.monotonic() + float(timeout_seconds)
+    results_dir = _require_queue(queue_dir)
+    polls = 0
     while True:
         try:
             raw = read(results_dir, job_id)
         except JobNotFoundError:
             raw = None
+        polls += 1
         if raw is not None:
+            # Present but unverifiable: explicit refusal, not a timeout.
             return open_envelope(raw, key, "result", job_id)
-        if time.monotonic() >= deadline:
-            raise FetchTimeout(f"timeout waiting for {job_id}")
-        time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise FetchTimeout(
+                f"timeout waiting for {job_id} "
+                f"({polls} polls): outcome unknown, not running; "
+                f"re-read the SAME id, do not resubmit")
+        time.sleep(min(float(poll_seconds), remaining))
 
 
 def _read_command_file(path: str) -> str:
@@ -429,6 +465,8 @@ def cmd_submit(args: argparse.Namespace) -> int:
 
 
 def cmd_fetch(args: argparse.Namespace) -> int:
+    # Errors echo only the job id and wait parameters, never key material.
+    started = time.monotonic()
     try:
         key = load_key(args.key_file, args.key_format, args.queue)
         payload = fetch_result(args.queue, key, args.id,
@@ -439,6 +477,10 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     except (BridgeError, ValueError, FileQueueError, ProtocolError) as e:
         print(f"fetch refused: {e}", file=sys.stderr)
         return 2
+    elapsed = time.monotonic() - started
+    _report_confirmed_state(payload)
+    print(f"elapsed={elapsed:.1f}s timeout={args.timeout} poll={args.poll} "
+          f"outcome=verified id={args.id}", file=sys.stderr)
     text = json.dumps(payload, ensure_ascii=False)
     if args.receipt_out:
         out = Path(args.receipt_out)
@@ -446,6 +488,26 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         out.write_text(text + "\n", encoding="utf-8")
     print(text)
     return 0
+
+
+def _report_confirmed_state(payload: dict) -> None:
+    """Name the verified state; there is no "running" outcome."""
+    status = payload.get("status")
+    exit_code = payload.get("exit_code")
+    timed_out = bool(payload.get("timed_out"))
+    truncated = bool(payload.get("output_truncated"))
+    if timed_out:
+        print("worker state: TIMED OUT on the worker "
+              "(terminal, not success)", file=sys.stderr)
+    elif truncated:
+        print("worker state: OUTPUT TRUNCATED "
+              "(terminal, output incomplete)", file=sys.stderr)
+    elif status not in ("completed", "ok"):
+        print(f"worker state: UNCONFIRMED status={status!r} "
+              f"(envelope verified, meaning unknown)", file=sys.stderr)
+    elif isinstance(exit_code, bool) or exit_code != 0:
+        print(f"worker state: FAILED exit={exit_code!r} "
+              f"(terminal, not success)", file=sys.stderr)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -469,8 +531,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_fetch.add_argument("--key-file", required=True)
     p_fetch.add_argument("--key-format", default="raw", choices=("raw", "base64"))
     p_fetch.add_argument("--id", required=True)
-    p_fetch.add_argument("--timeout", type=float, default=660)
-    p_fetch.add_argument("--poll", type=float, default=10)
+    p_fetch.add_argument("--timeout", type=float,
+                         default=DEFAULT_FETCH_TIMEOUT_SECONDS)
+    p_fetch.add_argument("--poll", type=float,
+                         default=DEFAULT_FETCH_POLL_SECONDS)
     p_fetch.add_argument("--receipt-out", default=None)
     p_fetch.set_defaults(func=cmd_fetch)
     return parser
