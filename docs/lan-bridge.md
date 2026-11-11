@@ -13,7 +13,10 @@ confirmed-state classification (`classify_result`,
 `classify_absence`, `summarize_result`) and stage timings (`stage_timings`).
 Nothing here reimplements the envelope, the MAC, or the queue; scenario docs
 (`docs/fresh-base.md`, `docs/pipeline-observer.md`, `docs/dell-lan.md`)
-build their exact commands and call this client.
+build their exact commands and call this client. The second agent operation
+-- keep observing one id across short windows until a confirmed terminal
+result or a concrete blocker -- is `scripts/lan_bridge/get.py` (stdlib only,
+same protocol; it calls `wait.get_result` and never publishes).
 
 ## Required inputs (owner-provided, never invented)
 
@@ -58,8 +61,8 @@ Prints the result payload JSON only after its MAC verifies **and** its
 `kind`/`id` equal `result`/`<job-id>` (binding before trust: a valid envelope
 for another id never verifies as this one). Exit `0` verified, `2`
 verification/usage failure, `3` bounded-wait timeout with the slot left
-untouched. `--timeout` here is the *result wait*; `submit --timeout` is the
-separate *remote execution limit*. An explicit short `--timeout` is allowed
+untouched. `--timeout` here is the _result wait_; `submit --timeout` is the
+separate _remote execution limit_. An explicit short `--timeout` is allowed
 but proves nothing: expiry always means **unknown**, never "still running".
 
 3. Recover after any interruption with the SAME id (no resubmission):
@@ -75,6 +78,27 @@ observer simply fetches the same id again. A late result sealed under the
 original id verifies normally. Never re-publish while the outcome is
 unknown: the queue refuses duplicates (`JobExistsError`), and a second submit
 would be a NEW id, not a retry.
+
+4. Keep observing the SAME id until terminal or blocked (no hand-written
+   re-poll loop):
+
+```text
+python scripts/lan_bridge/get.py \
+  --queue <queue-dir> --key-file <key-path> \
+  [--key-format raw|base64] \
+  --id <job-id> [--window <seconds>] [--poll <seconds>] \
+  [--max-windows <n>] [--receipt-out <path>]
+```
+
+One call holds the validated id/key/queue across windows (a single queue
+resolve however many windows it takes) and returns only when a MAC-verified
+result bound to the id is found or a concrete blocker appears (exit `2`:
+unavailable queue, tampered envelope, bad id). `--window` defaults to 60 s,
+`--poll` to the owner default 30 s; `--max-windows 0` (the default) waits
+without a window bound, otherwise expiry is exit `3` unknown with the same
+same-id resume action. Interruption recovery is re-running the same command
+with the same id: nothing is ever published, so a late result sealed under
+the original id verifies normally.
 
 ## Boundaries
 
@@ -139,6 +163,30 @@ redefine the owner-chosen check interval, so it stays out of scope under
 #12/#13. Protocol, MAC, id binding, immutability and key handling are
 unchanged.
 
+Measured this round (local fixture only: window 0.4 s / poll 0.05 s, late
+result sealed after two empty windows; reproduce with
+`python -m unittest discover -s tests/lan_bridge -p
+test_lan_bridge_get_result.py`, probe counting in `BeforeAfterTests`):
+
+| metric                              | before: re-invoked `fetch` per window (2 calls) | after: one `get_result`  |
+| ----------------------------------- | ----------------------------------------------- | ------------------------ |
+| queue-dir resolves                  | 2 (one per call)                                | 1 (validated once)       |
+| queue reads to the same late result | 10                                              | 19                       |
+| elapsed                             | 0.42 s                                          | 0.82 s                   |
+| already-present result              | 1 read, sub-second                              | 1 read, 0.008 s observed |
+
+Reads and elapsed scale with when the late result arrives in both paths, so
+the before/after gap there is fixture arrival time, not mechanism speed, and
+is reported as such rather than as an optimization win. The deterministic
+saving is the per-window setup: one validation + one queue resolve per
+`get_result` however many windows it observes, versus one per `fetch` call.
+Dominant delay stays worker-side (execution + queue wait): an
+already-present result costs exactly one read in both paths. Stage splits
+(`stage_timings`) still use only confirmed numeric worker marks -- opaque
+protocol strings yield `unknown` for every stage, and `queue_s`/`delivery_s`
+have no confirmed marks at all, so they stay `unknown` here. No live second
+host is proven by any of these numbers.
+
 ## Local verification
 
 ```text
@@ -154,4 +202,10 @@ in that test are opaque example data), plus the recovery suite
 observer restart with exactly one submission, confirmed-vs-unknown
 classification, window reports with `unknown` stages, tamper/bad-id/
 truncated/unavailable handling with no key material in any output, and the
-poll-bound/latency assertions above. No second host is ever reached.
+poll-bound/latency assertions above, plus the continuous get-result suite
+(`test_lan_bridge_get_result.py`): late result across windows under the
+original id with exactly one submission, bounded expiry as unknown plus
+restart recovery with the same id, tamper/unavailable/bad-id fast blockers,
+verified-but-unrecognized status returned as confirmed-yet-unknown (never
+success), the single-resolve before/after fixture, and the one-probe
+immediate-result assertion. No second host is ever reached.

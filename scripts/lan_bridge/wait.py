@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import time
 
+import lan_bridge as _bridge  # Module handle: attribute access keeps a
+# monkeypatched lan_bridge.read/_require_queue visible to get_result.
 from lan_bridge import (FetchTimeout, JobNotFoundError, _require_queue,
                          _validate_job_id, _validate_key, fetch_result,
                          open_envelope, read)
@@ -170,6 +172,99 @@ def wait_many_windows(queue_dir: str, key: bytes, job_id: str,
                   "detail": absence["detail"], "action": absence["action"]}
 
 
+def get_result(queue_dir: str, key: bytes, job_id: str,
+               window_timeout: float = 60.0,
+               poll_seconds: float = 30.0,
+               max_windows: int = 0,
+               on_window=None) -> tuple:
+    """Observe the SAME id across short windows until a confirmed terminal
+    result or a concrete blocker.
+
+    Agent-facing get-result: submit (via ``lan_bridge``) returns an id; this
+    call keeps reading that id, one short window at a time, until a
+    MAC-verified result bound to the id is found or a blocker proves further
+    waiting useless. It never publishes, so recovery is stateless (queue
+    files only): re-calling with the same id after any interruption resumes
+    without duplicating the job. Absence of a result is reported as
+    ``unknown`` -- never as "running".
+
+    ``max_windows=0`` waits without a window bound; otherwise expiry returns
+    ``(None, report)`` with outcome ``unknown`` and a same-id resume action.
+    A present-but-unverifiable result raises immediately (concrete blocker),
+    as does an unavailable queue -- validated once, before any waiting, so a
+    fail-fast path can never spin. The single queue resolve below (versus one
+    per window when re-invoking ``fetch_result``) is the measured
+    constant-factor saving; queue reads are counted in ``probes``.
+
+    The queue is immutable, so the first verified result for the id is final:
+    every returned payload has ``confirmed`` True, including an unrecognized
+    ``status`` (verified envelope, unknown meaning -- never success).
+    """
+    _validate_job_id(job_id)
+    _validate_key(key)
+    for name, value in (("window", window_timeout),
+                        ("poll", poll_seconds)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise _bridge.BridgeError(f"{name} must be a number of seconds")
+        if not (value > 0) or value != value or value in (float("inf"),
+                                                          float("-inf")):
+            raise _bridge.BridgeError(f"{name} must be positive and finite")
+    if (isinstance(max_windows, bool) or not isinstance(max_windows, int)
+            or max_windows < 0):
+        raise _bridge.BridgeError("max_windows must be a non-negative int")
+    results_dir = _bridge._require_queue(queue_dir)
+    started = time.monotonic()
+    windows = 0
+    probes = 0
+    per_window = int(float(window_timeout) // float(poll_seconds)) + 2
+    while True:
+        windows += 1
+        window_started = time.monotonic()
+        window_deadline = window_started + float(window_timeout)
+        payload = None
+        while True:
+            try:
+                raw = _bridge.read(results_dir, job_id)
+            except JobNotFoundError:
+                raw = None
+            probes += 1
+            if raw is not None:
+                # Verifiable now: tamper/id mismatch raises at once (a
+                # concrete blocker), never a silent extra window.
+                payload = open_envelope(raw, key, "result", job_id)
+                break
+            remaining = window_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(float(poll_seconds), remaining))
+        elapsed = time.monotonic() - started
+        event = {"window": windows,
+                 "window_s": round(time.monotonic() - window_started, 1),
+                 "elapsed_s": round(elapsed, 1),
+                 "found": payload is not None,
+                 "outcome": "found" if payload is not None else UNKNOWN}
+        if on_window is not None:
+            on_window(event)
+        if payload is not None:
+            info = classify_result(payload)
+            return payload, {
+                "job_id": job_id, "outcome": "found", "confirmed": True,
+                "terminal_outcome": info["outcome"],
+                "windows_used": windows, "probes": probes,
+                "polls_bound": windows * per_window,
+                "elapsed_s": round(elapsed, 1),
+                "stages": stage_timings(payload),
+                "summary": summarize_result(payload)}
+        if max_windows and windows >= max_windows:
+            absence = classify_absence(job_id)
+            return None, {
+                "job_id": job_id, "outcome": absence["outcome"],
+                "confirmed": False, "windows_used": windows,
+                "probes": probes, "polls_bound": windows * per_window,
+                "elapsed_s": round(elapsed, 1),
+                "detail": absence["detail"], "action": absence["action"]}
+
+
 __all__ = ["CONFIRMED_SUCCESS_STATUSES", "UNKNOWN", "classify_absence",
            "classify_result", "peek_result", "stage_timings",
-           "summarize_result", "wait_many_windows"]
+           "summarize_result", "wait_many_windows", "get_result"]
