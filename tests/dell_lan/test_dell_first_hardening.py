@@ -14,7 +14,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from first_fixture import FIRST_IMPORT, REQUEST_CLI, FirstWorkspace, git, run
+from first_fixture import FIRST_IMPORT, REQUEST_CLI, FirstWorkspace, dell_digest, git, run
 
 FIRST_EXPORT_SCHEMA = "dell-lan-first-export/1"
 
@@ -24,6 +24,10 @@ def driver_digest() -> str:
         (Path(__file__).resolve().parents[2]
          / "scripts" / "dell_lan" / "lenovo_first_export.py").read_bytes()
     ).hexdigest()
+
+
+def dell_driver_digest() -> str:
+    return dell_digest()
 
 
 class FirstImportHardeningTests(unittest.TestCase):
@@ -100,8 +104,10 @@ class FirstImportHardeningTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         sealed_digest = (data.get("driver") or {}).get("sha256")
         self.assertTrue(sealed_digest, data)
-        self.assertEqual(data["driver"]["freshness"], "unverified")
+        self.assertEqual(data["driver"]["freshness"], "verified-pinned")
         self.assertEqual(sealed_digest, driver_digest())
+        self.assertEqual(data["dellDriver"]["freshness"], "verified-pinned")
+        self.assertEqual(data["dellDriver"]["sha256"], dell_driver_digest())
 
         wrong = "0" * 63 + ("1" if sealed_digest != "0" * 63 + "1" else "2")
         proc, data = self.ws.import_to(
@@ -117,6 +123,45 @@ class FirstImportHardeningTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(data["verdict"], "imported")
         self.assertEqual(data["driver"]["freshness"], "verified-pinned")
+
+    def test_missing_lenovo_pin_is_refused_without_copy(self):
+        receipt = self.ws.root / "missing-lenovo-pin.json"
+        proc = run([
+            sys.executable, str(FIRST_IMPORT), "--queue", str(self.ws.queue),
+            "--key-file", str(self.ws.key), "--job-id", self.job,
+            "--shared", str(self.ws.shared), "--repo", str(self.ws.anchor),
+            "--repo-out", str(self.ws.root / "copy-missing-lenovo"),
+            "--remote-url", self.ws.remote_url, "--branch", "main",
+            "--expected-dell-driver-sha256", dell_driver_digest(),
+            "--receipt", str(receipt),
+        ])
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertFalse((self.ws.root / "copy-missing-lenovo").exists())
+
+    def test_missing_dell_pin_is_refused_without_copy(self):
+        receipt = self.ws.root / "missing-dell-pin.json"
+        proc = run([
+            sys.executable, str(FIRST_IMPORT), "--queue", str(self.ws.queue),
+            "--key-file", str(self.ws.key), "--job-id", self.job,
+            "--shared", str(self.ws.shared), "--repo", str(self.ws.anchor),
+            "--repo-out", str(self.ws.root / "copy-missing-dell"),
+            "--remote-url", self.ws.remote_url, "--branch", "main",
+            "--expected-lenovo-driver-sha256", driver_digest(),
+            "--receipt", str(receipt),
+        ])
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertFalse((self.ws.root / "copy-missing-dell").exists())
+
+    def test_wrong_dell_pin_is_driver_stale_without_copy(self):
+        sealed = driver_digest()
+        wrong_dell = "f" * 63 + ("0" if dell_driver_digest() != "f" * 63 + "0" else "1")
+        proc, data = self.ws.import_to(
+            self.ws.root / "copy-wrong-dell", self.job,
+            "--expected-lenovo-driver-sha256", sealed,
+            "--expected-dell-driver-sha256", wrong_dell)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(data["reason"], "driver-stale")
+        self.assertFalse((self.ws.root / "copy-wrong-dell").exists())
 
     def test_a_foreign_manifest_is_never_overwritten(self):
         token = "0000000000000aa5"

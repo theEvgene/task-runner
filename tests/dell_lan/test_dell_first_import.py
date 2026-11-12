@@ -14,7 +14,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from first_fixture import FirstWorkspace, git, run
+from first_fixture import FirstWorkspace, dell_digest, git, lenovo_digest, run
 
 FIRST_IMPORT = Path(__file__).resolve().parents[2] / "scripts" / "dell_lan" / "dell_first_import.py"
 
@@ -43,6 +43,8 @@ class FirstImportTests(unittest.TestCase):
         self.assertTrue(data["bundle"]["verified"])
         self.assertTrue(data["manifest"]["match"])
         self.assertTrue(data["manifest"]["returnFileObserved"])
+        self.assertEqual(data["driver"]["freshness"], "verified-pinned")
+        self.assertEqual(data["dellDriver"]["freshness"], "verified-pinned")
         self.assertEqual(len(data["manifest"]["digest"]), 64)
         self.assertEqual((self.ws.root / "copy-one" / "work.txt").read_text(encoding="utf-8"),
                          "first base\n")
@@ -132,7 +134,10 @@ class FirstImportTests(unittest.TestCase):
                     "--key-file", str(self.ws.key), "--job-id", "not-a-job",
                     "--shared", str(self.ws.shared), "--repo", str(self.ws.anchor),
                     "--repo-out", str(self.ws.root / "copy-usage"),
-                    "--remote-url", self.ws.remote_url, "--receipt", str(receipt)])
+                    "--remote-url", self.ws.remote_url,
+                    "--expected-lenovo-driver-sha256", lenovo_digest(),
+                    "--expected-dell-driver-sha256", dell_digest(),
+                    "--receipt", str(receipt)])
         self.assertEqual(proc.returncode, 2)
         self.assertFalse(receipt.exists())
 
@@ -142,7 +147,10 @@ class FirstImportTests(unittest.TestCase):
                     "--key-file", str(self.ws.key), "--job-id", self.job,
                     "--shared", str(self.ws.shared), "--repo", "dell-anchor",
                     "--repo-out", str(self.ws.root / "copy-relative"),
-                    "--remote-url", self.ws.remote_url, "--receipt", str(receipt)])
+                    "--remote-url", self.ws.remote_url,
+                    "--expected-lenovo-driver-sha256", lenovo_digest(),
+                    "--expected-dell-driver-sha256", dell_digest(),
+                    "--receipt", str(receipt)])
         self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertIn("absolute", proc.stderr)
         self.assertFalse(receipt.exists())

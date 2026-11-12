@@ -11,6 +11,7 @@ never contacted over the network.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import shutil
@@ -51,6 +52,14 @@ def git(*args: str, cwd: Path | None = None) -> str:
     if proc.returncode != 0:
         raise AssertionError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
     return proc.stdout.strip()
+
+
+def lenovo_digest() -> str:
+    return hashlib.sha256((SCRIPTS / "lenovo_first_export.py").read_bytes()).hexdigest()
+
+
+def dell_digest() -> str:
+    return hashlib.sha256((SCRIPTS / "dell_first_import.py").read_bytes()).hexdigest()
 
 
 class FirstWorkspace:
@@ -162,12 +171,17 @@ class FirstWorkspace:
     def import_to(self, repo_out: Path, job_id: str, *extra: str,
                   receipt: Path | None = None) -> tuple[subprocess.CompletedProcess, dict | None]:
         receipt = receipt or (self.root / f"first-import-{os.urandom(3).hex()}.json")
+        pinned = list(extra)
+        if "--expected-lenovo-driver-sha256" not in pinned:
+            pinned += ["--expected-lenovo-driver-sha256", lenovo_digest()]
+        if "--expected-dell-driver-sha256" not in pinned:
+            pinned += ["--expected-dell-driver-sha256", dell_digest()]
         proc = run([
             sys.executable, str(FIRST_IMPORT), "--queue", str(self.queue),
             "--key-file", str(self.key), "--job-id", job_id, "--shared", str(self.shared),
             "--repo", str(self.anchor),
             "--repo-out", str(repo_out), "--remote-url", self.remote_url,
-            "--branch", BRANCH, "--receipt", str(receipt), *extra,
+            "--branch", BRANCH, "--receipt", str(receipt), *pinned,
         ])
         data = json.loads(receipt.read_text(encoding="utf-8")) if receipt.is_file() else None
         return proc, data

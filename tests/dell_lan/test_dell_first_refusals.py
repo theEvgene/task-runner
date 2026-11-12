@@ -12,7 +12,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from first_fixture import FIRST_IMPORT, FirstWorkspace, git, run
+from first_fixture import FIRST_IMPORT, FirstWorkspace, dell_digest, git, lenovo_digest, run
 
 FIRST_EXPORT_SCHEMA = "dell-lan-first-export/1"
 
@@ -35,7 +35,10 @@ class FirstImportRefusalTests(unittest.TestCase):
             "--key-file", str(self.ws.key), "--job-id", job_id,
             "--shared", str(self.ws.shared), "--repo", str(self.ws.anchor),
             "--repo-out", str(repo_out), "--remote-url", self.ws.remote_url,
-            "--branch", branch, "--receipt", str(receipt),
+            "--branch", branch,
+            "--expected-lenovo-driver-sha256", lenovo_digest(),
+            "--expected-dell-driver-sha256", dell_digest(),
+            "--receipt", str(receipt),
         ])
         data = json.loads(receipt.read_text(encoding="utf-8")) if receipt.is_file() else None
         return proc, data

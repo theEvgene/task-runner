@@ -49,7 +49,7 @@ NEXT_ACTION = {
     "return-file-mismatch": "keep the slot and re-read the sealed result; do not import on a failed cross-check",
     "repo-exists": "choose a new empty path; one first copy is imported once, never replaced",
     "source-mismatch": "check the remote URL and branch spelling; never import a copy that names another source",
-    "driver-stale": "redeploy the current verified drivers on Lenovo and resubmit with a fresh token; a stale driver never yields a copy",
+    "driver-stale": "redeploy the current verified drivers on both machines and resubmit with a fresh token; a stale or unverified driver never yields a copy",
     "destination-is-file": "choose a new empty directory path; a file at the destination is left untouched",
     "outcome-unknown": "keep the slot occupied, re-fetch the same job id, do not start a second import",
     "key-refused": "fix the key location or content outside the anchor checkout, the queue, and the shared folder",
@@ -75,9 +75,12 @@ def parse(argv=None):
     parser.add_argument("--fetch-timeout", type=float, default=660.0)
     parser.add_argument("--poll", type=float, default=10.0)
     parser.add_argument("--provenance", default="fixture", choices=("fixture", "live"))
-    parser.add_argument("--expected-lenovo-driver-sha256", default=None,
+    parser.add_argument("--expected-lenovo-driver-sha256", required=True,
                         help="pinned SHA-256 of the trusted Lenovo driver copy; "
-                             "when named, the sealed driver digest must match it")
+                             "the sealed driver digest must match it")
+    parser.add_argument("--expected-dell-driver-sha256", required=True,
+                        help="pinned SHA-256 of the trusted Dell driver copy; "
+                             "the executing dell_first_import.py digest must match it")
     parser.add_argument("--bridge-dir", type=Path)
     parser.add_argument("--receipt", type=Path, required=True)
     return parser.parse_args(argv)
@@ -102,6 +105,7 @@ def blank(args) -> dict:
         "bundle": {"name": None, "sha256": None, "bytes": None, "verified": False},
         "manifest": {"digest": None, "match": False, "returnFileObserved": None},
         "driver": {"version": None, "sha256": None, "freshness": "unverified"},
+        "dellDriver": {"version": None, "sha256": None, "freshness": "unverified"},
         "repo": {"path": str(args.repo_out), "created": False, "head": None},
         "origin": {"url": args.remote_url, "project": project_of(args.remote_url),
                    "projectMatches": None},
@@ -131,6 +135,39 @@ def project_of(url: str | None) -> str | None:
     if not parsed.hostname or "/" not in path:
         return None
     return path[:-4] if path.endswith(".git") else path
+
+
+def verify_dell_driver(args, receipt: dict) -> None:
+    """Bind the actual executing Dell driver to the operator's trusted pin.
+
+    The pin is an out-of-band trust input: the SHA-256 of the current
+    verified ``dell_first_import.py`` copy, computed by the operator from a
+    trusted checkout and passed as ``--expected-dell-driver-sha256``. The
+    running file hashes itself (``Path(__file__)``); only an exact match
+    reads as ``verified-pinned``. A missing, malformed, or mismatched pin,
+    or an unreadable driver file, fails closed with ``driver-stale`` before
+    any queue read or copy. A self-reported version string alone is never
+    freshness.
+    """
+
+    pinned = (args.expected_dell_driver_sha256 or "").strip().lower() or None
+    try:
+        actual = sha256_file(Path(__file__).resolve()).lower()
+    except OSError:
+        actual = ""
+    if actual and not DIGEST_RE.match(actual):
+        actual = ""
+    receipt["dellDriver"] = {"version": FIRST_IMPORT_DRIVER_VERSION,
+                             "sha256": actual or None,
+                             "freshness": "unverified"}
+    if pinned is None or not DIGEST_RE.match(pinned):
+        raise Stop("driver-stale",
+                   detail="missing or malformed --expected-dell-driver-sha256; "
+                          "no trusted Dell identity")
+    if not actual or actual != pinned:
+        raise Stop("driver-stale",
+                   detail="executing Dell driver digest does not match the pinned digest")
+    receipt["dellDriver"]["freshness"] = "verified-pinned"
 
 
 def verify_payload(payload: dict, args, receipt: dict) -> dict:
@@ -175,12 +212,13 @@ def verify_payload(payload: dict, args, receipt: dict) -> dict:
     receipt["driver"] = {"version": exported["driverVersion"], "sha256": driver_sha or None,
                          "freshness": "unverified"}
     pinned = (args.expected_lenovo_driver_sha256 or "").strip().lower() or None
-    if pinned is not None and not DIGEST_RE.match(pinned):
-        raise Stop("request-malformed", detail="--expected-lenovo-driver-sha256 must be 64 hex")
-    if pinned is not None:
-        if not driver_sha or driver_sha != pinned:
-            raise Stop("driver-stale", detail="sealed driver digest does not match the pinned digest")
-        receipt["driver"]["freshness"] = "verified-pinned"
+    if pinned is None or not DIGEST_RE.match(pinned):
+        raise Stop("driver-stale",
+                   detail="missing or malformed --expected-lenovo-driver-sha256; "
+                          "no trusted Lenovo identity")
+    if not driver_sha or driver_sha != pinned:
+        raise Stop("driver-stale", detail="sealed driver digest does not match the pinned digest")
+    receipt["driver"]["freshness"] = "verified-pinned"
     receipt["refFull"] = exported["refFull"]
     receipt["baseSha"] = tip
     receipt["bundle"] = {"name": exported["bundleName"], "sha256": digest,
@@ -283,9 +321,10 @@ def main(argv=None) -> int:
         return usage("--branch is not a safe name")
     if args.fetch_timeout <= 0 or args.poll <= 0:
         return usage("--fetch-timeout and --poll must be positive")
-    if args.expected_lenovo_driver_sha256 is not None and not DIGEST_RE.match(
-            args.expected_lenovo_driver_sha256.strip().lower()):
-        return usage("--expected-lenovo-driver-sha256 must be 64 hex")
+    for label in ("expected_lenovo_driver_sha256", "expected_dell_driver_sha256"):
+        value = (getattr(args, label) or "").strip().lower()
+        if not DIGEST_RE.match(value):
+            return usage(f"--{label.replace('_', '-')} must be 64 hex")
     repo_out = Path(args.repo_out)
     if inside(args.receipt, repo_out):
         return usage("--receipt must stay outside the imported copy")
@@ -299,6 +338,7 @@ def main(argv=None) -> int:
     receipt = blank(args)
     code = 0
     try:
+        verify_dell_driver(args, receipt)
         bridge = load_bridge(args.bridge_dir or default_bridge_dir())
         queue = Path(args.queue)
         repos = [repo_out, Path(args.repo)]
