@@ -12,6 +12,7 @@ Externally invoked agents start here explicitly; this repo assumes no global aut
 - Import the first verified copy of a remote branch with no Lenovo checkout -> `docs/first-import.md`.
 - Run the full Dell-to-Lenovo dev loop (base, local work, publish, readback) -> `docs/dell-lan.md`.
 - Release on Lenovo through the signed queue (bare preview; versioned tag only with explicit version plus explicit confirmation) -> `docs/release.md` + `scripts/release/request.py` (single canonical release entry; `docs/release-tag-preview.md` stays in the tree as legacy and is not an entry).
+- Install the standalone `release` skill links (managed junctions under `~/.agents/skills`, never overwriting foreign entries) -> `skills/release/SKILL.md` + `skills/release/scripts/install.ps1` (old `lenovo-release` migrates only with explicit opt-in on proven ownership).
 
 Corporate routing and the signed queue apply where those docs state them. Do not pass secrets through task scripts, and rely only on guarantees those docs state.
 
@@ -36,3 +37,7 @@ Contract tests at the cheapest proving level; no coverage-percentage target. See
 ### File token guard
 
 One file must not exceed ~5,500 tokens (staged guard in pre-commit). See `docs/agents/file-token-guard.md`.
+
+### Release
+
+Standalone-installable `release` skill (preview-first Lenovo release pointer, managed junctions, opt-in old-link migration). See `skills/release/SKILL.md`.
