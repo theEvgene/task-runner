@@ -69,14 +69,23 @@ def read_pid_file(path: Path) -> dict | None:
     return data
 
 
-def write_pid_file(path: Path, pid: int, marker: str, started: str) -> None:
-    """Exclusive create; raises FileExistsError when another owner won."""
+def write_pid_file(path: Path, pid: int, marker: str, started: str,
+                   extra: dict | None = None) -> None:
+    """Exclusive create; raises FileExistsError when another owner won.
+
+    ``extra`` carries the identity the next launch must match exactly
+    (full command array plus configuration binding such as queue/key);
+    it is stored verbatim and never interpreted here.
+    """
 
     import json
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = (json.dumps({"pid": pid, "marker": marker, "started": started}) + "\n").encode("utf-8")
+    record = {"pid": pid, "marker": marker, "started": started}
+    if extra:
+        record.update(dict(extra))
+    payload = (json.dumps(record) + "\n").encode("utf-8")
     fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     try:
         os.write(fd, payload)

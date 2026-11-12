@@ -56,30 +56,52 @@ and starts nothing new.
 
 - Existing queue only: a missing `queue/`, `queue/jobs/` or `queue/results/`
   refuses with `queue unavailable … check path/mount`. No empty queue is
-  ever created, and the worker never seals into a fresh dir.
+  ever created, and the worker seals into a fresh dir never. `trashDir` and
+  `stateDir` must sit outside the queue and the shared folder (checked
+  lexically before anything is created), so creating them can never
+  materialize queue parents and the cleaner can never see launcher state.
 - Existing jobs/results are never rewritten: results are published
-  immutably; a sealed id is skipped, never replaced.
+  immutably; a sealed id is skipped, never replaced. A result the worker
+  cannot seal is reported as failed, never as sealed, and a finished
+  `--once`/`--max-jobs` batch exits 2 when any job was refused or failed.
+  Declared return files keep the bridge contract (any path the job names)
+  with byte bounds (8 files, 256 KiB each, 1 MiB total); truncation sets
+  `output_truncated`.
 - Key custody: a key inside the queue, the checkout, or the share refuses
   before any work. The password travels only inside a PowerShell
   `-File` script that reads it from the local file; it never appears in
-  process args, stdout, stderr, logs, or receipts.
-- Ambiguous pid state (stale pid, foreign command line, changed config)
-  refuses with the exact pid file to inspect. The launcher never kills,
-  never replaces, never `--force`s. Remediation: verify no such process
-  runs (`tasklist /FI "PID eq N"`), then remove `stateDir\<role>.pid`.
+  process args, stdout, stderr, logs, or receipts. The file holds one line;
+  a trailing CRLF is trimmed the same way in the fixture check and in the
+  real SMB mapping, and a multi-line file refuses.
+- One launch at a time: an exclusive state lock is held from before any
+  inspection until after both pid files are written, and both roles are
+  inspected before either is spawned. Ambiguous pid state (stale pid,
+  foreign command line, changed command/binding, or an unrecognized pid
+  format) refuses with the exact pid file to inspect and starts nothing.
+  The launcher never kills, never replaces, never `--force`s. Remediation:
+  verify no such process runs (`tasklist /FI "PID eq N"`), then remove
+  `stateDir\<role>.pid`.
+- Process identity is bound to the full command array plus its configuration
+  (`queue`/`keyFile` for the worker, `shared`/`trash` for the cleaner). A
+  live pid recorded under a different command or binding refuses instead of
+  being adopted.
+- The shortcut propagates the launcher exit: `ready` is exit 0, any refusal
+  is exit 2.
 - Corporate policy is unchanged: no autostart, no firewall/share change,
   no credential written to the queue or the share.
 
-## Failures (all exit 2, nothing started or duplicated)
+## Failures (all exit 2; ambiguous/config failures start nothing new)
 
 | Message                       | Meaning                     | Fix                                   |
 | ----------------------------- | --------------------------- | ------------------------------------- |
-| `cannot read config`          | config path wrong           | point the shortcut at the real JSON   |
+| `cannot read config`         | config path wrong           | point the shortcut at the real JSON   |
 | `share unavailable …`         | Dell down / UNC wrong       | check host, share name, cable/VPN     |
 | `bad credentials …`           | SMB refused user/password   | fix user or password file content     |
 | `queue unavailable …`         | share up, queue path wrong  | fix `queueDir` to the existing queue  |
 | `key unusable / key inside …` | key file wrong or misplaced | re-issue key outside queue/share/repo |
-| `ambiguous <role> state`      | stale or foreign pid file   | verify, then remove that pid file     |
+| `trash/state … must be outside` | trash/state inside queue/share | move them outside both             |
+| `ambiguous <role> state`      | stale, foreign, or changed pid/config | verify, then remove that pid file |
+| `another launch is in progress` | concurrent double-click   | wait seconds, re-run to adopt pids    |
 | `<role> exited at once`       | child crashed               | read `stateDir\<role>.log`            |
 
 ## Manual post-reboot validation (REQUIRED, manual only)
@@ -104,9 +126,13 @@ issue when done; until then treat this scenario as fixture-verified only.
 <python> -m unittest discover -s tests/lenovo_worker -v
 ```
 
-Covers: worker seals one result and skips sealed/foreign ids; missing queue
-refuses without creating it; key inside queue/share/checkout refuses;
-cleaner moves only top-level `*.tmp` to trash; launch success + repeat is
-idempotent; stale/foreign pid refuses; unavailable share and bad
-credentials refuse; password absent from all outputs, logs, and child
-command lines.
+Covers: worker seals one result and skips sealed/foreign ids; failed seals
+reported as failed with batch exit 2; bounded return files with truncation
+flag; missing queue refuses without creating it; key inside
+queue/share/checkout refuses; cleaner moves only top-level `*.tmp` outside
+the configured queue/trash/state and refuses misplaced trash/state; launch
+success + repeat is idempotent with command/binding adoption; concurrent
+launch serializes on the state lock; stale/foreign/changed pid refuses with
+nothing started; misplaced trash/state refuses before anything is created;
+unavailable share and bad credentials refuse; password absent from all
+outputs, logs, and child command lines.

@@ -6,4 +6,5 @@ setlocal
 set "CONFIG=%LOCALAPPDATA%\task-runner\lenovo-worker.json"
 if not "%~1" == "" set "CONFIG=%~1"
 python "%~dp0launch.py" --config "%CONFIG%"
-endlocal
+set "RC=%ERRORLEVEL%"
+endlocal & exit /b %RC%

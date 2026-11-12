@@ -11,8 +11,11 @@ Existing results are never read-modify-written and never replaced
 here, which is the safe direction). A job whose envelope cannot be verified
 is never executed; a refusal result is sealed under the same id so the
 observer gets a terminal, verified failure instead of an endless unknown.
-The queue is never created here: a missing queue/jobs or queue/results dir
-is exit 2 (check path/mount), never an empty new queue.
+A result that cannot be sealed (publish failure) is reported as failed, never
+as sealed, and a finished ``--once``/``--max-jobs`` batch exits 2 when any
+job was refused or failed. The queue is never created here: a missing
+queue/jobs or queue/results dir is exit 2 (check path/mount), never an
+empty new queue.
 """
 
 from __future__ import annotations
@@ -30,6 +33,13 @@ from pathlib import Path
 
 WORKER_SCHEMA = "lenovo-worker/1"
 ID_SUFFIX = ".json"
+# Return-file bounds: the job contract allows any declared path (same as the
+# signed bridge's --return-file), but each file and their total are capped so
+# the sealed envelope stays within protocol limits. Truncation is reported in
+# output_truncated; sealing failures are reported, never claimed as sealed.
+RETURN_FILES_MAX_COUNT = 8
+RETURN_FILE_MAX_BYTES = 262144
+RETURN_FILES_MAX_TOTAL_BYTES = 1048576
 
 
 def _load_bridge() -> object:
@@ -86,7 +96,9 @@ def _load_key(key_file: Path, key_format: str, queue: Path) -> bytes | None:
         return None
 
 
-def _seal_result(queue: Path, key: bytes, job_id: str, **fields) -> bool:
+def _seal_result(queue: Path, key: bytes, job_id: str, **fields) -> str:
+    """Seal a result. Returns "sealed", "skipped", or "failed"."""
+
     payload = {
         "kind": "result", "id": job_id,
         "status": fields.get("status", "error"),
@@ -101,12 +113,12 @@ def _seal_result(queue: Path, key: bytes, job_id: str, **fields) -> bool:
     }
     try:
         bridge.publish(str(queue / "results"), job_id, bridge.seal(payload, key))
-        return True
+        return "sealed"
     except bridge.JobExistsError:
-        return False  # another worker sealed it first: safe direction
+        return "skipped"  # another worker sealed it first: safe direction
     except Exception as error:
         print(f"worker: cannot seal result for {job_id} ({error})", file=sys.stderr)
-        return False
+        return "failed"
 
 
 def _execute(command: str, workdir: str, timeout_s: int, limit: int) -> dict:
@@ -130,23 +142,46 @@ def _execute(command: str, workdir: str, timeout_s: int, limit: int) -> dict:
             "output_truncated": len(stdout) > limit or len(stderr) > limit}
 
 
-def _collect_return_files(declared: list, limit_files: int = 8) -> dict:
+def _collect_return_files(declared: list, limit_files: int = RETURN_FILES_MAX_COUNT,
+                          limit_each: int = RETURN_FILE_MAX_BYTES,
+                          limit_total: int = RETURN_FILES_MAX_TOTAL_BYTES,
+                          ) -> tuple[dict, bool]:
+    """Collect declared return files with byte bounds. Returns (files, truncated).
+
+    Any declared path is honored (the bridge contract puts no path
+    restriction on --return-file); only size is bounded.
+    """
+
     files: dict[str, str] = {}
+    total = 0
+    truncated = False
     for raw in (declared or [])[:limit_files]:
         try:
             path = Path(str(raw))
         except (ValueError, TypeError):
             continue
         try:
-            if path.is_file():
-                files[str(path)] = base64.b64encode(path.read_bytes()).decode("ascii")
+            if not path.is_file():
+                continue
+            with path.open("rb") as handle:
+                data = handle.read(limit_each + 1)
         except OSError:
             continue
-    return files
+        if len(data) > limit_each:
+            data = data[:limit_each]
+            truncated = True
+        if total + len(data) > limit_total:
+            truncated = True
+            break
+        total += len(data)
+        files[str(path)] = base64.b64encode(data).decode("ascii")
+    if isinstance(declared, list) and len(declared) > limit_files:
+        truncated = True
+    return files, truncated
 
 
 def _run_one(queue: Path, key: bytes, job_id: str) -> str:
-    """Process one job id. Returns: sealed | skipped | refused."""
+    """Process one job id. Returns: sealed | skipped | refused | failed."""
 
     try:
         raw = bridge.read(str(queue / "jobs"), job_id)
@@ -156,30 +191,27 @@ def _run_one(queue: Path, key: bytes, job_id: str) -> str:
     try:
         job = bridge.open_envelope(raw, key, "job", job_id)
     except Exception as error:
-        _seal_result(queue, key, job_id, status="error", exit_code=2,
-                     stderr=f"job-unverifiable: {error}")
-        return "sealed"
+        return _seal_result(queue, key, job_id, status="error", exit_code=2,
+                            stderr=f"job-unverifiable: {error}")
     command = job.get("command")
     workdir = job.get("working_directory")
     if not isinstance(command, str) or not command.strip() or not isinstance(workdir, str) or not workdir:
-        _seal_result(queue, key, job_id, status="error", exit_code=2,
-                     stderr="job-unverifiable: empty command or missing working_directory")
-        return "sealed"
+        return _seal_result(queue, key, job_id, status="error", exit_code=2,
+                            stderr="job-unverifiable: empty command or missing working_directory")
     try:
         timeout_s = int(job.get("timeout_seconds", 300))
         limit = int(job.get("max_output_bytes", 65536))
     except (TypeError, ValueError):
-        _seal_result(queue, key, job_id, status="error", exit_code=2,
-                     stderr="job-unverifiable: bad timeout/max_output")
-        return "sealed"
+        return _seal_result(queue, key, job_id, status="error", exit_code=2,
+                            stderr="job-unverifiable: bad timeout/max_output")
     if not (1 <= timeout_s <= 3600 and 1 <= limit <= 262144):
-        _seal_result(queue, key, job_id, status="error", exit_code=2,
-                     stderr="job-unverifiable: timeout/max_output out of range")
-        return "sealed"
+        return _seal_result(queue, key, job_id, status="error", exit_code=2,
+                            stderr="job-unverifiable: timeout/max_output out of range")
     outcome = _execute(command, workdir, timeout_s, limit)
-    outcome["files"] = _collect_return_files(job.get("return_files"))
-    _seal_result(queue, key, job_id, **outcome)
-    return "sealed"
+    returned, files_truncated = _collect_return_files(job.get("return_files"))
+    outcome["files"] = returned
+    outcome["output_truncated"] = outcome["output_truncated"] or files_truncated
+    return _seal_result(queue, key, job_id, **outcome)
 
 
 def _pending(queue: Path, key: bytes) -> list[str]:
@@ -201,10 +233,16 @@ def _pending(queue: Path, key: bytes) -> list[str]:
 
 
 def run_once(queue: Path, key: bytes) -> dict:
-    counts = {"sealed": 0, "skipped": 0, "refused": 0}
+    counts = {"sealed": 0, "skipped": 0, "refused": 0, "failed": 0}
     for job_id in _pending(queue, key):
         counts[_run_one(queue, key, job_id)] += 1
     return counts
+
+
+def _batch_exit(counts: dict) -> int:
+    """A finished batch fails when any job was refused or never sealed."""
+
+    return 2 if (counts.get("refused") or counts.get("failed")) else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -239,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.once:
         counts = run_once(queue, key)
         print(json.dumps({"schema": WORKER_SCHEMA, "mode": "once", **counts}))
-        return 0
+        return _batch_exit(counts)
     done = 0
     while True:
         counts = run_once(queue, key)
@@ -247,6 +285,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.max_jobs and done >= args.max_jobs:
             break
         time.sleep(float(args.poll))
+    if args.max_jobs:
+        return _batch_exit(counts)
     return 0
 
 
