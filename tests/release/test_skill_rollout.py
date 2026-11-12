@@ -114,6 +114,70 @@ class MigrationProofTests(unittest.TestCase):
             self.assertIn(proof["bodyMustContain"], text)
 
 
+class RemoteNormalizationTests(unittest.TestCase):
+    def test_installer_accepts_ssh_and_https_task_runner(self) -> None:
+        body = read_text(INSTALL_PS1)
+        self.assertIn("git@", body)
+        self.assertIn("ssh://", body)
+        self.assertIn("Get-GitHubSlug", body)
+        self.assertIn("theEvgene/task-runner", body)
+
+    def test_installer_slug_ignores_git_suffix_and_case(self) -> None:
+        body = read_text(INSTALL_PS1)
+        self.assertIn(".git", body)
+        self.assertIn("ToLowerInvariant", body)
+
+
+class CheckoutSafetyTests(unittest.TestCase):
+    def test_conflicts_fail_before_checkout_advance(self) -> None:
+        body = read_text(INSTALL_PS1)
+        preflight = body.lower().index("before the checkout moves")
+        advance = body.index("'--detach'")
+        self.assertLess(preflight, advance)
+        self.assertIn("preflightConflicts", body)
+
+    def test_failed_advance_restores_recorded_head(self) -> None:
+        body = read_text(INSTALL_PS1)
+        self.assertIn("branchBefore", body)
+        self.assertIn("symbolic-ref", body)
+        self.assertIn("'restored'", body)
+        self.assertIn("'restore-failed'", body)
+        self.assertIn("rollback = $rollback", body)
+
+
+class PatOwnershipTests(unittest.TestCase):
+    def test_migration_requires_pat_remote_not_only_text(self) -> None:
+        body = read_text(INSTALL_PS1)
+        self.assertIn("ExpectedPatRemoteUrl", body)
+        self.assertIn("personal-agent-toolkit", body)
+        self.assertIn("Test-PatOwnership", body)
+        self.assertIn("'rev-parse' '--show-toplevel'", body)
+        self.assertIn("'remote' 'get-url' 'origin'", body)
+        # Strangers stay for the PAT owner; content alone never deletes.
+        self.assertIn("leftUnchanged", body)
+
+    def test_skill_doc_states_remote_proof(self) -> None:
+        self.assertIn("origin remote", read_text(SKILL_MD).lower())
+
+
+class UpdateDocTests(unittest.TestCase):
+    def test_update_shows_junction_lookup_fetch_pin_verify(self) -> None:
+        body = read_text(UPDATE_MD)
+        self.assertIn(".Target", body)
+        self.assertIn("Split-Path", body)
+        self.assertIn("git fetch origin", body)
+        self.assertIn("install.ps1", body)
+        self.assertIn("verify-install.ps1", body)
+        self.assertIn("lenovo-release", body)
+
+
+class VerifierDuplicateTests(unittest.TestCase):
+    def test_verifier_refuses_duplicate_leaf(self) -> None:
+        body = read_text(VERIFY_PS1)
+        self.assertIn("duplicate", body.lower())
+        self.assertIn("leaf name", body)
+
+
 class DiscoveryTests(unittest.TestCase):
     def test_every_own_skill_is_discoverable_with_unique_leaf(self) -> None:
         skills_root = ROOT / "skills"

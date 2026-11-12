@@ -13,8 +13,11 @@ pipeline, and deploy.
 Ported intent of the `lenovo-release` pointer skill (personal-agent-toolkit,
 `skills/t-bank/lenovo-release/SKILL.md`) under the `release` name. That old
 name is never touched automatically: `scripts/install.ps1` migrates the old
-`lenovo-release` junction only with `-AllowOldLinkMigration` and only when the
-junction target provably holds the old pointer content (see `migrations.json`).
+`lenovo-release` junction only with `-AllowOldLinkMigration` and only when
+the junction target provably holds the old pointer content AND lives in a
+personal-agent-toolkit checkout (origin remote proof, see `migrations.json`).
+File text alone never deletes; anything else stays in `leftUnchanged` for
+the PAT owner to remove manually.
 
 ## Route: preview first, version only after the user chooses
 

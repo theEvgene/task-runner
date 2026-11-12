@@ -1,24 +1,15 @@
 <#
-Standalone installer for the task-runner skills of the pinned revision.
-
-- Refuses on a dirty checkout before changing anything; no network, no
-  fetch, no deploy. The revision must resolve locally.
-- Advances this checkout (detached) to the pinned revision when needed.
-- Links every skills/*/SKILL.md of the PINNED revision as a managed
-  junction under the skills directory. An existing foreign entry
-  (including any personal-agent-toolkit path) is never overwritten:
-  it is reported as a conflict and left unchanged.
-- Migrates the old 'lenovo-release' pointer link only with
-  -AllowOldLinkMigration and only on proven ownership (see
-  migrations.json): the target must hold the old pointer content.
-- Prints a JSON receipt (schema task-runner/skill-rollout@1) and fails
-  when readback does not match the pinned revision.
-
-This installer intentionally writes NO global agent-guidance blocks:
-this repo assumes no global auto-discovery, and global files may be
-managed by another checkout. Skill discovery is the reason cross-repo
-use works: link names come from `git ls-tree <pinned> skills/`, so the
-installed links always reflect the pinned revision, never a dirty tree.
+Standalone installer for the pinned task-runner skills. Refuses on a
+dirty checkout; no network/fetch/deploy, the revision must resolve
+locally. SSH and HTTPS origins of theEvgene/task-runner match by
+github.com/owner/repo slug. Foreign entries and duplicate leaves fail
+BEFORE the checkout moves; a later failure restores the recorded
+HEAD/branch. Old 'lenovo-release' migrates only with
+-AllowOldLinkMigration AND proven PAT ownership (pointer content plus
+personal-agent-toolkit origin remote); otherwise it stays in
+'leftUnchanged'. Prints a JSON receipt (task-runner/skill-rollout@1).
+Writes no global guidance files; link names come from
+`git ls-tree <pinned> skills/`.
 #>
 [CmdletBinding()]
 param(
@@ -31,6 +22,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $ExpectedRemoteUrl = 'https://github.com/theEvgene/task-runner.git'
+$ExpectedPatRemoteUrl = 'https://github.com/theEvgene/personal-agent-toolkit.git'
 
 $stages = [System.Collections.Generic.List[object]]::new()
 $checkout = ''
@@ -80,19 +72,31 @@ function Invoke-RepoGit {
     return [pscustomobject]@{ code = $LASTEXITCODE; lines = $lines }
 }
 
+function Get-GitHubSlug {
+    param([string]$Value)
+    # github.com/owner/repo slug for SSH (git@host:path, ssh://) and
+    # HTTPS forms; trailing '.git'/slash ignored, case-insensitive.
+    $text = $Value.Trim()
+    $hostName = ''; $path = ''
+    if ($text -match '^git@([^:]+):(.+)$') { $hostName = $Matches[1]; $path = $Matches[2] }
+    elseif ($text -match '^(ssh|https?|git)://(.+)$') {
+        try { $uri = [System.Uri]$text } catch { return '' }
+        $hostName = $uri.Host; $path = $uri.AbsolutePath
+    } else { return '' }
+    $path = $path.Trim().Trim('/')
+    if ($path.EndsWith('.git', [System.StringComparison]::OrdinalIgnoreCase)) { $path = $path.Substring(0, $path.Length - 4) }
+    $segments = @($path -split '/' | Where-Object { $_ -ne '' })
+    if ($segments.Count -lt 2) { return '' }
+    return ($hostName.ToLowerInvariant() + '/' + $segments[0].ToLowerInvariant() + '/' + $segments[1].ToLowerInvariant())
+}
+
 function Test-EquivalentRemote {
     param([string]$Actual, [string]$Expected)
 
-    $normalize = {
-        param([string]$Value)
-        $text = $Value.Trim().TrimEnd('/')
-        if ($text.EndsWith('.git', [System.StringComparison]::OrdinalIgnoreCase)) {
-            $text = $text.Substring(0, $text.Length - 4)
-        }
-        return $text
-    }
-    return [string]::Equals((& $normalize $Actual), (& $normalize $Expected),
-        [System.StringComparison]::OrdinalIgnoreCase)
+    $a = Get-GitHubSlug -Value $Actual
+    $e = Get-GitHubSlug -Value $Expected
+    if ([string]::IsNullOrEmpty($a) -or [string]::IsNullOrEmpty($e)) { return $false }
+    return $a -eq $e
 }
 
 # Names come from the pinned commit, not the worktree: this is why the
@@ -142,6 +146,30 @@ function Test-OldPointerContent {
     $frontmatter = ($lines[1..($end - 1)] -join "`n")
     if ($frontmatter -notmatch "(?m)^name:\s*$([regex]::Escape([string]$Proof.frontmatterName))\s*$") { return $false }
     return $text.Contains([string]$Proof.bodyMustContain)
+}
+
+function Get-CheckoutRemoteUrl {
+    param([Parameter(Mandatory)][string]$TargetDir)
+    # Origin URL of the checkout owning the junction target; '' when
+    # unresolvable means "not proven", so the old entry is left alone.
+    $ErrorActionPreference = 'Continue'
+    $top = @(git '-C' $TargetDir 'rev-parse' '--show-toplevel' 2>&1)
+    if ($LASTEXITCODE -ne 0 -or @($top).Count -eq 0) { return '' }
+    $toplevel = "$($top[0])".Trim()
+    if ([string]::IsNullOrWhiteSpace($toplevel)) { return '' }
+    $url = @(git '-C' $toplevel 'remote' 'get-url' 'origin' 2>&1)
+    if ($LASTEXITCODE -ne 0 -or @($url).Count -eq 0) { return '' }
+    return "$($url[0])".Trim()
+}
+
+function Test-PatOwnership {
+    param([Parameter(Mandatory)][string]$TargetDir, [Parameter(Mandatory)][object]$Proof)
+    # Content alone never proves ownership: pointer text AND a
+    # personal-agent-toolkit origin remote are both required.
+    if (-not (Test-OldPointerContent -TargetDir $TargetDir -Proof $Proof)) { return $false }
+    $remoteUrl = Get-CheckoutRemoteUrl -TargetDir $TargetDir
+    if ([string]::IsNullOrWhiteSpace($remoteUrl)) { return $false }
+    return (Test-EquivalentRemote -Actual $remoteUrl -Expected $ExpectedPatRemoteUrl)
 }
 
 function Remove-ManagedJunctionSafely {
@@ -207,6 +235,8 @@ $exitCode = 0
 $ok = $false
 $failure = $null
 $failureAction = 'none'
+$rollback = 'none'
+$branchBefore = ''
 $currentStage = 'preflight'
 $connected = [System.Collections.Generic.List[string]]::new()
 $conflicts = [System.Collections.Generic.List[string]]::new()
@@ -227,6 +257,8 @@ try {
     $head = Invoke-RepoGit @('rev-parse', 'HEAD')
     $installedRevision = if ($head.code -eq 0 -and @($head.lines).Count -gt 0) { $head.lines[0].Trim() } else { '' }
     $headBefore = $installedRevision
+    $branchProbe = Invoke-RepoGit @('symbolic-ref', '--quiet', '--short', 'HEAD')
+    $branchBefore = if ($branchProbe.code -eq 0 -and @($branchProbe.lines).Count -gt 0) { $branchProbe.lines[0].Trim() } else { '' }
 
     $remote = Invoke-RepoGit @('remote', 'get-url', 'origin')
     $remoteUrl = if ($remote.code -eq 0 -and @($remote.lines).Count -gt 0) { $remote.lines[0].Trim() } else { '' }
@@ -251,6 +283,30 @@ try {
     $pinned = $resolved.lines[0].Trim()
     $skills = Get-PinnedSkills -Commit $pinned
     $stages.Add([pscustomobject]@{ name = 'preflight'; status = 'passed' })
+
+    # Doomed installs fail BEFORE the checkout moves; the install
+    # stage re-checks to close the race with junction creation.
+    $SkillsDirectory = Get-NormalizedPath -Path $SkillsDirectory
+    $preflightConflicts = [System.Collections.Generic.List[string]]::new()
+    if (Test-Path -LiteralPath $SkillsDirectory) {
+        foreach ($skill in $skills) {
+            $sourcePath = Get-ExpectedSkillPath -Relative $skill.path
+            $existing = Get-ChildItem -Force -LiteralPath $SkillsDirectory -ErrorAction SilentlyContinue |
+                Where-Object { [string]::Equals($_.Name, $skill.name, [System.StringComparison]::OrdinalIgnoreCase) } |
+                Select-Object -First 1
+            if ($existing) {
+                $existingTarget = Get-JunctionTarget -Item $existing
+                if (-not ($existingTarget -and [string]::Equals($existingTarget, $sourcePath,
+                    [System.StringComparison]::OrdinalIgnoreCase))) {
+                    $preflightConflicts.Add($skill.name)
+                }
+            }
+        }
+    }
+    if ($preflightConflicts.Count -gt 0) {
+        $conflicts.AddRange($preflightConflicts)
+        Stop-Install 'destination-conflict' 'foreign-entry-present' "Foreign entries left unchanged: $($preflightConflicts -join ', ')"
+    }
 
     $currentStage = 'advance'
     if ($installedRevision -ne $pinned) {
@@ -286,8 +342,8 @@ try {
         $connected.Add($skill.name)
     }
 
-    # Old-name migration runs only on explicit opt-in and proven
-    # ownership; anything else stays untouched without failing.
+    # Old-name migration: explicit opt-in plus proven PAT ownership
+    # (content AND origin remote); the PAT owner deletes the rest.
     $manifestPath = Join-Path $checkout 'skills\release\migrations.json'
     try {
         $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -307,7 +363,7 @@ try {
         if (-not $oldEntry) { continue }
         $oldTarget = Get-JunctionTarget -Item $oldEntry
         if (-not $oldTarget) { $leftUnchanged.Add($oldName); continue }
-        if (-not (Test-OldPointerContent -TargetDir $oldTarget -Proof $migration.ownershipProof)) {
+        if (-not (Test-PatOwnership -TargetDir $oldTarget -Proof $migration.ownershipProof)) {
             $leftUnchanged.Add($oldName)
             continue
         }
@@ -356,7 +412,23 @@ try {
             if ($now -ne $headBefore -and $now -ne '') { $mutation = 'installed-checkout-unexpected-head' }
         } catch { }
     }
-    $failureAction = if ($mutation -ne 'none') { 'manual-repair' } elseif ($reason -eq 'readback-mismatch') { 'rerun-install' } else { 'none' }
+    if ($mutation -ne 'none' -and -not [string]::IsNullOrWhiteSpace($headBefore)) {
+        # Clean start, so returning to the recorded HEAD/branch is safe.
+        try {
+            if (-not [string]::IsNullOrWhiteSpace($branchBefore)) {
+                $restored = Invoke-RepoGit @('checkout', '--quiet', $branchBefore)
+            } else {
+                $restored = Invoke-RepoGit @('checkout', '--quiet', '--detach', $headBefore)
+            }
+            if ($restored.code -eq 0) {
+                $rollback = 'restored'
+                $installedRevision = $headBefore
+            } else {
+                $rollback = 'restore-failed'
+            }
+        } catch { $rollback = 'restore-failed' }
+    }
+    $failureAction = if ($rollback -eq 'restore-failed') { 'manual-repair' } elseif ($mutation -ne 'none' -and $rollback -eq 'none') { 'manual-repair' } elseif ($reason -eq 'readback-mismatch') { 'rerun-install' } else { 'none' }
     $failure = [pscustomobject]@{ reason = $reason; code = $code; message = $_.Exception.Message }
 }
 
@@ -376,7 +448,7 @@ $receipt = [ordered]@{
     leftUnchanged = @($leftUnchanged.ToArray() | Sort-Object)
     verification = $verification
     mutation = $mutation
-    rollback = 'none'
+    rollback = $rollback
     failureAction = $failureAction
     failure = $failure
 }

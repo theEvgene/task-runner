@@ -53,6 +53,10 @@ if ($LASTEXITCODE -ne 0 -or @($pinned).Count -eq 0 -or $pinned[0] -notmatch '^[0
         foreach ($line in $listing) {
             if ($line -notmatch '^skills/([^/]+)(?:/([^/]+))?/SKILL\.md$') { continue }
             $name = if ($Matches[2]) { $Matches[2] } else { $Matches[1] }
+            if ($expected.ContainsKey($name)) {
+                $errors.Add("Duplicate leaf name '$name'.")
+                continue
+            }
             $relative = if ($Matches[2]) { "skills/$($Matches[1])/$($Matches[2])" } else { "skills/$($Matches[1])" }
             $expected[$name] = Get-NormalizedPath -Path (Join-Path $checkout ($relative -replace '/', '\'))
         }

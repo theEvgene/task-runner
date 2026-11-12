@@ -43,8 +43,36 @@ Rules that are never relaxed:
    `-Revision origin/main` after a local `git fetch origin`, or a SHA.
 3. Read the receipt: `ok` must be `true`, `pinnedRevision` must equal the
    intended SHA, `conflicts` must be empty, `mutation` tells whether the
-   checkout moved. A changed input invalidates the receipt: re-run the
+   checkout moved and `rollback` tells whether a failed run restored it.
+   A changed input invalidates the receipt: re-run the
    readback (`verify-install.ps1`) after any relevant change.
+
+## From another repo (find this checkout via the installed junction)
+
+Do not guess the path. The `release` junction points at this checkout,
+so resolve it first and only then fetch, pin, and verify:
+
+```powershell
+$target = @((Get-Item "$HOME\.agents\skills\release" -Force).Target)[0]
+$checkout = Split-Path (Split-Path $target -Parent) -Parent
+Set-Location $checkout
+git fetch origin
+git rev-parse origin/main
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File skills\release\scripts\install.ps1 `
+  -Revision <pinned-sha> `
+  -SkillsDirectory "$HOME\.agents\skills"
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File skills\release\scripts\verify-install.ps1 `
+  -Revision <same-sha> `
+  -SkillsDirectory "$HOME\.agents\skills"
+```
+
+Only the explicit `git fetch` touches the network; both scripts resolve
+locally and refuse on unknown revisions. A PAT-owned `lenovo-release`
+link is never removed here without `-AllowOldLinkMigration` and proven
+PAT origin remote: otherwise it stays in `leftUnchanged` for the PAT
+owner to delete manually.
 
 ## Verify only (changes nothing)
 
