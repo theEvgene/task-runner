@@ -160,6 +160,68 @@ class PatOwnershipTests(unittest.TestCase):
         self.assertIn("origin remote", read_text(SKILL_MD).lower())
 
 
+class SameRepoRetargetTests(unittest.TestCase):
+    def test_same_repo_proof_function_present(self) -> None:
+        body = read_text(INSTALL_PS1)
+        self.assertIn("Test-ManagedJunctionFromSameRepository", body)
+        self.assertIn("Get-CheckoutProof", body)
+
+    def test_same_repo_proof_checks_remote_and_shape(self) -> None:
+        body = read_text(INSTALL_PS1)
+        self.assertIn(
+            "Test-EquivalentRemote -Actual $proof.remote "
+            "-Expected $ExpectedRemoteUrl",
+            body,
+        )
+        self.assertIn("SKILL.md", body)
+        # Exact skills/<name> shape: one or two segments under skills/.
+        self.assertIn("$parts.Count -lt 1 -or $parts.Count -gt 2", body)
+
+    def test_retarget_rechecks_before_swap(self) -> None:
+        body = read_text(INSTALL_PS1)
+        self.assertIn("retargeted", body)
+        self.assertIn("retargetedManagedLinks", body)
+        # The swap reuses the guard that re-reads the link first.
+        install_stage = body.split("$currentStage = 'install'")[1]
+        self.assertIn("Test-ManagedJunctionFromSameRepository", install_stage)
+        self.assertIn("Remove-ManagedJunctionSafely", install_stage)
+
+    def test_preflight_lets_same_repo_through(self) -> None:
+        body = read_text(INSTALL_PS1)
+        preflight = body.split("$currentStage = 'advance'")[0]
+        self.assertIn("preflightConflicts", preflight)
+        self.assertIn("Test-ManagedJunctionFromSameRepository", preflight)
+
+    def test_foreign_entries_still_conflict(self) -> None:
+        body = read_text(INSTALL_PS1)
+        self.assertIn("not our junction; Left unchanged.", body)
+        self.assertIn("Foreign entries left unchanged", body)
+
+    def test_docs_describe_retarget_order_and_consequences(self) -> None:
+        skill = read_text(SKILL_MD)
+        self.assertIn("retargetedManagedLinks", skill)
+        update = read_text(UPDATE_MD)
+        update_lower = update.lower()
+        for token in ("preflight", "advance", "install", "readback",
+                      "retargetedmanagedlinks", "migration-unsafe",
+                      "rerun", "converges"):
+            self.assertIn(token, update_lower)
+        self.assertIn("retargetedManagedLinks", update)
+
+    def test_frontmatter_regex_matches_old_loop(self) -> None:
+        import re
+
+        pattern = re.compile(r"(?s)\A---\n(.*?)\n---(\n|\Z)")
+        good = "---\nname: lenovo-release\n---\nbody scripts/release/request.py\n"
+        match = pattern.search("---\nname: x\n---")
+        self.assertIsNotNone(match)
+        self.assertIsNone(pattern.search("name: x\n---\n"))
+        self.assertIsNone(pattern.search("---\nname: x\n"))
+        self.assertIsNotNone(pattern.search(good))
+        frontmatter = pattern.search(good).group(1)
+        self.assertIn("name: lenovo-release", frontmatter)
+
+
 class UpdateDocTests(unittest.TestCase):
     def test_update_shows_junction_lookup_fetch_pin_verify(self) -> None:
         body = read_text(UPDATE_MD)

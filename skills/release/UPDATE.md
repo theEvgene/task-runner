@@ -24,9 +24,16 @@ prints a JSON receipt (`schema: task-runner/skill-rollout@1`).
 
 Rules that are never relaxed:
 
-- A foreign entry under the target name (another checkout, a plain
-  directory, anything that is not our junction) is a conflict: it is
-  reported in the receipt and left unchanged, and the install fails.
+- A foreign entry under the target name (another repo's checkout, a
+  plain directory or file, anything that is not our junction and not a
+  proven same-repo managed link) is a conflict: it is reported in the
+  receipt and left unchanged, and the install fails.
+- A junction into another checkout of this same repo (origin remote
+  slug matches `theEvgene/task-runner`, exact `skills/<name>` shape
+  with `SKILL.md`) is retargeted to this checkout: the installer
+  re-checks the link immediately before the swap and records the name
+  in `retargetedManagedLinks`. A changed link refuses instead of
+  swapping.
 - The old `lenovo-release` pointer link is migrated only with
   `-AllowOldLinkMigration` and only when its target provably holds the
   old pointer content (frontmatter `name: lenovo-release` plus a body
@@ -44,8 +51,23 @@ Rules that are never relaxed:
 3. Read the receipt: `ok` must be `true`, `pinnedRevision` must equal the
    intended SHA, `conflicts` must be empty, `mutation` tells whether the
    checkout moved and `rollback` tells whether a failed run restored it.
-   A changed input invalidates the receipt: re-run the
+   `retargetedManagedLinks` lists same-repo junctions moved to this
+   checkout. A changed input invalidates the receipt: re-run the
    readback (`verify-install.ps1`) after any relevant change.
+
+Order inside one install run: preflight (foreign entries fail before
+the checkout moves; proven same-repo links pass through), advance (the
+checkout moves to the pinned SHA), install (each same-repo link is
+re-checked and then swapped to this checkout; anything else foreign
+fails), readback (HEAD, cleanliness, and every junction verified).
+
+Consequences: the swap only deletes the junction reparse point, never
+target contents. A failed run restores the recorded HEAD/branch, but
+junctions already retargeted keep pointing at this checkout (rerunning
+the installer converges: they are already correct). A link whose target
+changed between preflight and swap refuses with `migration-unsafe` /
+`target-changed` instead of swapping. Nothing here touches the network
+and no live rollout happens: install output is a local receipt only.
 
 ## From another repo (find this checkout via the installed junction)
 
