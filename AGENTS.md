@@ -9,6 +9,7 @@ Externally invoked agents start here explicitly; this repo assumes no global aut
 - Monitor a GitLab MR pipeline via the signed Dell-to-Lenovo queue -> `docs/pipeline-observer.md`.
 - Verify the target base and create a task worktree -> `docs/fresh-base.md`.
 - Send one signed command through the LAN queue -> `docs/lan-bridge.md`.
+- Start the Lenovo worker and cleaner with one shortcut after a reboot (existing SMB share, local credentials) -> `docs/lenovo-worker-shortcut.md`.
 - Import the first verified copy of a remote branch with no Lenovo checkout -> `docs/first-import.md`.
 - Run the full Dell-to-Lenovo dev loop (base, local work, publish, readback) -> `docs/dell-lan.md`.
 - Release on Lenovo through the signed queue (bare preview; versioned tag only with explicit version plus explicit confirmation) -> `docs/release.md` + `scripts/release/request.py` (single canonical release entry; `docs/release-tag-preview.md` stays in the tree as legacy and is not an entry).

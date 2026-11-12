@@ -1,0 +1,18 @@
+{
+  "$comment": "EXAMPLE ONLY: fixture values, no secrets. Copy to %LOCALAPPDATA%\\task-runner\\lenovo-worker.json and fill real absolute paths. Never commit the real file; it lives outside Git and outside the SMB share.",
+  "queueDir": "Q:\\lan-share\\queue",
+  "sharedDir": "Q:\\lan-share",
+  "keyFile": "C:\\Users\\owner\\.secrets\\lan-queue.key",
+  "keyFormat": "raw",
+  "python": "C:\\Users\\owner\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
+  "workerDir": "C:\\Users\\owner\\task-runner\\scripts\\lenovo_worker",
+  "trashDir": "C:\\Users\\owner\\.local-state\\lan-share-trash",
+  "stateDir": "C:\\Users\\owner\\.local-state\\lan-launch",
+  "workerPoll": 5,
+  "cleanerInterval": 300,
+  "smb": {
+    "unc": "\\\\DELL-HOST\\lan-share",
+    "username": "lan-user",
+    "passwordFile": "C:\\Users\\owner\\.secrets\\lan-smb-password.txt"
+  }
+}
