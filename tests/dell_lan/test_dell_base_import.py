@@ -54,6 +54,25 @@ class BaseImportTests(unittest.TestCase):
         self.assertEqual(data["reason"], "repo-exists")
         self.assertIn("one source copy", data["nextAction"])
 
+    def test_empty_directory_is_refused_and_preserved(self):
+        target = self.ws.root / "copy-empty-dir"
+        target.mkdir()
+        self.assertEqual(list(target.iterdir()), [])
+        proc, data = self.ws.import_base_to(target, self.job)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(data["reason"], "repo-exists")
+        self.assertTrue(target.is_dir())
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertFalse((target / ".git").exists())
+
+    def test_absent_destination_is_created_exclusively(self):
+        target = self.ws.root / "copy-absent-ok"
+        self.assertFalse(target.exists())
+        proc, data = self.ws.import_base_to(target, self.job)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(data["verdict"], "imported")
+        self.assertEqual(data["repo"]["head"], self.ws.base)
+
     def test_a_swapped_bundle_cannot_borrow_the_sealed_digest(self):
         swapped = self.ws.root / "swapped"
         swapped.mkdir()

@@ -384,12 +384,13 @@ def check_return_file(payload: dict, manifest_name: str, manifest: dict) -> bool
 def import_once(bundle: Path, exported: dict, args, receipt: dict) -> None:
     """Create the one first copy exclusively; never overwrite or follow links.
 
-    The final path component is created with an exclusive ``mkdir``: a
-    concurrent writer that wins the name loses with ``repo-exists`` instead
-    of replacing foreign bytes, and a pre-existing file or link is refused
-    as ``destination-is-file`` without being touched. Parents are created
-    first, then the final component is claimed atomically; the claim is
-    re-verified (not a link, an empty real directory) before any Git write.
+    The final path component is created with an exclusive ``mkdir``: ANY
+    pre-existing destination -- including an empty real directory -- is
+    refused (``repo-exists`` for a directory, ``destination-is-file`` for a
+    file or link) and left untouched. A concurrent writer that wins the name
+    loses the same way instead of replacing foreign bytes. Parents are
+    created first, then the final component is claimed atomically; the claim
+    is re-verified (not a link, an empty real directory) before any Git write.
     """
 
     target = Path(args.repo_out)
@@ -400,37 +401,29 @@ def import_once(bundle: Path, exported: dict, args, receipt: dict) -> None:
         if not target.is_dir():
             raise Stop("destination-is-file",
                        detail=f"destination exists and is not a directory: {target}"[:DETAIL_MAX])
-        if any(target.iterdir()):
-            raise Stop("repo-exists", detail=str(target)[:DETAIL_MAX])
-        # Pre-existing empty real directory: still re-verify it is not a
-        # link before writing into it.
+        raise Stop("repo-exists", detail=str(target)[:DETAIL_MAX])
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise Stop("destination-is-file", detail=str(error)[:DETAIL_MAX])
+    try:
+        os.mkdir(str(target))
+    except FileExistsError:
+        # A concurrent writer won the name between the check and the
+        # claim: re-read the winner instead of replacing it.
         if target.is_symlink() or os.path.islink(str(target)):
             raise Stop("destination-is-file",
                        detail=f"destination is a link: {target}"[:DETAIL_MAX])
-        receipt["repo"]["created"] = False
-    else:
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-        except OSError as error:
-            raise Stop("destination-is-file", detail=str(error)[:DETAIL_MAX])
-        try:
-            os.mkdir(str(target))
-        except FileExistsError:
-            # A concurrent writer won the name between the check and the
-            # claim: re-read the winner instead of replacing it.
-            if target.is_symlink() or os.path.islink(str(target)):
-                raise Stop("destination-is-file",
-                           detail=f"destination is a link: {target}"[:DETAIL_MAX])
-            if not target.is_dir():
-                raise Stop("destination-is-file",
-                           detail=f"destination exists and is not a directory: {target}"[:DETAIL_MAX])
-            raise Stop("repo-exists", detail=str(target)[:DETAIL_MAX])
-        except OSError as error:
-            raise Stop("destination-is-file", detail=str(error)[:DETAIL_MAX])
-        if target.is_symlink() or os.path.islink(str(target)) or not target.is_dir():
+        if not target.is_dir():
             raise Stop("destination-is-file",
-                       detail=f"destination claim failed: {target}"[:DETAIL_MAX])
-        receipt["repo"]["created"] = True
+                       detail=f"destination exists and is not a directory: {target}"[:DETAIL_MAX])
+        raise Stop("repo-exists", detail=str(target)[:DETAIL_MAX])
+    except OSError as error:
+        raise Stop("destination-is-file", detail=str(error)[:DETAIL_MAX])
+    if target.is_symlink() or os.path.islink(str(target)) or not target.is_dir():
+        raise Stop("destination-is-file",
+                   detail=f"destination claim failed: {target}"[:DETAIL_MAX])
+    receipt["repo"]["created"] = True
     git(target, "init", "-q")
     git(target, "bundle", "verify", str(bundle))
     branch = args.branch

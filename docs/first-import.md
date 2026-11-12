@@ -139,9 +139,10 @@ same path is refused (`repo-exists`): one first copy, never replaced.
 
 - `0 imported` (receipt `dell-first-import/1` binds remote URL, branch,
   verified SHA, and copy HEAD);
-- `1` refused/mismatch (nothing created; a pre-existing or occupied
-  destination is left untouched; a file or link at the destination is
-  refused as `destination-is-file`, a non-empty directory as `repo-exists`);
+- `1` refused/mismatch (nothing created; ANY pre-existing destination,
+  including an empty directory, is refused and left untouched; a file or
+  link at the destination is refused as `destination-is-file`, any existing
+  directory -- empty or not -- as `repo-exists`);
 - `2` usage;
 - `3` unknown — slot stays occupied, re-fetch the SAME job id.
 
@@ -243,8 +244,9 @@ operator supplies out-of-band:
 - The destination is claimed exclusively: the final path component is
   created with an atomic `mkdir` that a concurrent winner defeats with
   `repo-exists`; a file or link at the destination is refused as
-  `destination-is-file` and left untouched, and a non-empty directory as
-  `repo-exists`. Nothing already at the destination is ever overwritten.
+  `destination-is-file` and left untouched, and ANY existing directory --
+  including an empty one -- as `repo-exists`. Nothing already at the
+  destination is ever overwritten or modified.
 - The key travels via `--key-file` only, and every driver refuses a key
   it cannot prove is outside the anchor checkout, the queue, and the
   shared folder. Remote credentials live only in the Lenovo user context;

@@ -257,6 +257,28 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertEqual(data["reason"], "destination-is-file")
         self.assertEqual(target.read_bytes(), b"foreign-bytes")
 
+    def test_empty_directory_is_refused_and_preserved(self):
+        target = self.ws.root / "copy-empty-dir"
+        target.mkdir()
+        self.assertEqual(list(target.iterdir()), [])
+        proc, data = self.ws.import_to(target, self.job)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(data["reason"], "repo-exists")
+        self.assertEqual(data["verdict"], "mismatch")
+        self.assertTrue(target.is_dir())
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertFalse((target / ".git").exists())
+
+    def test_absent_destination_is_created_exclusively(self):
+        target = self.ws.root / "copy-absent-ok"
+        self.assertFalse(target.exists())
+        proc, data = self.ws.import_to(target, self.job)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(data["verdict"], "imported")
+        self.assertEqual(data["reason"], "imported")
+        self.assertTrue((target / ".git").is_dir())
+        self.assertEqual(data["repo"]["head"], self.ws.base)
+
     def test_symlinked_bundle_is_not_imported(self):
         name = "dell-first-0000000000000c01.bundle"
         bundle_path = self.ws.shared / name
