@@ -1,0 +1,14 @@
+{
+  "schema": "task-runner/skill-migrations@1",
+  "comment": "Recorded ownership for renamed skill links. The old 'lenovo-release' junction (personal-agent-toolkit pointer skill) is removed only when every proof holds: -AllowOldLinkMigration was passed, the recorded new skill ships in this pinned checkout, and the old entry is a junction whose target directory holds a SKILL.md with the recorded frontmatter name and the recorded body marker. A foreign junction, a plain directory or file, or an unreadable manifest leaves the old entry unchanged.",
+  "migrations": [
+    {
+      "skill": "release",
+      "fromSkill": "lenovo-release",
+      "ownershipProof": {
+        "frontmatterName": "lenovo-release",
+        "bodyMustContain": "scripts/release/request.py"
+      }
+    }
+  ]
+}
