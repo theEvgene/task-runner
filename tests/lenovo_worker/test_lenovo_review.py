@@ -137,7 +137,7 @@ class AmbiguousStartsNothingTests(unittest.TestCase):
         self.tmp = TempRoot()
         self.addCleanup(self.tmp.cleanup)
 
-    def test_stale_cleaner_pid_starts_no_worker(self) -> None:
+    def test_stale_cleaner_pid_recovers_after_reboot(self) -> None:
         root = self.tmp.root
         shared = root / "share"
         shared.mkdir()
@@ -150,11 +150,20 @@ class AmbiguousStartsNothingTests(unittest.TestCase):
             json.dumps({"pid": 2147483000, "marker": "cleaner.py",
                         "started": "t"}),
             encoding="utf-8")
-        config = base_config(root, queue, shared, key, state, trash)
+        stub = [PY, "-c", "import time; time.sleep(60)"]
+        config = base_config(root, queue, shared, key, state, trash,
+                             fixtureRequirePassword=SECRET)
+        config.update({"workerCommand": stub, "cleanerCommand": stub,
+                       "workerMarker": "time.sleep(60)",
+                       "cleanerMarker": "time.sleep(60)"})
         completed = launch_with(config, root)
-        self.assertEqual(completed.returncode, 2)
-        self.assertIn("ambiguous cleaner state", completed.stderr)
-        self.assertFalse((state / "worker.pid").exists())  # nothing spawned
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.tmp.track_pids(state)
+        summary = json.loads(completed.stdout)
+        self.assertEqual(summary["outcome"], "ready")
+        self.assertNotEqual(
+            int(json.loads((state / "cleaner.pid").read_text())["pid"]),
+            2147483000)
 
     def test_changed_command_refuses_without_duplicate(self) -> None:
         root = self.tmp.root

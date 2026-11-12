@@ -6,10 +6,14 @@ existing queue/key/share, then starts the worker (sibling ``worker.py``)
 and the cleaner (sibling ``cleaner.py``) as detached processes.
 
 Refuses without side effects when: config/password missing, SMB unreachable
-or credentials wrong, queue or key unusable, trash/state misplaced, a stale/foreign
-pid file exists, the recorded command/binding changed, another launch holds the
-lock, or a second launch races. Both roles are inspected before either is
-spawned, so an ambiguous role anywhere starts nothing. Never creates the queue,
+or credentials wrong, queue or key unusable, trash/state misplaced, a pid file
+is corrupt/foreign/unprovable or a live pid runs under a changed
+command/binding, another launch holds the lock, or a second launch races.
+A provably dead pid (including a legacy record or a changed config under a
+dead pid) is a safe reboot recovery: under the held launch lock the stale
+file is removed and the role is started fresh. Both roles are inspected
+before either is spawned, so an ambiguous role anywhere starts nothing and
+deletes nothing. Never creates the queue,
 never writes jobs or results, never kills or replaces a running process, never
 prints secrets.
 """
@@ -248,9 +252,13 @@ def _inspect_role(state_dir: Path, role: str, command: list[str],
                   marker: str, binding: dict) -> tuple[str, int | None]:
     """Classify a role WITHOUT spawning: ("running", pid) or ("absent", None).
 
-    Anything else raises ValueError (ambiguous): corrupt, stale, foreign,
-    legacy-unbound, or config-changed pid state. Callers must refuse before
-    spawning any role when any inspection is ambiguous.
+    A dead pid is a safe reboot recovery: it proves no live owner, so the
+    caller may delete the file under the held launch lock and start fresh.
+    Anything that could still be live (corrupt, foreign command line,
+    unprovable command line, live pid under a changed config/binding, or a
+    live legacy-unbound record) raises ValueError (ambiguous). Callers must
+    refuse before spawning any role when any inspection is ambiguous, and
+    must delete nothing when any role is ambiguous.
     """
 
     pid_file = state_dir / f"{role}.pid"
@@ -261,20 +269,35 @@ def _inspect_role(state_dir: Path, role: str, command: list[str],
                          f"then remove {pid_file}") from error
     if existing is None:
         return ("absent", None)
+    pid = existing.get("pid")
+    pid_alive = isinstance(pid, int) and proc.is_alive(pid)
     if "command" not in existing or "binding" not in existing:
+        # Legacy record without identity: only a provably dead pid is
+        # recoverable; a live one could be anything.
+        if not pid_alive:
+            return ("absent", None)
         raise ValueError(f"ambiguous {role} state (unrecognized pid format, "
                          f"possibly written by an older launcher); verify no {role} "
                          f"runs, then remove {pid_file}")
     if (existing.get("marker") != marker
             or existing.get("command") != [str(p) for p in command]
             or existing.get("binding") != binding):
+        # Config changed under a recorded process: a live pid could be the
+        # old owner still running, so refuse; a dead pid proves no live
+        # owner, so the new config may take over under the launch lock.
+        if not pid_alive:
+            return ("absent", None)
         raise ValueError(f"ambiguous {role} state (config changed under a recorded "
                          f"process); verify, then remove {pid_file}")
-    pid = existing.get("pid")
-    if not isinstance(pid, int) or not proc.is_alive(pid):
-        raise ValueError(f"ambiguous {role} state (stale pid {existing.get('pid')}); "
-                         f"verify no {role} runs, then remove {pid_file}")
+    if not pid_alive:
+        return ("absent", None)
     line = proc.cmdline(pid) or ""
+    if not line:
+        # Alive but command line unprovable (permissions/race): never adopt
+        # and never overwrite; a rebooted pid is dead, so it never lands here.
+        raise ValueError(f"ambiguous {role} state (pid {pid} runs but its command "
+                         f"line cannot be proven); verify no {role} runs, "
+                         f"then remove {pid_file}")
     if (marker and marker not in line) or any(
             str(token) in " ".join(str(p) for p in command)
             and str(token) not in line
@@ -293,6 +316,14 @@ def _ensure_role(state_dir: Path, role: str, command: list[str],
     if state == "running":
         return {"role": role, "state": "already-running", "pid": pid}
     pid_file = state_dir / f"{role}.pid"
+    if pid_file.exists():
+        # Stale reboot record classified absent above: remove under the held
+        # launch lock so the exclusive create below cannot hit a leftover.
+        try:
+            pid_file.unlink()
+        except OSError as error:
+            raise ValueError(f"ambiguous {role} state (stale pid file "
+                             f"cannot be removed: {error})") from error
     log_file = state_dir / f"{role}.log"
     new_pid = proc.spawn_detached(command, log_file)
     try:

@@ -62,11 +62,15 @@ and starts nothing new.
   materialize queue parents and the cleaner can never see launcher state.
 - Existing jobs/results are never rewritten: results are published
   immutably; a sealed id is skipped, never replaced. A result the worker
-  cannot seal is reported as failed, never as sealed, and a finished
-  `--once`/`--max-jobs` batch exits 2 when any job was refused or failed.
+  cannot seal for infrastructure reasons is reported as failed, never as
+  sealed, and a finished `--once`/`--max-jobs` batch exits 2 when any job
+  was refused or failed. Invalid `working_directory`/spawn failures seal a
+  bounded terminal error (exit 2) instead of crashing or re-executing.
   Declared return files keep the bridge contract (any path the job names)
   with byte bounds (8 files, 256 KiB each, 1 MiB total); truncation sets
-  `output_truncated`.
+  `output_truncated`. Outputs plus encoded files are fitted to a safe
+  payload ceiling so the signed envelope stays under 2 MiB; a size refusal
+  seals one minimal fallback result so the job never re-executes.
 - Key custody: a key inside the queue, the checkout, or the share refuses
   before any work. The password travels only inside a PowerShell
   `-File` script that reads it from the local file; it never appears in
@@ -75,10 +79,14 @@ and starts nothing new.
   real SMB mapping, and a multi-line file refuses.
 - One launch at a time: an exclusive state lock is held from before any
   inspection until after both pid files are written, and both roles are
-  inspected before either is spawned. Ambiguous pid state (stale pid,
-  foreign command line, changed command/binding, or an unrecognized pid
-  format) refuses with the exact pid file to inspect and starts nothing.
-  The launcher never kills, never replaces, never `--force`s. Remediation:
+  inspected before either is spawned. A provably dead pid (stale, legacy, or
+  changed config under a dead pid) is a safe reboot recovery: it is removed
+  under the lock and the role is started fresh, so a reboot needs no manual
+  cleanup and never duplicates a live process. Ambiguous pid state (live pid
+  under a changed command/binding, foreign command line, unprovable command
+  line, corrupt content, or an unrecognized pid format around a live pid)
+  refuses with the exact pid file to inspect and starts nothing and deletes
+  nothing. The launcher never kills, never replaces, never `--force`s. Remediation:
   verify no such process runs (`tasklist /FI "PID eq N"`), then remove
   `stateDir\<role>.pid`.
 - Process identity is bound to the full command array plus its configuration
@@ -100,7 +108,8 @@ and starts nothing new.
 | `queue unavailable …`         | share up, queue path wrong  | fix `queueDir` to the existing queue  |
 | `key unusable / key inside …` | key file wrong or misplaced | re-issue key outside queue/share/repo |
 | `trash/state … must be outside` | trash/state inside queue/share | move them outside both             |
-| `ambiguous <role> state`      | stale, foreign, or changed pid/config | verify, then remove that pid file |
+| `ambiguous <role> state`      | live foreign/unprovable pid, live pid under changed config | verify, then remove that pid file |
+| `stale pid (auto-recovered)`   | dead pid after a reboot (legacy or changed config) | no action: relaunched fresh under the lock |
 | `another launch is in progress` | concurrent double-click   | wait seconds, re-run to adopt pids    |
 | `<role> exited at once`       | child crashed               | read `stateDir\<role>.log`            |
 
@@ -128,11 +137,14 @@ issue when done; until then treat this scenario as fixture-verified only.
 
 Covers: worker seals one result and skips sealed/foreign ids; failed seals
 reported as failed with batch exit 2; bounded return files with truncation
-flag; missing queue refuses without creating it; key inside
+flag; invalid cwd seals a bounded terminal error without re-execution;
+outputs plus encoded files fitted under the 2 MiB envelope with a minimal
+fallback seal instead of re-execution; missing queue refuses without creating it; key inside
 queue/share/checkout refuses; cleaner moves only top-level `*.tmp` outside
 the configured queue/trash/state and refuses misplaced trash/state; launch
-success + repeat is idempotent with command/binding adoption; concurrent
-launch serializes on the state lock; stale/foreign/changed pid refuses with
-nothing started; misplaced trash/state refuses before anything is created;
-unavailable share and bad credentials refuse; password absent from all
+success + repeat is idempotent with command/binding adoption; dead pid
+records recover after a reboot without duplicates while live foreign/changed
+pids still refuse with nothing started or deleted; concurrent
+launch serializes on the state lock; misplaced trash/state refuses before
+anything is created; unavailable share and bad credentials refuse; password absent from all
 outputs, logs, and child command lines.

@@ -11,7 +11,12 @@ Existing results are never read-modify-written and never replaced
 here, which is the safe direction). A job whose envelope cannot be verified
 is never executed; a refusal result is sealed under the same id so the
 observer gets a terminal, verified failure instead of an endless unknown.
-A result that cannot be sealed (publish failure) is reported as failed, never
+Invalid working_directory or spawn failures seal a bounded terminal error
+instead of crashing or re-executing. Outputs plus encoded return files are
+fitted to a safe payload ceiling so the signed envelope stays under 2 MiB;
+a size refusal seals one minimal fallback result so the job never
+re-executes. A result that cannot be sealed for infrastructure reasons
+(publish failure) is reported as failed, never
 as sealed, and a finished ``--once``/``--max-jobs`` batch exits 2 when any
 job was refused or failed. The queue is never created here: a missing
 queue/jobs or queue/results dir is exit 2 (check path/mount), never an
@@ -96,6 +101,46 @@ def _load_key(key_file: Path, key_format: str, queue: Path) -> bytes | None:
         return None
 
 
+# Envelope budget: the signed bridge refuses envelopes over 2 MiB. The
+# sealed payload is base64-expanded (~4/3) inside the envelope, so the payload
+# JSON must stay well under ~1.5 MiB. Fit outputs + encoded files to this
+# safe payload ceiling before sealing; on a size refusal seal a minimal
+# fallback so the job ends terminal instead of re-executing every poll.
+PAYLOAD_SAFE_MAX_BYTES = 1400000
+MIN_FALLBACK_STDERR = "result too large; outputs dropped to fit the signed envelope"
+
+
+def _payload_size(payload: dict) -> int:
+    try:
+        return len(json.dumps(payload, ensure_ascii=False,
+                              separators=(",", ":")).encode("utf-8"))
+    except (TypeError, ValueError):
+        return PAYLOAD_SAFE_MAX_BYTES + 1
+
+
+def _fit_payload(payload: dict) -> dict:
+    """Trim payload in place so its JSON stays under the safe ceiling."""
+    if _payload_size(payload) <= PAYLOAD_SAFE_MAX_BYTES:
+        return payload
+    if payload.get("files"):
+        payload["files"] = {}
+        payload["output_truncated"] = True
+    if _payload_size(payload) <= PAYLOAD_SAFE_MAX_BYTES:
+        return payload
+    for budget in (65536, 16384, 4096, 0):
+        if budget == 0:
+            payload["stdout"] = ""
+            payload["stderr"] = MIN_FALLBACK_STDERR[:4096]
+            payload["output_truncated"] = True
+            break
+        payload["stdout"] = str(payload.get("stdout") or "")[:budget]
+        payload["stderr"] = str(payload.get("stderr") or "")[:budget]
+        payload["output_truncated"] = True
+        if _payload_size(payload) <= PAYLOAD_SAFE_MAX_BYTES:
+            break
+    return payload
+
+
 def _seal_result(queue: Path, key: bytes, job_id: str, **fields) -> str:
     """Seal a result. Returns "sealed", "skipped", or "failed"."""
 
@@ -111,12 +156,35 @@ def _seal_result(queue: Path, key: bytes, job_id: str, **fields) -> str:
         "output_truncated": bool(fields.get("output_truncated", False)),
         "files": fields.get("files", {}) or {},
     }
+    _fit_payload(payload)
     try:
         bridge.publish(str(queue / "results"), job_id, bridge.seal(payload, key))
         return "sealed"
     except bridge.JobExistsError:
         return "skipped"  # another worker sealed it first: safe direction
     except Exception as error:
+        message = str(error)
+        if "too large" in message or "exceeds" in message or "limit" in message.lower():
+            # Size refusal must not leave the job unsealed to re-execute:
+            # seal one minimal terminal result instead.
+            fallback = {
+                "kind": "result", "id": job_id, "status": "error",
+                "exit_code": 2, "stdout": "",
+                "stderr": MIN_FALLBACK_STDERR,
+                "started_at": payload.get("started_at", "") or "",
+                "finished_at": _now(), "timed_out": False,
+                "output_truncated": True, "files": {},
+            }
+            try:
+                bridge.publish(str(queue / "results"), job_id,
+                               bridge.seal(fallback, key))
+                return "sealed"
+            except bridge.JobExistsError:
+                return "skipped"
+            except Exception as fallback_error:
+                print(f"worker: cannot seal result for {job_id} ({fallback_error})",
+                      file=sys.stderr)
+                return "failed"
         print(f"worker: cannot seal result for {job_id} ({error})", file=sys.stderr)
         return "failed"
 
@@ -134,6 +202,20 @@ def _execute(command: str, workdir: str, timeout_s: int, limit: int) -> dict:
         return {"status": "error", "exit_code": 124,
                 "stdout": out[:limit], "stderr": (f"timed out on the worker after {timeout_s}s\n" + err)[:limit],
                 "started_at": started, "timed_out": True, "output_truncated": len(out) > limit}
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        # Invalid cwd, spawn failure, or OS refusal: a bounded terminal
+        # error, never a crash and never a silent re-execution.
+        detail = f"execution failed on the worker: {error}"
+        return {"status": "error", "exit_code": 2,
+                "stdout": "", "stderr": detail[:limit],
+                "started_at": started, "timed_out": False,
+                "output_truncated": len(detail) > limit}
+    except Exception as error:  # defensive: any spawn failure stays terminal
+        detail = f"execution failed on the worker: {error}"
+        return {"status": "error", "exit_code": 2,
+                "stdout": "", "stderr": detail[:limit],
+                "started_at": started, "timed_out": False,
+                "output_truncated": len(detail) > limit}
     stdout, stderr = proc.stdout or "", proc.stderr or ""
     return {"status": "ok" if proc.returncode == 0 else "error",
             "exit_code": proc.returncode,
@@ -207,10 +289,30 @@ def _run_one(queue: Path, key: bytes, job_id: str) -> str:
     if not (1 <= timeout_s <= 3600 and 1 <= limit <= 262144):
         return _seal_result(queue, key, job_id, status="error", exit_code=2,
                             stderr="job-unverifiable: timeout/max_output out of range")
-    outcome = _execute(command, workdir, timeout_s, limit)
-    returned, files_truncated = _collect_return_files(job.get("return_files"))
-    outcome["files"] = returned
-    outcome["output_truncated"] = outcome["output_truncated"] or files_truncated
+    try:
+        outcome = _execute(command, workdir, timeout_s, limit)
+    except Exception as error:  # _execute is total, but stay terminal anyway
+        outcome = {"status": "error", "exit_code": 2, "stdout": "",
+                   "stderr": f"execution failed on the worker: {error}"[:limit],
+                   "started_at": _now(), "timed_out": False,
+                   "output_truncated": False}
+    try:
+        declared = job.get("return_files")
+        if not isinstance(declared, list):
+            declared = []
+            files_truncated = bool(job.get("return_files"))
+        else:
+            returned, files_truncated = _collect_return_files(declared)
+            outcome["files"] = returned
+            outcome["output_truncated"] = outcome["output_truncated"] or files_truncated
+            return _seal_result(queue, key, job_id, **outcome)
+        returned, _ = _collect_return_files(declared)
+        outcome["files"] = returned
+        outcome["output_truncated"] = outcome.get("output_truncated", False) or files_truncated
+    except Exception as error:  # return-file walk must never crash/re-execute
+        outcome["files"] = {}
+        outcome["output_truncated"] = True
+        outcome["stderr"] = (str(outcome.get("stderr") or "") + f"\nreturn-files skipped: {error}")[:limit]
     return _seal_result(queue, key, job_id, **outcome)
 
 

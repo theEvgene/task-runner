@@ -224,7 +224,7 @@ class LaunchTests(unittest.TestCase):
         for pid in pids:
             self.assertTrue(launch_proc.is_alive(pid))
 
-    def test_stale_pid_refuses_without_touching(self) -> None:
+    def test_stale_pid_recovers_after_reboot(self) -> None:
         root = self.tmp.root
         shared = root / "share"
         shared.mkdir()
@@ -236,11 +236,18 @@ class LaunchTests(unittest.TestCase):
         (state / "worker.pid").write_text(
             json.dumps({"pid": 2147483000, "marker": "worker.py", "started": "t"}),
             encoding="utf-8")
+        stub = self._stub()
         config = base_config(root, queue, shared, key, state, trash)
+        config.update({"workerCommand": stub, "cleanerCommand": stub,
+                       "workerMarker": "time.sleep(60)", "cleanerMarker": "time.sleep(60)"})
         completed = self._launch(config)
-        self.assertEqual(completed.returncode, 2)
-        self.assertIn("ambiguous worker state", completed.stderr)
-        self.assertFalse((state / "cleaner.pid").exists())  # nothing started
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.tmp.track_pids(state)
+        summary = json.loads(completed.stdout)
+        self.assertEqual(summary["outcome"], "ready")
+        new_pid = int(json.loads((state / "worker.pid").read_text())["pid"])
+        self.assertNotEqual(new_pid, 2147483000)
+        self.assertTrue(launch_proc.is_alive(new_pid))
 
     def test_unavailable_share_refuses(self) -> None:
         root = self.tmp.root
