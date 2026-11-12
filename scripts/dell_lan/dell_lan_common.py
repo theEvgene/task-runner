@@ -29,6 +29,8 @@ DETAIL_MAX = 400
 MANIFEST_SCHEMA = "git-bundle-manifest/1"
 BASE_REQUEST_SCHEMA = "dell-lan-base-request/1"
 BASE_EXPORT_SCHEMA = "dell-lan-base-export/1"
+FIRST_REQUEST_SCHEMA = "dell-lan-first-request/1"
+FIRST_EXPORT_SCHEMA = "dell-lan-first-export/1"
 PUBLISH_REQUEST_SCHEMA = "dell-lan-publish-request/1"
 PUBLISH_RESULT_SCHEMA = "dell-lan-publish-result/1"
 

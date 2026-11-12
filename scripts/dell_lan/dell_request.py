@@ -7,9 +7,11 @@ that already hosts the queue, and only the request's SHA-256 travels inside the
 HMAC-signed job payload. The Lenovo side re-hashes the file and refuses a
 request that the job did not name.
 
-Two requests exist, both in [the workflow](../../docs/dell-lan.md):
+Three requests exist, all in [the workflow](../../docs/dell-lan.md):
 
 - ``base`` asks Lenovo for a git bundle of the published base ref;
+- ``first`` asks Lenovo for the first verified copy of an explicitly named
+  remote branch when no Lenovo checkout exists yet (``docs/first-import.md``);
 - ``publish`` asks Lenovo to import the staged task bundle and run the existing
   ``gitlab-mr-flow`` publication flow for it.
 
@@ -26,7 +28,8 @@ import sys
 from pathlib import Path
 
 from dell_lan_common import (
-    BASE_REQUEST_SCHEMA, DETAIL_MAX, PUBLISH_REQUEST_SCHEMA, Stop, command_line,
+    BASE_REQUEST_SCHEMA, DETAIL_MAX, FIRST_REQUEST_SCHEMA,
+    PUBLISH_REQUEST_SCHEMA, Stop, command_line,
     inside, safe_name, sha256_bytes,
 )
 
@@ -131,6 +134,34 @@ def base_request(args) -> dict:
     }
 
 
+def first_request(args) -> dict:
+    """First verified copy: the remote is named explicitly, no Lenovo checkout.
+
+    The bundle still travels over the owner-provided LAN share while only the
+    request's SHA-256 travels inside the MAC-bound job. The Lenovo driver
+    observes the actual remote tip into an isolated temp bare repo, so no
+    checkout is read or written there.
+    """
+
+    if not TOKEN_RE.match(args.token or ""):
+        raise Stop("usage", code=2, detail="--token must be 16 lowercase hex")
+    remote = (args.remote_url or "").strip()
+    if not remote or any(char in remote for char in ("\n", "\r", "\0")):
+        raise Stop("usage", code=2, detail="--remote-url must be one non-empty line")
+    if not args.ref_full.startswith("refs/heads/") or not BRANCH_RE.match(args.ref_full[len("refs/heads/"):]):
+        raise Stop("usage", code=2, detail="--ref-full must be refs/heads/<branch>")
+    token = args.token
+    return {
+        "schema": FIRST_REQUEST_SCHEMA,
+        "token": token,
+        "shared": str(Path(args.shared)),
+        "remoteUrl": remote,
+        "refFull": args.ref_full,
+        "bundleName": f"dell-first-{token}.bundle",
+        "manifestName": f"dell-first-{token}.manifest.json",
+    }
+
+
 def publish_request(args) -> dict:
     for name in ("expected_base", "expected_commit"):
         if not SHA_RE.match((getattr(args, name) or "").lower()):
@@ -224,6 +255,12 @@ def build_parser() -> argparse.ArgumentParser:
     base.add_argument("--lenovo-checkout", required=True, help="Lenovo checkout to export from")
     base.add_argument("--ref-full", required=True, help="refs/heads/<published base branch>")
     base.set_defaults(func=lambda args: write_request(args, base_request(args), "lenovo_base_export.py"))
+
+    first = sub.add_parser("first", help="ask Lenovo for the first verified copy of a remote branch")
+    common(first)
+    first.add_argument("--remote-url", required=True, help="explicit Git remote URL or path on Lenovo")
+    first.add_argument("--ref-full", required=True, help="refs/heads/<branch> to import")
+    first.set_defaults(func=lambda args: write_request(args, first_request(args), "lenovo_first_export.py"))
 
     publish = sub.add_parser("publish", help="ask Lenovo to import and publish the task bundle")
     common(publish)
