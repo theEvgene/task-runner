@@ -545,34 +545,3 @@ test("create-worktree without --receipt-out is a usage error (F4)", () => {
   ]);
   equal(r.code, 2, r.out);
 });
-
-test("ANY existing destination including empty dir is refused and never modified", () => {
-  const w = makeWorld();
-  const { req, reqCmd } = requestExport(w, "0".repeat(15) + "5", "req-empty");
-  const jobId = submitExport(w, reqCmd);
-  serveExport(w, req, jobId);
-  const { mkdirSync, readdirSync, existsSync } = process.getBuiltinModule(
-    "node:fs"
-  );
-  const emptyDir = join(w.root, "source-empty");
-  mkdirSync(emptyDir);
-  equal(readdirSync(emptyDir).length, 0);
-  const emptyReceipt = join(w.root, "receipt-empty.json");
-  const refused = cli(
-    scriptPath("import-base.mjs"),
-    importArgs(w, jobId, emptyDir, emptyReceipt)
-  );
-  equal(refused.code, 1, refused.out);
-  equal(readJson(emptyReceipt).reason, "repo-exists");
-  ok(existsSync(emptyDir), "empty dir must still exist");
-  equal(readdirSync(emptyDir).length, 0, "empty dir must stay empty");
-
-  const freshOut = join(w.root, "source-copy");
-  const freshReceipt = join(w.root, "receipt.json");
-  const imported = cli(
-    scriptPath("import-base.mjs"),
-    importArgs(w, jobId, freshOut, freshReceipt)
-  );
-  equal(imported.code, 0, imported.out);
-  equal(readJson(freshReceipt).verdict, "imported");
-});

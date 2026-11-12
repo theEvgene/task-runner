@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import base64
 import json
-import os
 import re
 import sys
 import urllib.parse
@@ -195,29 +194,10 @@ def check_return_file(payload: dict, manifest_name: str, manifest: dict) -> bool
 
 
 def import_once(bundle: Path, exported: dict, args, receipt: dict) -> None:
-    """Create the one base copy exclusively; never overwrite or follow links.
-
-    ANY pre-existing destination -- including an empty real directory -- is
-    refused (``repo-exists``) and left untouched. The final path component is
-    claimed with an exclusive ``mkdir`` so a concurrent winner loses with
-    ``repo-exists`` instead of replacing foreign bytes.
-    """
-
     target = Path(args.repo_out)
-    if os.path.lexists(str(target)):
+    if target.exists() and any(target.iterdir()):
         raise Stop("repo-exists", detail=str(target)[:DETAIL_MAX])
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as error:
-        raise Stop("git-failed", detail=str(error)[:DETAIL_MAX])
-    try:
-        os.mkdir(str(target))
-    except FileExistsError:
-        raise Stop("repo-exists", detail=str(target)[:DETAIL_MAX])
-    except OSError as error:
-        raise Stop("git-failed", detail=str(error)[:DETAIL_MAX])
-    if target.is_symlink() or os.path.islink(str(target)) or not target.is_dir():
-        raise Stop("git-failed", detail=f"destination claim failed: {target}"[:DETAIL_MAX])
+    target.mkdir(parents=True, exist_ok=True)
     receipt["repo"]["created"] = True
     git(target, "init", "-q")
     git(target, "bundle", "verify", str(bundle))

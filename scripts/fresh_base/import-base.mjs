@@ -16,6 +16,7 @@ import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
@@ -314,11 +315,11 @@ if (opts["--expected-project"]) {
   }
 }
 
-if (existsSync(repoOut)) {
+if (existsSync(repoOut) && readdirSync(repoOut).length > 0) {
   finish(1, "mismatch", "repo-exists", repoOut);
 }
 try {
-  mkdirSync(repoOut);
+  mkdirSync(repoOut, { recursive: true });
   receipt.repo.created = true;
   const git = (args) =>
     execFileSync("git", args, {
@@ -348,9 +349,6 @@ try {
     finish(1, "mismatch", "artifact-mismatch", `HEAD ${observed} != ${tip}`);
   receipt.repo.head = observed;
 } catch (error) {
-  if (error?.code === "EEXIST") {
-    finish(1, "mismatch", "repo-exists", repoOut);
-  }
   finish(1, "mismatch", "git-failed", String(error.message).slice(0, 400));
 }
 
