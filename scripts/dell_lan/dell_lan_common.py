@@ -19,6 +19,8 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -33,6 +35,10 @@ FIRST_REQUEST_SCHEMA = "dell-lan-first-request/1"
 FIRST_EXPORT_SCHEMA = "dell-lan-first-export/1"
 PUBLISH_REQUEST_SCHEMA = "dell-lan-publish-request/1"
 PUBLISH_RESULT_SCHEMA = "dell-lan-publish-result/1"
+#: Protocol revision of the first-import drivers. Bumped only with a code
+#: change deployed on both machines; a sealed result naming another revision
+#: is refused instead of imported.
+FIRST_IMPORT_DRIVER_VERSION = "1"
 
 
 class Stop(Exception):
@@ -298,6 +304,47 @@ def verify_job(bridge, queue: Path, key: bytes, job_id: str, marker: str) -> dic
         raise Stop("queue-job-unverifiable", detail=str(error)[:DETAIL_MAX])
     command = str(job.get("command") or "")
     if marker not in command:
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    return job
+
+
+def verify_first_job(bridge, queue: Path, key: bytes, job_id: str) -> dict:
+    """Bind the sealed job to the exact first-export command (fail closed).
+
+    A substring marker is not enough: ``echo lenovo_first_export.py`` would
+    pass it while executing nothing. The sealed command must parse to exactly
+    ``<python> <driver> --request <request> --request-sha256 <digest>`` where
+    the driver basename is ``lenovo_first_export.py``, the request basename
+    is ``first-request-<16hex>.json`` and the digest is 64 hex. Anything else
+    is ``queue-job-mismatch``: the sealed result proves nothing about this
+    import.
+    """
+
+    try:
+        raw = bridge.read(str(queue / "jobs"), job_id)
+    except bridge.JobNotFoundError:
+        raise Stop("queue-job-missing", detail=job_id)
+    except (bridge.BridgeError, OSError) as error:
+        raise Stop("queue-job-unverifiable", detail=str(error)[:DETAIL_MAX])
+    try:
+        job = bridge.open_envelope(raw, key, "job", job_id)
+    except bridge.ProtocolError as error:
+        raise Stop("queue-job-unverifiable", detail=str(error)[:DETAIL_MAX])
+    command = str(job.get("command") or "")
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError as error:
+        raise Stop("queue-job-mismatch", detail=str(error)[:DETAIL_MAX])
+    if len(argv) != 6:
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    python, driver, flag_request, request_path, flag_digest, digest = argv
+    if not python or Path(driver).name != "lenovo_first_export.py":
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    if flag_request != "--request" or flag_digest != "--request-sha256":
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    if not re.fullmatch(r"first-request-[0-9a-f]{16}\.json", Path(request_path).name):
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    if not re.fullmatch(r"[0-9a-f]{64}", digest.lower()):
         raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
     return job
 

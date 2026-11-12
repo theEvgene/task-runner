@@ -94,13 +94,17 @@ python scripts/dell_lan/dell_first_import.py \
 ```
 
 The importer verifies the sealed result (MAC, kind/id, exit, timeout,
-truncation), requires the documented `lenovo_first_export.py` command,
-checks the token-bound artifact names, re-hashes the bundle against the
+truncation), requires the exact documented `lenovo_first_export.py` command
+shape (no substring match, no extra arguments), requires the sealed
+`driverVersion` to equal the Dell-side `FIRST_IMPORT_DRIVER_VERSION`, checks
+the token-bound artifact names, re-hashes the bundle against the
 SHA-256, byte count, and tip commit inside the result, re-reads the
 `git-bundle-manifest/1` digest, confirms the sealed remote URL and branch
 equal `--remote-url`/`--branch`, and fetches the bundle once into a path
 that must be empty. `--bridge-dir` defaults to this repository's
 `scripts/lan_bridge` (override with `DELL_LAN_BRIDGE_DIR`).
+`--expected-lenovo-driver-sha256` optionally pins the trusted Lenovo driver
+digest; without it the receipt records `driver.freshness: "unverified"`.
 
 Completion: receipt `dell-first-import/1` with `verdict: imported`,
 `baseSha`, and `repo.head` equal to `baseSha`. A second import into the
@@ -121,9 +125,36 @@ same path is refused (`repo-exists`): one first copy, never replaced.
 - `0 imported` (receipt `dell-first-import/1` binds remote URL, branch,
   verified SHA, and copy HEAD);
 - `1` refused/mismatch (nothing created; a pre-existing or occupied
-  destination is left untouched);
+  destination is left untouched; a file or link at the destination is
+  refused as `destination-is-file`, a non-empty directory as `repo-exists`);
 - `2` usage;
 - `3` unknown — slot stays occupied, re-fetch the SAME job id.
+
+## Driver freshness (enforceable, fail-closed)
+
+The sealed job must parse to exactly
+`<python> lenovo_first_export.py --request <first-request-<token>.json> --request-sha256 <64hex>`
+(anything else — including a command that merely contains the driver name as
+a substring, or carries extra arguments — is `queue-job-mismatch` and proves
+nothing). The sealed Lenovo result must name
+`driverVersion: "1"` (`FIRST_IMPORT_DRIVER_VERSION` in
+`scripts/dell_lan/dell_lan_common.py`); a missing or older revision is
+`driver-stale` and no copy is created. The result also carries the SHA-256
+of the Lenovo driver file that actually ran (`driverSha256`).
+
+A self-reported version and digest do not prove the Lenovo checkout is
+current: they only fail closed against known-stale drivers. Strong assurance
+needs the operator to deploy the current verified checkout on each machine
+and pin its digest out-of-band via
+`dell_first_import.py --expected-lenovo-driver-sha256 <64hex>` (the digest of
+the trusted `lenovo_first_export.py` copy). With a pin, a sealed digest that
+differs is `driver-stale`; without a pin the receipt records
+`driver.freshness: "unverified"` and that field — not the `imported` verdict,
+which covers only source/branch/revision/bundle binding — is the freshness
+statement. An unverified freshness never reads as verified: the receipt says
+`unverified`, and only `verified-pinned` means the sealed digest matched the
+operator's trusted pin. A receipt marked `provenance: fixture` is never live
+evidence either way.
 
 ## Boundaries
 
@@ -133,14 +164,26 @@ same path is refused (`repo-exists`): one first copy, never replaced.
   any existing checkout, foreign job slot, or file. Lenovo writes no
   checkout at all: the export runs in an isolated temp bare repo that is
   removed afterwards, so uncommitted changes nowhere are overwritten.
+- The Lenovo exporter claims its token-bound bundle and manifest names
+  exclusively: a pre-existing bundle or manifest file — including a foreign
+  one — is refused with `artifact-exists` instead of replaced, and a
+  concurrent writer that wins the name between the pre-check and the create
+  loses the same way (atomic link-or-exclusive-open commit; a refused run
+  removes only artifacts it created itself). A remote URL starting with
+  `-` is refused, and every `ls-remote`/`fetch` passes `--` before the
+  remote so it can never parse as a Git option.
 - The key travels via `--key-file` only, and every driver refuses a key
   it cannot prove is outside the anchor checkout, the queue, and the
   shared folder. Remote credentials live only in the Lenovo user context;
   they are never written to a request, a command file, or a receipt.
-- Driver currency: the importer only trusts a sealed result whose job
-  command names `lenovo_first_export.py`, and the request only builds
-  that command. Run both sides from the current verified checkout; an
-  unconfirmed driver copy is never evidence of success.
+- Driver currency: the importer only accepts a sealed result from the exact
+  `lenovo_first_export.py` command above whose `driverVersion` equals the
+  Dell-side `FIRST_IMPORT_DRIVER_VERSION`, and `--expected-lenovo-driver-sha256`
+  pins the trusted Lenovo digest when the operator wants strong assurance
+  (see "Driver freshness"). Run both sides from the current verified
+  checkout; an unconfirmed driver copy is never evidence of success, and a
+  self-reported digest without a pin is recorded as `unverified`, never as
+  verified.
 - A receipt marked `provenance: fixture` is never live evidence.
 
 ## Sharing receipts outside the loop

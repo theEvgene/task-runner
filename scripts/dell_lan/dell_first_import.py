@@ -21,16 +21,17 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import re
 import sys
 import urllib.parse
 from pathlib import Path
 
 from dell_lan_common import (
-    DETAIL_MAX, FIRST_EXPORT_SCHEMA, Stop, default_bridge_dir, fetch_verified, git,
-    inside, load_bridge, load_json, manifest_digest, read_key,
-    result_failure, safe_name, sha256_file, verify_job,
-    write_json_atomic, now_iso,
+    DETAIL_MAX, FIRST_EXPORT_SCHEMA, FIRST_IMPORT_DRIVER_VERSION, Stop,
+    default_bridge_dir, fetch_verified, git, inside, load_bridge, load_json,
+    manifest_digest, read_key, result_failure, safe_name, sha256_file,
+    verify_first_job, write_json_atomic, now_iso,
 )
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -48,6 +49,8 @@ NEXT_ACTION = {
     "return-file-mismatch": "keep the slot and re-read the sealed result; do not import on a failed cross-check",
     "repo-exists": "choose a new empty path; one first copy is imported once, never replaced",
     "source-mismatch": "check the remote URL and branch spelling; never import a copy that names another source",
+    "driver-stale": "redeploy the current verified drivers on Lenovo and resubmit with a fresh token; a stale driver never yields a copy",
+    "destination-is-file": "choose a new empty directory path; a file at the destination is left untouched",
     "outcome-unknown": "keep the slot occupied, re-fetch the same job id, do not start a second import",
     "key-refused": "fix the key location or content outside the anchor checkout, the queue, and the shared folder",
     "request-malformed": "re-read the sealed result; a non-first-export payload proves nothing",
@@ -72,6 +75,9 @@ def parse(argv=None):
     parser.add_argument("--fetch-timeout", type=float, default=660.0)
     parser.add_argument("--poll", type=float, default=10.0)
     parser.add_argument("--provenance", default="fixture", choices=("fixture", "live"))
+    parser.add_argument("--expected-lenovo-driver-sha256", default=None,
+                        help="pinned SHA-256 of the trusted Lenovo driver copy; "
+                             "when named, the sealed driver digest must match it")
     parser.add_argument("--bridge-dir", type=Path)
     parser.add_argument("--receipt", type=Path, required=True)
     return parser.parse_args(argv)
@@ -95,6 +101,7 @@ def blank(args) -> dict:
         "baseSha": None,
         "bundle": {"name": None, "sha256": None, "bytes": None, "verified": False},
         "manifest": {"digest": None, "match": False, "returnFileObserved": None},
+        "driver": {"version": None, "sha256": None, "freshness": "unverified"},
         "repo": {"path": str(args.repo_out), "created": False, "head": None},
         "origin": {"url": args.remote_url, "project": project_of(args.remote_url),
                    "projectMatches": None},
@@ -158,6 +165,22 @@ def verify_payload(payload: dict, args, receipt: dict) -> dict:
         raise Stop("source-mismatch", detail=f"sealed branch {exported.get('refFull')} != refs/heads/{args.branch}")
     if str(exported.get("remoteUrl") or "") != args.remote_url:
         raise Stop("source-mismatch", detail="sealed remote URL differs from --remote-url")
+    if exported.get("driverVersion") != FIRST_IMPORT_DRIVER_VERSION:
+        raise Stop("driver-stale", detail=(
+            f"sealed driver version {exported.get('driverVersion')} "
+            f"!= {FIRST_IMPORT_DRIVER_VERSION}"))
+    driver_sha = str(exported.get("driverSha256") or "").lower()
+    if driver_sha and not DIGEST_RE.match(driver_sha):
+        raise Stop("request-malformed", detail="sealed driverSha256 is not 64 hex")
+    receipt["driver"] = {"version": exported["driverVersion"], "sha256": driver_sha or None,
+                         "freshness": "unverified"}
+    pinned = (args.expected_lenovo_driver_sha256 or "").strip().lower() or None
+    if pinned is not None and not DIGEST_RE.match(pinned):
+        raise Stop("request-malformed", detail="--expected-lenovo-driver-sha256 must be 64 hex")
+    if pinned is not None:
+        if not driver_sha or driver_sha != pinned:
+            raise Stop("driver-stale", detail="sealed driver digest does not match the pinned digest")
+        receipt["driver"]["freshness"] = "verified-pinned"
     receipt["refFull"] = exported["refFull"]
     receipt["baseSha"] = tip
     receipt["bundle"] = {"name": exported["bundleName"], "sha256": digest,
@@ -230,7 +253,11 @@ def check_return_file(payload: dict, manifest_name: str, manifest: dict) -> bool
 
 def import_once(bundle: Path, exported: dict, args, receipt: dict) -> None:
     target = Path(args.repo_out)
-    if target.exists() and any(target.iterdir()):
+    if os.path.lexists(str(target)) and not target.is_dir():
+        raise Stop("destination-is-file", detail=f"destination exists and is not a directory: {target}"[:DETAIL_MAX])
+    if target.is_symlink():
+        raise Stop("destination-is-file", detail=f"destination is a link: {target}"[:DETAIL_MAX])
+    if target.is_dir() and any(target.iterdir()):
         raise Stop("repo-exists", detail=str(target)[:DETAIL_MAX])
     target.mkdir(parents=True, exist_ok=True)
     receipt["repo"]["created"] = True
@@ -252,10 +279,13 @@ def main(argv=None) -> int:
     args = parse(argv)
     if not JOB_RE.match(args.job_id or ""):
         return usage("--job-id must be 32 lowercase hex")
-    if not BRANCH_RE.match(args.branch or ""):
+    if not BRANCH_RE.match(args.branch or "") or args.branch.startswith("-") or ".." in args.branch:
         return usage("--branch is not a safe name")
     if args.fetch_timeout <= 0 or args.poll <= 0:
         return usage("--fetch-timeout and --poll must be positive")
+    if args.expected_lenovo_driver_sha256 is not None and not DIGEST_RE.match(
+            args.expected_lenovo_driver_sha256.strip().lower()):
+        return usage("--expected-lenovo-driver-sha256 must be 64 hex")
     repo_out = Path(args.repo_out)
     if inside(args.receipt, repo_out):
         return usage("--receipt must stay outside the imported copy")
@@ -274,7 +304,7 @@ def main(argv=None) -> int:
         repos = [repo_out, Path(args.repo)]
         key = read_key(bridge, queue, Path(args.key_file), args.key_format,
                        repos=repos, shared=Path(args.shared))
-        verify_job(bridge, queue, key, args.job_id, "lenovo_first_export.py")
+        verify_first_job(bridge, queue, key, args.job_id)
         payload = fetch_verified(bridge, queue, key, args.job_id,
                                  args.fetch_timeout, args.poll)
         exported = verify_payload(payload, args, receipt)

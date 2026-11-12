@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
@@ -25,9 +26,9 @@ import tempfile
 from pathlib import Path
 
 from dell_lan_common import (
-    DETAIL_MAX, FIRST_EXPORT_SCHEMA, FIRST_REQUEST_SCHEMA, Stop, git, git_ok,
+    DETAIL_MAX, FIRST_EXPORT_SCHEMA, FIRST_IMPORT_DRIVER_VERSION,
+    FIRST_REQUEST_SCHEMA, Stop, git, git_ok,
     load_json, manifest_digest, now_iso, safe_name, sha256_bytes, sha256_file,
-    write_json_atomic,
 )
 
 TOKEN_RE = re.compile(r"^[0-9a-f]{16}$")
@@ -55,6 +56,8 @@ def validated(request_path: Path, expected_digest: str) -> dict:
     remote = str(request.get("remoteUrl") or "")
     if not remote.strip() or any(char in remote for char in ("\n", "\r", "\0")):
         raise Stop("request-malformed", detail="remoteUrl must be one non-empty line")
+    if remote.strip().startswith("-"):
+        raise Stop("request-malformed", detail="remoteUrl must not start with '-'")
     for name in ("bundleName", "manifestName"):
         if not safe_name(str(request.get(name) or "")):
             raise Stop("request-malformed", detail=f"{name} must be one contained file name")
@@ -63,7 +66,7 @@ def validated(request_path: Path, expected_digest: str) -> dict:
         raise Stop("request-malformed", detail="artifacts do not match the token")
     ref_full = str(request.get("refFull") or "")
     branch = ref_full[len("refs/heads/"):] if ref_full.startswith("refs/heads/") else ""
-    if not branch or not BRANCH_RE.match(branch):
+    if not branch or not BRANCH_RE.match(branch) or branch.startswith("-") or ".." in branch:
         raise Stop("request-malformed", detail="refFull must be refs/heads/<branch>")
     shared = Path(str(request.get("shared") or ""))
     if not shared.is_dir():
@@ -78,7 +81,7 @@ def observe_remote_tip(remote: str, ref_full: str, token: str) -> tuple[str, Pat
     dir and removes it. Any drift between ls-remote and fetch fails closed.
     """
 
-    proc_remote = git_ok(Path.cwd(), "ls-remote", remote, ref_full)
+    proc_remote = git_ok(Path.cwd(), "ls-remote", "--", remote, ref_full)
     ok_lines = proc_remote[1] if proc_remote[0] else ""
     if not proc_remote[0]:
         raise Stop("remote-unavailable", detail=ok_lines[:DETAIL_MAX] or "ls-remote failed")
@@ -95,7 +98,7 @@ def observe_remote_tip(remote: str, ref_full: str, token: str) -> tuple[str, Pat
     try:
         git(workdir, "init", "--bare", "-q")
         ok, output = git_ok(workdir, "fetch", "--no-write-fetch-head", "--quiet",
-                            remote, f"{ref_full}:refs/dell-first/{token}")
+                            "--", remote, f"{ref_full}:refs/dell-first/{token}")
         if not ok:
             raise Stop("remote-unavailable", detail=output[:DETAIL_MAX] or "fetch failed")
         fetched = git(workdir, "rev-parse", "--verify", f"refs/dell-first/{token}^{{commit}}").lower()
@@ -107,43 +110,118 @@ def observe_remote_tip(remote: str, ref_full: str, token: str) -> tuple[str, Pat
     return tip, workdir
 
 
+def _commit_new(temp: Path, final: Path) -> None:
+    """Publish ``temp`` at ``final`` only if ``final`` does not exist.
+
+    A concurrent writer that wins the token-bound name loses nothing: this
+    run refuses with ``artifact-exists`` instead of overwriting a foreign
+    file. The link form is atomic; the exclusive-open fallback covers
+    filesystems without hard links.
+    """
+
+    try:
+        os.link(temp, final)
+    except FileExistsError:
+        raise Stop("artifact-exists", detail=f"refusing to replace {final.name}")
+    except OSError:
+        try:
+            handle = os.open(final, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+        except FileExistsError:
+            raise Stop("artifact-exists", detail=f"refusing to replace {final.name}")
+        os.close(handle)
+        try:
+            os.replace(temp, final)
+        except OSError:
+            try:
+                final.unlink()
+            except OSError:
+                pass
+            raise
+    else:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+
+
+def _driver_sha256() -> str:
+    try:
+        return sha256_file(Path(__file__))
+    except OSError:
+        return ""
+
+
 def export(request: dict) -> dict:
     shared = Path(request["shared"])
     remote = request["remoteUrl"]
     ref_full = request["refFull"]
-    tip, workdir = observe_remote_tip(remote, ref_full, request["token"])
     branch = ref_full[len("refs/heads/"):]
-    try:
-        bundle = shared / request["bundleName"]
-        if bundle.exists():
-            raise Stop("artifact-exists", detail=f"refusing to replace {bundle.name}")
-        # Advertise the requested branch name in the bundle: the temp repo is
-        # disposable, so naming refs/heads/<branch> there cannot race another
-        # job, and the Dell importer fetches exactly that ref.
-        git(workdir, "update-ref", f"refs/heads/{branch}", tip)
-        git(workdir, "bundle", "create", str(bundle), ref_full)
-        ok, listed = git_ok(workdir, "bundle", "list-heads", str(bundle))
-        if not ok:
-            raise Stop("bundle-unreadable", detail=listed[:DETAIL_MAX])
-        heads = [line.split()[0].lower() for line in listed.splitlines() if line.strip()]
-        if tip not in heads:
-            raise Stop("bundle-tip-mismatch", detail=", ".join(heads)[:DETAIL_MAX])
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
-    data = bundle.read_bytes()
-    digest = sha256_file(bundle)
-    files = [{"path": bundle.name, "sha256": digest, "bytes": len(data)}]
-    manifest = {
-        "version": "git-bundle-manifest/1",
-        "revs": ref_full,
-        "bundle": bundle.name,
-        "files": files,
-        "manifestDigest": manifest_digest(files),
-    }
+    bundle = shared / request["bundleName"]
     manifest_path = shared / request["manifestName"]
-    write_json_atomic(manifest_path, manifest)
+    for path in (bundle, manifest_path):
+        if os.path.lexists(str(path)):
+            raise Stop("artifact-exists", detail=f"refusing to replace {path.name}")
+    tip, workdir = observe_remote_tip(remote, ref_full, request["token"])
+    owned: list[Path] = []
+    temp_bundle = temp_manifest = None
+    try:
+        handle, temp_name = tempfile.mkstemp(prefix=".dell-first-bundle.",
+                                            suffix=".tmp", dir=str(shared))
+        os.close(handle)
+        temp_bundle = Path(temp_name)
+        try:
+            git(workdir, "update-ref", f"refs/heads/{branch}", tip)
+            git(workdir, "bundle", "create", str(temp_bundle), ref_full)
+            ok, listed = git_ok(workdir, "bundle", "list-heads", str(temp_bundle))
+            if not ok:
+                raise Stop("bundle-unreadable", detail=listed[:DETAIL_MAX])
+            heads = [line.split()[0].lower() for line in listed.splitlines() if line.strip()]
+            if tip not in heads:
+                raise Stop("bundle-tip-mismatch", detail=", ".join(heads)[:DETAIL_MAX])
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+        _commit_new(temp_bundle, bundle)
+        owned.append(bundle)
+        temp_bundle = None
+        data = bundle.read_bytes()
+        digest = sha256_file(bundle)
+        files = [{"path": bundle.name, "sha256": digest, "bytes": len(data)}]
+        manifest = {
+            "version": "git-bundle-manifest/1",
+            "revs": ref_full,
+            "bundle": bundle.name,
+            "files": files,
+            "manifestDigest": manifest_digest(files),
+        }
+        handle, temp_name = tempfile.mkstemp(prefix=".dell-first-manifest.",
+                                            suffix=".tmp", dir=str(shared))
+        os.close(handle)
+        temp_manifest = Path(temp_name)
+        temp_manifest.write_bytes(
+            (json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n")
+            .encode("utf-8"))
+        try:
+            _commit_new(temp_manifest, manifest_path)
+        except Stop:
+            for path in reversed(owned):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+            owned.clear()
+            raise
+        temp_manifest = None
+    finally:
+        for temp in (temp_bundle, temp_manifest):
+            if temp is not None:
+                try:
+                    temp.unlink()
+                except OSError:
+                    pass
     return {
         "schema": FIRST_EXPORT_SCHEMA,
+        "driverVersion": FIRST_IMPORT_DRIVER_VERSION,
+        "driverSha256": _driver_sha256(),
         "token": request["token"],
         "remoteUrl": remote,
         "refFull": ref_full,

@@ -148,7 +148,12 @@ def first_request(args) -> dict:
     remote = (args.remote_url or "").strip()
     if not remote or any(char in remote for char in ("\n", "\r", "\0")):
         raise Stop("usage", code=2, detail="--remote-url must be one non-empty line")
+    if remote.startswith("-"):
+        raise Stop("usage", code=2, detail="--remote-url must not start with '-'")
     if not args.ref_full.startswith("refs/heads/") or not BRANCH_RE.match(args.ref_full[len("refs/heads/"):]):
+        raise Stop("usage", code=2, detail="--ref-full must be refs/heads/<branch>")
+    branch = args.ref_full[len("refs/heads/"):]
+    if branch.startswith("-") or ".." in branch:
         raise Stop("usage", code=2, detail="--ref-full must be refs/heads/<branch>")
     token = args.token
     return {
