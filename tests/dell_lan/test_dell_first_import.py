@@ -14,7 +14,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from first_fixture import FirstWorkspace, dell_digest, git, lenovo_digest, run
+from first_fixture import FirstWorkspace, bridge_digest, common_digest, dell_digest, git, lenovo_digest, run
 
 FIRST_IMPORT = Path(__file__).resolve().parents[2] / "scripts" / "dell_lan" / "dell_first_import.py"
 
@@ -150,6 +150,9 @@ class FirstImportTests(unittest.TestCase):
                     "--remote-url", self.ws.remote_url,
                     "--expected-lenovo-driver-sha256", lenovo_digest(),
                     "--expected-dell-driver-sha256", dell_digest(),
+                    "--expected-lenovo-common-sha256", common_digest(),
+                    "--expected-dell-common-sha256", common_digest(),
+                    "--expected-bridge-sha256", bridge_digest(),
                     "--receipt", str(receipt)])
         self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertIn("absolute", proc.stderr)

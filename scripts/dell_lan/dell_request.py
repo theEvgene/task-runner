@@ -30,7 +30,8 @@ from pathlib import Path
 from dell_lan_common import (
     BASE_REQUEST_SCHEMA, DETAIL_MAX, FIRST_REQUEST_SCHEMA,
     PUBLISH_REQUEST_SCHEMA, Stop, command_line,
-    inside, safe_name, sha256_bytes,
+    expected_request_name, inside, remote_has_credentials, request_file_token,
+    safe_name, sha256_bytes,
 )
 
 TOKEN_RE = re.compile(r"^[0-9a-f]{16}$")
@@ -57,6 +58,19 @@ def write_request(args, request: dict, driver: str) -> int:
         return refuse(f"shared directory does not exist: {shared}")
     if args.repo and inside(shared, Path(args.repo)):
         return refuse("shared directory must stay outside the checkout")
+    token = str(request.get("token") or "")
+    schema = str(request.get("schema") or "")
+    if schema == FIRST_REQUEST_SCHEMA:
+        expected_name = expected_request_name(schema, token)
+        if str(args.request_name) != (expected_name or ""):
+            raise Stop("usage", code=2, detail=(
+                f"--request-name must be {expected_name}: the file name is bound "
+                "to the internal token"))
+        if request_file_token(str(args.request_name)) != token:
+            raise Stop("usage", code=2, detail=(
+                "--request-name token must equal the internal token"))
+    elif not safe_name(str(args.request_name or "")):
+        raise Stop("usage", code=2, detail="--request-name must be one contained file name")
     out_dir = Path(args.out_dir) if args.out_dir else shared
     if not inside(out_dir, shared):
         return refuse("request file must live on the shared LAN path Lenovo can read")
@@ -150,6 +164,8 @@ def first_request(args) -> dict:
         raise Stop("usage", code=2, detail="--remote-url must be one non-empty line")
     if remote.startswith("-"):
         raise Stop("usage", code=2, detail="--remote-url must not start with '-'")
+    if remote_has_credentials(remote):
+        raise Stop("usage", code=2, detail="--remote-url must not carry userinfo credentials")
     if not args.ref_full.startswith("refs/heads/") or not BRANCH_RE.match(args.ref_full[len("refs/heads/"):]):
         raise Stop("usage", code=2, detail="--ref-full must be refs/heads/<branch>")
     branch = args.ref_full[len("refs/heads/"):]

@@ -24,6 +24,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -190,6 +191,90 @@ def safe_name(value: str) -> bool:
     return not any(part in value for part in ("/", "\\", "..", ":")) and not value.startswith(".")
 
 
+def remote_has_credentials(url: str | None) -> bool:
+    """True when a remote URL carries userinfo (a credential leak risk).
+
+    Any ``user@`` or ``user:pass@`` authority in a ``scheme://`` URL is
+    refused before any write or receipt output: the receipt embeds the URL
+    verbatim, so a credentialed URL would leak into the share, the queue
+    return file, and pasted reports. A bare local path and a normal
+    ``git@host:path`` scp form (user without a password) carry no secret
+    and are allowed; a scp user part containing ``:`` (``user:pass@``)
+    is refused as well.
+    """
+
+    if not url or not isinstance(url, str):
+        return False
+    text = url.strip()
+    if not text:
+        return False
+    if "://" in text:
+        try:
+            parsed = urllib.parse.urlsplit(text)
+        except ValueError:
+            return False
+        netloc = parsed.netloc or ""
+        if "@" in netloc:
+            return True
+        try:
+            if parsed.username or parsed.password:
+                return True
+        except ValueError:
+            return True
+        return False
+    if "@" in text:
+        user_part = text.split("@", 1)[0].split("/")[-1].split("\\")[-1]
+        if ":" in user_part:
+            return True
+    return False
+
+
+FIRST_REQUEST_NAME_RE = re.compile(r"^first-request-([0-9a-f]{16})\.json$")
+BASE_REQUEST_NAME_RE = re.compile(r"^base-request-([0-9a-f]{16})\.json$")
+PUBLISH_REQUEST_NAME_RE = re.compile(r"^publish-request-([0-9a-f]{16})\.json$")
+
+
+def request_file_token(name: str | os.PathLike) -> str | None:
+    """The embedded token of a ``*-request-<16hex>.json`` file name, or None."""
+
+    base = Path(str(name)).name
+    for pattern in (FIRST_REQUEST_NAME_RE, BASE_REQUEST_NAME_RE,
+                    PUBLISH_REQUEST_NAME_RE):
+        match = pattern.fullmatch(base)
+        if match:
+            return match.group(1)
+    return None
+
+
+def expected_request_name(schema: str, token: str) -> str | None:
+    """The one request file name bound to this schema and token."""
+
+    if schema == FIRST_REQUEST_SCHEMA:
+        return f"first-request-{token}.json"
+    if schema == BASE_REQUEST_SCHEMA:
+        return f"base-request-{token}.json"
+    if schema == PUBLISH_REQUEST_SCHEMA:
+        return f"publish-request-{token}.json"
+    return None
+
+
+def module_file_digest(module) -> str:
+    """SHA-256 of the actual file backing an imported module, or ``""``.
+
+    Hashing the file the interpreter actually loaded (``module.__file__``)
+    ties the check to the executed bytes instead of a remembered path. An
+    unreadable file yields ``""`` so the caller fails closed.
+    """
+
+    try:
+        path = Path(str(getattr(module, "__file__", "")))
+        if not path.is_file():
+            return ""
+        return sha256_file(path)
+    except (OSError, ValueError):
+        return ""
+
+
 def manifest_digest(files: list) -> str:
     """The bundle manifest digest: SHA-256 of the compact entry array."""
 
@@ -315,9 +400,13 @@ def verify_first_job(bridge, queue: Path, key: bytes, job_id: str) -> dict:
     pass it while executing nothing. The sealed command must parse to exactly
     ``<python> <driver> --request <request> --request-sha256 <digest>`` where
     the driver basename is ``lenovo_first_export.py``, the request basename
-    is ``first-request-<16hex>.json`` and the digest is 64 hex. Anything else
-    is ``queue-job-mismatch``: the sealed result proves nothing about this
-    import.
+    is ``first-request-<16hex>.json`` and the digest is 64 hex. The driver
+    and request paths must both be absolute: a relative path names a
+    different file for every worker cwd and cannot pin the actually invoked
+    driver. Anything else is ``queue-job-mismatch``: the sealed result
+    proves nothing about this import. The parsed request file token is
+    stashed as ``_requestFileToken`` so the sealed payload token can be
+    bound to the exact file the job named.
     """
 
     try:
@@ -340,12 +429,16 @@ def verify_first_job(bridge, queue: Path, key: bytes, job_id: str) -> dict:
     python, driver, flag_request, request_path, flag_digest, digest = argv
     if not python or Path(driver).name != "lenovo_first_export.py":
         raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    if not Path(driver).is_absolute() or not Path(request_path).is_absolute():
+        raise Stop("queue-job-mismatch", detail="driver and request paths must be absolute")
     if flag_request != "--request" or flag_digest != "--request-sha256":
         raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
-    if not re.fullmatch(r"first-request-[0-9a-f]{16}\.json", Path(request_path).name):
+    request_token = request_file_token(Path(request_path).name)
+    if request_token is None:
         raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
     if not re.fullmatch(r"[0-9a-f]{64}", digest.lower()):
         raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    job["_requestFileToken"] = request_token
     return job
 
 

@@ -62,6 +62,15 @@ def dell_digest() -> str:
     return hashlib.sha256((SCRIPTS / "dell_first_import.py").read_bytes()).hexdigest()
 
 
+def common_digest() -> str:
+    return hashlib.sha256((SCRIPTS / "dell_lan_common.py").read_bytes()).hexdigest()
+
+
+def bridge_digest() -> str:
+    return hashlib.sha256(
+        (ROOT / "scripts" / "lan_bridge" / "lan_bridge.py").read_bytes()).hexdigest()
+
+
 class FirstWorkspace:
     """One bare remote, one share, one signed queue, one key, no checkouts."""
 
@@ -176,6 +185,12 @@ class FirstWorkspace:
             pinned += ["--expected-lenovo-driver-sha256", lenovo_digest()]
         if "--expected-dell-driver-sha256" not in pinned:
             pinned += ["--expected-dell-driver-sha256", dell_digest()]
+        if "--expected-lenovo-common-sha256" not in pinned:
+            pinned += ["--expected-lenovo-common-sha256", common_digest()]
+        if "--expected-dell-common-sha256" not in pinned:
+            pinned += ["--expected-dell-common-sha256", common_digest()]
+        if "--expected-bridge-sha256" not in pinned:
+            pinned += ["--expected-bridge-sha256", bridge_digest()]
         proc = run([
             sys.executable, str(FIRST_IMPORT), "--queue", str(self.queue),
             "--key-file", str(self.key), "--job-id", job_id, "--shared", str(self.shared),

@@ -92,23 +92,31 @@ python scripts/dell_lan/dell_first_import.py \
   --provenance <fixture|live> \
   --expected-lenovo-driver-sha256 <64hex> \
   --expected-dell-driver-sha256 <64hex> \
+  --expected-lenovo-common-sha256 <64hex> \
+  --expected-dell-common-sha256 <64hex> \
+  --expected-bridge-sha256 <64hex> \
   --receipt <outside-every-checkout>\first-import.json
 ```
 
 The importer verifies the sealed result (MAC, kind/id, exit, timeout,
 truncation), requires the exact documented `lenovo_first_export.py` command
-shape (no substring match, no extra arguments), requires the sealed
+shape (no substring match, no extra arguments, absolute driver and request
+paths), requires the sealed
 `driverVersion` to equal the Dell-side `FIRST_IMPORT_DRIVER_VERSION`, checks
-the token-bound artifact names, re-hashes the bundle against the
+the token-bound artifact names, binds the sealed token to the request file
+name the job actually named, re-hashes the bundle against the
 SHA-256, byte count, and tip commit inside the result, re-reads the
 `git-bundle-manifest/1` digest, confirms the sealed remote URL and branch
-equal `--remote-url`/`--branch`, binds both executing drivers to the
-operator's pinned digests (no pin means no import), and fetches the bundle
-once into a path that must be empty. `--bridge-dir` defaults to this
+equal `--remote-url`/`--branch`, refuses any credentialed remote URL before
+any write or receipt output (`credential-refused`), binds the sealed Lenovo
+driver AND its `dell_lan_common` dependency plus the actually loaded Dell
+driver, Dell dependency, and bridge to the operator's pinned digests (no
+pin means no import), and fetches the bundle
+once into an exclusively claimed empty path. `--bridge-dir` defaults to this
 repository's `scripts/lan_bridge` (override with `DELL_LAN_BRIDGE_DIR`).
-Both `--expected-lenovo-driver-sha256` and
-`--expected-dell-driver-sha256` are required trust inputs: the SHA-256 of
-the trusted `lenovo_first_export.py` and `dell_first_import.py` copies.
+All five `--expected-*-sha256` pins are required trust inputs: the SHA-256 of
+the trusted `lenovo_first_export.py`, `dell_first_import.py`,
+`dell_lan_common.py` (both sides), and `lan_bridge.py` copies.
 A missing or malformed pin is refused before any copy (exit `2`, no
 receipt-derived success); a sealed or executing digest that differs is
 `driver-stale` (exit `1`, nothing created).
@@ -141,14 +149,20 @@ same path is refused (`repo-exists`): one first copy, never replaced.
 
 The sealed job must parse to exactly
 `<python> lenovo_first_export.py --request <first-request-<token>.json> --request-sha256 <64hex>`
-(anything else — including a command that merely contains the driver name as
-a substring, or carries extra arguments — is `queue-job-mismatch` and proves
-nothing). The sealed Lenovo result must name
+with absolute driver and request paths (anything else — including a command
+that merely contains the driver name as
+a substring, carries extra arguments, or names relative paths — is
+`queue-job-mismatch` and proves
+nothing). The sealed request file name token must equal the sealed payload
+token: a job naming `first-request-A.json` whose result claims token `B` is
+`request-malformed`. The sealed Lenovo result must name
 `driverVersion: "1"` (`FIRST_IMPORT_DRIVER_VERSION` in
 `scripts/dell_lan/dell_lan_common.py`); a missing or older revision is
 `driver-stale` and no copy is created. The result also carries the SHA-256
-of the Lenovo driver file that actually ran (`driverSha256`), computed by
-that driver from its own `__file__` at execution time.
+of the Lenovo driver file that actually ran (`driverSha256`) plus the SHA-256
+of the `dell_lan_common` dependency it actually imported
+(`driverCommonSha256`), computed by
+that driver from its own `__file__` and the imported module at execution time.
 
 A self-reported version and digest do not prove either checkout is current:
 they only fail closed against known-stale drivers. Freshness is established
@@ -158,28 +172,43 @@ operator supplies out-of-band:
 - Trust inputs: `--expected-lenovo-driver-sha256` is the SHA-256 of the
   trusted `lenovo_first_export.py` copy on Lenovo;
   `--expected-dell-driver-sha256` is the SHA-256 of the trusted
-  `dell_first_import.py` copy on Dell. The operator computes both from the
+  `dell_first_import.py` copy on Dell;
+  `--expected-lenovo-common-sha256` / `--expected-dell-common-sha256` pin
+  the trusted `dell_lan_common.py` on each side;
+  `--expected-bridge-sha256` pins the trusted `lan_bridge.py` actually
+  loaded on Dell. The operator computes all five from the
   current verified checkout on each machine (for example with `sha256sum`
-  over `scripts/dell_lan/`) and passes them on the Dell command line. They
+  over `scripts/dell_lan/` and `scripts/lan_bridge/`) and passes them on the Dell command line. They
   never travel the queue, the share, or a receipt as authority — they are
   the authority the sealed and executing digests are checked against.
 - Binding actual execution: on Lenovo, `lenovo_first_export.py` hashes its
-  own file at runtime into the sealed `driverSha256`; the sealed envelope
-  (MAC, kind/id) plus the exact command-shape check above ties that digest
-  to this job. On Dell, `dell_first_import.py` hashes its own file at
-  runtime and compares it to `--expected-dell-driver-sha256` before any
-  queue read or copy. Either side failing the comparison is `driver-stale`:
+  own file and the actually imported `dell_lan_common` module at runtime
+  into the sealed `driverSha256`/`driverCommonSha256`; the sealed envelope
+  (MAC, kind/id) plus the exact command-shape check above ties those digests
+  to this job. On Dell, `dell_first_import.py` hashes its own file, the
+  actually imported `dell_lan_common` module, and the actually loaded
+  `lan_bridge.py` before any
+  queue read or copy. Any comparison failing is `driver-stale`:
   nothing is created.
-- Fail closed if missing: both pins are required CLI arguments. A missing
+- Fail closed if missing: all five pins are required CLI arguments. A missing
   or malformed pin is refused (exit `2` at usage, or `driver-stale` with a
   receipt when reached past parsing); a wrong or stale digest is
   `driver-stale` (exit `1`). There is no `unverified` success path: the
-  `imported` verdict is emitted only when the sealed Lenovo digest equals
-  its pin and the executing Dell digest equals its pin, recorded as
-  `driver.freshness: "verified-pinned"` and
-  `dellDriver.freshness: "verified-pinned"`.
+  `imported` verdict is emitted only when every sealed and executing digest
+  equals its pin, recorded as
+  `driver.freshness: "verified-pinned"`,
+  `dellDriver.freshness: "verified-pinned"`, and
+  `bridge.freshness: "verified-pinned"`.
 - A receipt marked `provenance: fixture` is never live evidence either way,
   even when both digests verify.
+- Trust boundary (fail-closed, not self-attestation): an in-process
+  self-measurement cannot detect a driver patched to forge the digest it
+  reports. Execution integrity therefore rests on running both sides from a
+  read-only verified checkout deployed over a trusted channel; the pins only
+  refuse stale, mismatched, or unreadable deployments. The sealed Lenovo
+  claim is exactly as trustworthy as the Lenovo deployment, and Dell cannot
+  independently observe the Lenovo filesystem. This boundary is recorded in
+  every receipt as `trustBoundary`.
 
 ## Boundaries
 
@@ -196,7 +225,26 @@ operator supplies out-of-band:
   loses the same way (atomic link-or-exclusive-open commit; a refused run
   removes only artifacts it created itself). A remote URL starting with
   `-` is refused, and every `ls-remote`/`fetch` passes `--` before the
-  remote so it can never parse as a Git option.
+  remote so it can never parse as a Git option. Any remote URL carrying
+  userinfo (`user@`/`user:pass@`) is refused before any write or receipt
+  output on all three sides (request writer, Lenovo validator, Dell
+  importer as `credential-refused`); the receipt never carries a secret.
+- The request file name is bound to its internal token: `dell_request.py`
+  writes only `first-request-<token>.json` for the token inside, Lenovo
+  refuses a request whose file name token differs from its content token,
+  and Dell refuses a sealed token that differs from the request file name
+  the sealed job named.
+- Paths are absolute and non-mutating: `--queue`, `--repo`, `--shared`,
+  `--repo-out`, and `--receipt` must all be absolute; the receipt must live
+  outside the imported copy, the anchor checkout, the queue, and the share,
+  and the imported copy must live outside the anchor, the queue, and the
+  share (either nesting direction is a usage refusal with no receipt).
+  A symlinked bundle or manifest on the share is refused, never followed.
+- The destination is claimed exclusively: the final path component is
+  created with an atomic `mkdir` that a concurrent winner defeats with
+  `repo-exists`; a file or link at the destination is refused as
+  `destination-is-file` and left untouched, and a non-empty directory as
+  `repo-exists`. Nothing already at the destination is ever overwritten.
 - The key travels via `--key-file` only, and every driver refuses a key
   it cannot prove is outside the anchor checkout, the queue, and the
   shared folder. Remote credentials live only in the Lenovo user context;
@@ -204,8 +252,12 @@ operator supplies out-of-band:
 - Driver currency: the importer only accepts a sealed result from the exact
   `lenovo_first_export.py` command above whose `driverVersion` equals the
   Dell-side `FIRST_IMPORT_DRIVER_VERSION`, whose sealed `driverSha256`
-  equals `--expected-lenovo-driver-sha256`, and whose own executing
-  `dell_first_import.py` digest equals `--expected-dell-driver-sha256`
+  equals `--expected-lenovo-driver-sha256`, whose sealed
+  `driverCommonSha256` equals `--expected-lenovo-common-sha256`, and whose
+  own executing
+  `dell_first_import.py` / `dell_lan_common.py` / `lan_bridge.py` digests
+  equal `--expected-dell-driver-sha256` /
+  `--expected-dell-common-sha256` / `--expected-bridge-sha256`
   (see "Driver freshness"). Run both sides from the current verified
   checkout; an unconfirmed driver copy is never evidence of success, and a
   self-reported version or digest without a matching pin never reads as

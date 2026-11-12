@@ -28,7 +28,8 @@ from pathlib import Path
 from dell_lan_common import (
     DETAIL_MAX, FIRST_EXPORT_SCHEMA, FIRST_IMPORT_DRIVER_VERSION,
     FIRST_REQUEST_SCHEMA, Stop, git, git_ok,
-    load_json, manifest_digest, now_iso, safe_name, sha256_bytes, sha256_file,
+    load_json, manifest_digest, now_iso, remote_has_credentials,
+    request_file_token, safe_name, sha256_bytes, sha256_file,
 )
 
 TOKEN_RE = re.compile(r"^[0-9a-f]{16}$")
@@ -53,11 +54,15 @@ def validated(request_path: Path, expected_digest: str) -> dict:
     token = str(request.get("token") or "")
     if not TOKEN_RE.match(token):
         raise Stop("request-malformed", detail="token must be 16 lowercase hex")
+    if request_file_token(request_path.name) != token:
+        raise Stop("request-malformed", detail="request file name token must equal the internal token")
     remote = str(request.get("remoteUrl") or "")
     if not remote.strip() or any(char in remote for char in ("\n", "\r", "\0")):
         raise Stop("request-malformed", detail="remoteUrl must be one non-empty line")
     if remote.strip().startswith("-"):
         raise Stop("request-malformed", detail="remoteUrl must not start with '-'")
+    if remote_has_credentials(remote):
+        raise Stop("request-malformed", detail="remoteUrl must not carry userinfo credentials")
     for name in ("bundleName", "manifestName"):
         if not safe_name(str(request.get(name) or "")):
             raise Stop("request-malformed", detail=f"{name} must be one contained file name")
@@ -151,6 +156,23 @@ def _driver_sha256() -> str:
         return ""
 
 
+def _common_sha256() -> str:
+    """SHA-256 of the actually imported ``dell_lan_common`` dependency.
+
+    The Lenovo seal covers both the driver and the shared dependency it
+    actually executed with, so a tampered ``dell_lan_common.py`` on Lenovo
+    (for example one that neuters hashing) cannot borrow the driver's
+    identity. An unreadable dependency seals as ``""`` and fails closed
+    on the Dell side.
+    """
+
+    try:
+        import dell_lan_common as common_mod
+        return sha256_file(Path(str(getattr(common_mod, "__file__", ""))))
+    except (OSError, ValueError):
+        return ""
+
+
 def export(request: dict) -> dict:
     shared = Path(request["shared"])
     remote = request["remoteUrl"]
@@ -222,6 +244,7 @@ def export(request: dict) -> dict:
         "schema": FIRST_EXPORT_SCHEMA,
         "driverVersion": FIRST_IMPORT_DRIVER_VERSION,
         "driverSha256": _driver_sha256(),
+        "driverCommonSha256": _common_sha256(),
         "token": request["token"],
         "remoteUrl": remote,
         "refFull": ref_full,
