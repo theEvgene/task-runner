@@ -11,6 +11,7 @@ Externally invoked agents start here explicitly; this repo assumes no global aut
 - Send one signed command through the LAN queue -> `docs/lan-bridge.md`.
 - Import the first verified copy of a remote branch with no Lenovo checkout -> `docs/first-import.md`.
 - Run the full Dell-to-Lenovo dev loop (base, local work, publish, readback) -> `docs/dell-lan.md`.
+- Release on Lenovo through the signed queue (bare preview; versioned tag only with explicit version plus explicit confirmation) -> `docs/release.md` + `scripts/release/request.py` (single canonical release entry; `docs/release-tag-preview.md` stays in the tree as legacy and is not an entry).
 
 Corporate routing and the signed queue apply where those docs state them. Do not pass secrets through task scripts, and rely only on guarantees those docs state.
 
