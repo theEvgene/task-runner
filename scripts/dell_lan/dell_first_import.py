@@ -29,9 +29,9 @@ from pathlib import Path
 
 from dell_lan_common import (
     DETAIL_MAX, FIRST_EXPORT_SCHEMA, FIRST_IMPORT_DRIVER_VERSION, Stop,
-    default_bridge_dir, fetch_verified, git, inside, load_bridge, load_json,
-    manifest_digest, module_file_digest, read_key, remote_has_credentials,
-    result_failure, safe_name, sha256_file,
+    common_file_digest, default_bridge_dir, fetch_verified, git, inside, load_bridge,
+    load_json, manifest_digest, read_key, remote_has_credentials,
+    resolve_bridge_file, result_failure, safe_name, sha256_file,
     verify_first_job, write_json_atomic, now_iso,
 )
 
@@ -94,7 +94,8 @@ def parse(argv=None):
                              "the executing Dell dependency digest must match it")
     parser.add_argument("--expected-bridge-sha256", required=True,
                         help="pinned SHA-256 of the trusted lan_bridge.py copy; "
-                             "the actually loaded bridge digest must match it")
+                             "the configured bridge file digest must match it "
+                             "before it is executed")
     parser.add_argument("--bridge-dir", type=Path)
     parser.add_argument("--receipt", type=Path, required=True)
     return parser.parse_args(argv)
@@ -162,42 +163,45 @@ def project_of(url: str | None) -> str | None:
     return path[:-4] if path.endswith(".git") else path
 
 
-def verify_dell_driver(args, receipt: dict, bridge=None) -> None:
-    """Bind the actually executing Dell bytes to the operator's trusted pins.
+def verify_dell_driver(args, receipt: dict, bridge_dir=None) -> None:
+    """Bind the actually configured Dell files to the operator's trusted pins.
 
     The pins are out-of-band trust inputs: SHA-256 of the current verified
     ``dell_first_import.py``, ``dell_lan_common.py``, and ``lan_bridge.py``
-    copies, computed by the operator from a trusted checkout. The running
-    files hash themselves (``Path(__file__)`` and the actually imported
-    modules); only an exact match on every pin reads as
+    copies, computed by the operator from a trusted checkout. Every digest
+    is taken from the resolved configured file *before* the bridge is
+    executed: the bridge file is hashed at its resolved configured path and
+    compared to the pin first, so a mismatched bridge never runs; the
+    common digest comes from the import-system spec origin, never the
+    mutable ``module.__file__`` attribute a module could rewrite to forge
+    the check. Only an exact match on every pin reads as
     ``verified-pinned``. A missing, malformed, or mismatched pin, or an
     unreadable file, fails closed with ``driver-stale`` before any queue
     read or copy. A self-reported version string alone is never freshness.
 
     Trust boundary: this is still an in-process self-measurement. A driver
     patched to forge the digest it reports cannot be detected from inside
-    itself. Execution integrity therefore rests on running from a read-only
-    verified checkout deployed over a trusted channel; the pins only fail
-    closed against stale, mismatched, or unreadable deployments. There is
-    no ``unverified`` success path.
+    itself, and the already-imported ``dell_lan_common`` executed at import
+    load time before this check ran. Execution integrity therefore rests on
+    running from a read-only verified checkout deployed over a trusted
+    channel; the pins only fail closed against stale, mismatched, or
+    unreadable deployments. There is no ``unverified`` success path. A file
+    replaced between this hash and the later bridge import is likewise not
+    detected from inside the process.
     """
 
-    import dell_lan_common as common_mod
     try:
         actual = sha256_file(Path(__file__).resolve()).lower()
     except OSError:
         actual = ""
     if actual and not DIGEST_RE.match(actual):
         actual = ""
-    try:
-        actual_common = module_file_digest(common_mod).lower()
-    except (OSError, ValueError):
-        actual_common = ""
+    actual_common = common_file_digest().lower()
     if actual_common and not DIGEST_RE.match(actual_common):
         actual_common = ""
-    if bridge is not None:
+    if bridge_dir is not None:
         try:
-            bridge_path = Path(str(getattr(bridge, "__file__", "")))
+            bridge_path = resolve_bridge_file(Path(bridge_dir))
             actual_bridge = sha256_file(bridge_path).lower() if bridge_path.is_file() else ""
         except (OSError, ValueError):
             actual_bridge = ""
@@ -226,9 +230,11 @@ def verify_dell_driver(args, receipt: dict, bridge=None) -> None:
                    detail="executing Dell dependency digest does not match the pinned digest")
     if not actual_bridge or actual_bridge != args.expected_bridge_sha256.strip().lower():
         raise Stop("driver-stale",
-                   detail="actually loaded bridge digest does not match the pinned digest")
+                   detail="configured bridge file digest does not match the pinned digest")
     receipt["dellDriver"]["freshness"] = "verified-pinned"
-    receipt["bridge"]["freshness"] = "verified-pinned"
+    # Bridge freshness stays "unverified" until the caller successfully
+    # imports the already-verified file: the pin match above only proves
+    # the bytes on disk, not that the import worked.
 
 
 def verify_payload(payload: dict, args, receipt: dict, job: dict | None = None) -> dict:
@@ -482,8 +488,10 @@ def main(argv=None) -> int:
     receipt = blank(args)
     code = 0
     try:
-        bridge = load_bridge(args.bridge_dir or default_bridge_dir())
-        verify_dell_driver(args, receipt, bridge)
+        bridge_dir = args.bridge_dir or default_bridge_dir()
+        verify_dell_driver(args, receipt, bridge_dir)
+        bridge = load_bridge(bridge_dir)
+        receipt["bridge"]["freshness"] = "verified-pinned"
         repos = [repo_out, anchor]
         key = read_key(bridge, queue, Path(args.key_file), args.key_format,
                        repos=repos, shared=shared)

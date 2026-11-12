@@ -261,9 +261,11 @@ def expected_request_name(schema: str, token: str) -> str | None:
 def module_file_digest(module) -> str:
     """SHA-256 of the actual file backing an imported module, or ``""``.
 
-    Hashing the file the interpreter actually loaded (``module.__file__``)
-    ties the check to the executed bytes instead of a remembered path. An
-    unreadable file yields ``""`` so the caller fails closed.
+    Legacy helper kept for older callers. It trusts the mutable
+    ``module.__file__`` attribute, so a module that rewrites its own
+    ``__file__`` can forge the answer. New trust checks must use
+    :func:`common_file_digest` (spec origin, never the mutable attribute)
+    or hash the resolved configured path directly.
     """
 
     try:
@@ -273,6 +275,31 @@ def module_file_digest(module) -> str:
         return sha256_file(path)
     except (OSError, ValueError):
         return ""
+
+
+def common_file_digest() -> str:
+    """SHA-256 of the loaded ``dell_lan_common`` dependency, or ``""``.
+
+    Resolved through the import system (``find_spec`` origin), never the
+    mutable ``module.__file__`` attribute: a module that rewrites its own
+    ``__file__`` cannot redirect this digest. An unresolvable or unreadable
+    file yields ``""`` so the caller fails closed.
+    """
+
+    try:
+        spec = importlib.util.find_spec("dell_lan_common")
+        origin = getattr(spec, "origin", None) if spec is not None else None
+        if not origin or not Path(origin).is_file():
+            return ""
+        return sha256_file(Path(origin))
+    except (OSError, ValueError):
+        return ""
+
+
+def resolve_bridge_file(bridge_dir: Path) -> Path:
+    """The configured bridge client file inside ``bridge_dir`` (never executed)."""
+
+    return Path(bridge_dir) / "lan_bridge.py"
 
 
 def manifest_digest(files: list) -> str:
@@ -311,14 +338,61 @@ def git_ok(repo: Path, *args: str) -> tuple[bool, str]:
 
 
 def load_bridge(bridge_dir: Path):
-    path = Path(bridge_dir) / "lan_bridge.py"
+    """Import the configured bridge client after the caller verified its pin.
+
+    The caller must hash :func:`resolve_bridge_file` against the trusted pin
+    *before* calling this: executing the file first and checking
+    ``bridge.__file__`` afterwards lets a malicious bridge run its side
+    effects even when its digest mismatches. A missing file fails closed
+    with ``queue-unreadable``; a bridge that cannot be imported (syntax
+    error, missing dependency, broken loader) fails closed with
+    ``driver-stale`` so the caller still writes a bounded receipt instead
+    of an unhandled traceback. A file that changes between the pin check
+    and this import is not detected from in-process measurement: execution
+    integrity rests on a read-only verified checkout deployed over a
+    trusted channel.
+    """
+
+    path = resolve_bridge_file(bridge_dir)
     if not path.is_file():
         raise Stop("queue-unreadable", detail=f"bridge not found: {path}")
-    spec = importlib.util.spec_from_file_location("dell_lan_bridge", str(path))
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["dell_lan_bridge"] = module
-    spec.loader.exec_module(module)
+    try:
+        spec = importlib.util.spec_from_file_location("dell_lan_bridge", str(path))
+        if spec is None or spec.loader is None:
+            raise Stop("driver-stale", detail="bridge import failed: no loader")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["dell_lan_bridge"] = module
+        spec.loader.exec_module(module)
+    except Stop:
+        raise
+    except Exception as error:
+        raise Stop("driver-stale",
+                   detail=f"bridge import failed: {error}"[:DETAIL_MAX])
     return module
+
+
+def load_bridge_verified(bridge_dir: Path, expected_sha256: str):
+    """Hash the configured bridge file, compare the pin, then import it.
+
+    The digest is taken from the resolved configured path before any byte
+    is executed, so a mismatched bridge never runs. Returns ``(module,
+    actual_digest)``; any mismatch or import failure raises ``Stop``.
+    """
+
+    path = resolve_bridge_file(bridge_dir)
+    try:
+        actual = sha256_file(path).lower() if path.is_file() else ""
+    except OSError:
+        actual = ""
+    pinned = (expected_sha256 or "").strip().lower()
+    if not pinned or not re.fullmatch(r"[0-9a-f]{64}", pinned):
+        raise Stop("driver-stale",
+                   detail="missing or malformed --expected-bridge-sha256; "
+                          "no trusted bridge identity")
+    if not actual or actual != pinned:
+        raise Stop("driver-stale",
+                   detail="bridge file digest does not match the pinned digest")
+    return load_bridge(bridge_dir), actual
 
 
 def _as_paths(value) -> list[Path]:
