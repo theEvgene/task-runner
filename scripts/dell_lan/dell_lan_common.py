@@ -337,6 +337,27 @@ def git_ok(repo: Path, *args: str) -> tuple[bool, str]:
     return proc.returncode == 0, text
 
 
+def _bridge_api_gap(module) -> str | None:
+    """The first missing/invalid required bridge member, or None when complete.
+
+    The first-import flow calls ``load_key``, ``read``, ``open_envelope``,
+    and ``fetch_result`` and catches ``BridgeError``, ``ProtocolError``,
+    ``JobNotFoundError``, and ``FetchTimeout``. A pinned file that imports
+    cleanly but omits or mistypes any of these would otherwise fail later
+    with an unhandled ``AttributeError``/``TypeError`` and no bounded
+    receipt, so the gap is reported here as ``driver-stale``.
+    """
+
+    for name in ("load_key", "read", "open_envelope", "fetch_result"):
+        if not callable(getattr(module, name, None)):
+            return name
+    for name in ("BridgeError", "ProtocolError", "JobNotFoundError", "FetchTimeout"):
+        member = getattr(module, name, None)
+        if not isinstance(member, type) or not issubclass(member, BaseException):
+            return name
+    return None
+
+
 def load_bridge(bridge_dir: Path):
     """Import the configured bridge client after the caller verified its pin.
 
@@ -345,9 +366,12 @@ def load_bridge(bridge_dir: Path):
     ``bridge.__file__`` afterwards lets a malicious bridge run its side
     effects even when its digest mismatches. A missing file fails closed
     with ``queue-unreadable``; a bridge that cannot be imported (syntax
-    error, missing dependency, broken loader) fails closed with
+    error, missing dependency, broken loader, or import-time termination
+    such as ``SystemExit``/``KeyboardInterrupt``) fails closed with
     ``driver-stale`` so the caller still writes a bounded receipt instead
-    of an unhandled traceback. A file that changes between the pin check
+    of an unhandled traceback or a false-success exit. A pinned file that
+    imports but does not expose the required bridge API also fails closed
+    with ``driver-stale``. A file that changes between the pin check
     and this import is not detected from in-process measurement: execution
     integrity rests on a read-only verified checkout deployed over a
     trusted channel.
@@ -362,37 +386,31 @@ def load_bridge(bridge_dir: Path):
             raise Stop("driver-stale", detail="bridge import failed: no loader")
         module = importlib.util.module_from_spec(spec)
         sys.modules["dell_lan_bridge"] = module
-        spec.loader.exec_module(module)
+        try:
+            spec.loader.exec_module(module)
+        except BaseException as error:
+            sys.modules.pop("dell_lan_bridge", None)
+            if isinstance(error, Stop):
+                raise
+            if isinstance(error, SystemExit):
+                raise Stop("driver-stale",
+                           detail=f"bridge import terminated: SystemExit({error.code})"[:DETAIL_MAX])
+            if isinstance(error, KeyboardInterrupt):
+                raise Stop("driver-stale",
+                           detail="bridge import interrupted"[:DETAIL_MAX])
+            raise Stop("driver-stale",
+                       detail=f"bridge import failed: {error}"[:DETAIL_MAX])
     except Stop:
         raise
     except Exception as error:
         raise Stop("driver-stale",
                    detail=f"bridge import failed: {error}"[:DETAIL_MAX])
+    gap = _bridge_api_gap(module)
+    if gap is not None:
+        sys.modules.pop("dell_lan_bridge", None)
+        raise Stop("driver-stale",
+                   detail=f"bridge API incomplete: missing {gap}"[:DETAIL_MAX])
     return module
-
-
-def load_bridge_verified(bridge_dir: Path, expected_sha256: str):
-    """Hash the configured bridge file, compare the pin, then import it.
-
-    The digest is taken from the resolved configured path before any byte
-    is executed, so a mismatched bridge never runs. Returns ``(module,
-    actual_digest)``; any mismatch or import failure raises ``Stop``.
-    """
-
-    path = resolve_bridge_file(bridge_dir)
-    try:
-        actual = sha256_file(path).lower() if path.is_file() else ""
-    except OSError:
-        actual = ""
-    pinned = (expected_sha256 or "").strip().lower()
-    if not pinned or not re.fullmatch(r"[0-9a-f]{64}", pinned):
-        raise Stop("driver-stale",
-                   detail="missing or malformed --expected-bridge-sha256; "
-                          "no trusted bridge identity")
-    if not actual or actual != pinned:
-        raise Stop("driver-stale",
-                   detail="bridge file digest does not match the pinned digest")
-    return load_bridge(bridge_dir), actual
 
 
 def _as_paths(value) -> list[Path]:

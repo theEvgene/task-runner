@@ -114,5 +114,63 @@ class BridgeTrustRegressionTests(unittest.TestCase):
             common_mod.__file__ = real
 
 
+    # A pinned bridge that imports but omits the required API must still
+    # fail closed: a bounded nonzero receipt, never an unhandled traceback.
+    def test_api_incomplete_bridge_is_a_bounded_failure(self):
+        thin_dir = self.ws.root / "thin-bridge"
+        thin_dir.mkdir()
+        thin = thin_dir / "lan_bridge.py"
+        thin.write_text(
+            "class BridgeError(Exception):\n"
+            "    pass\n"
+            "class ProtocolError(BridgeError):\n"
+            "    pass\n"
+            "class JobNotFoundError(BridgeError):\n"
+            "    pass\n"
+            "class FetchTimeout(BridgeError):\n"
+            "    pass\n"
+            "def load_key(*a, **k):\n"
+            "    raise BridgeError('no key')\n"
+            "def read(*a, **k):\n"
+            "    raise JobNotFoundError('no job')\n"
+            "def open_envelope(*a, **k):\n"
+            "    raise ProtocolError('no envelope')\n"
+            "# fetch_result deliberately omitted\n",
+            encoding="utf-8",
+        )
+        pin = hashlib.sha256(thin.read_bytes()).hexdigest()
+        proc, data = self.ws.import_to(
+            self.ws.root / "copy-thin-bridge", self.job,
+            "--bridge-dir", str(thin_dir),
+            "--expected-bridge-sha256", pin)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIsNotNone(data, f"no receipt written: {proc.stderr}")
+        self.assertEqual(data["reason"], "driver-stale")
+        self.assertIn("bridge API incomplete", data["detail"])
+        self.assertIn("fetch_result", data["detail"])
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertFalse((self.ws.root / "copy-thin-bridge").exists())
+
+    # A bridge that terminates the import with SystemExit(0) must not look
+    # like a success: the exit stays nonzero with a bounded receipt.
+    def test_system_exit_zero_import_is_not_success(self):
+        exit_dir = self.ws.root / "exit-bridge"
+        exit_dir.mkdir()
+        exiting = exit_dir / "lan_bridge.py"
+        exiting.write_text("raise SystemExit(0)\n", encoding="utf-8")
+        pin = hashlib.sha256(exiting.read_bytes()).hexdigest()
+        proc, data = self.ws.import_to(
+            self.ws.root / "copy-exit-bridge", self.job,
+            "--bridge-dir", str(exit_dir),
+            "--expected-bridge-sha256", pin)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIsNotNone(data, f"no receipt written: {proc.stderr}")
+        self.assertEqual(data["reason"], "driver-stale")
+        self.assertIn("SystemExit(0)", data["detail"])
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertFalse((self.ws.root / "copy-exit-bridge").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
