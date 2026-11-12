@@ -19,9 +19,12 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,8 +32,14 @@ DETAIL_MAX = 400
 MANIFEST_SCHEMA = "git-bundle-manifest/1"
 BASE_REQUEST_SCHEMA = "dell-lan-base-request/1"
 BASE_EXPORT_SCHEMA = "dell-lan-base-export/1"
+FIRST_REQUEST_SCHEMA = "dell-lan-first-request/1"
+FIRST_EXPORT_SCHEMA = "dell-lan-first-export/1"
 PUBLISH_REQUEST_SCHEMA = "dell-lan-publish-request/1"
 PUBLISH_RESULT_SCHEMA = "dell-lan-publish-result/1"
+#: Protocol revision of the first-import drivers. Bumped only with a code
+#: change deployed on both machines; a sealed result naming another revision
+#: is refused instead of imported.
+FIRST_IMPORT_DRIVER_VERSION = "1"
 
 
 class Stop(Exception):
@@ -182,6 +191,117 @@ def safe_name(value: str) -> bool:
     return not any(part in value for part in ("/", "\\", "..", ":")) and not value.startswith(".")
 
 
+def remote_has_credentials(url: str | None) -> bool:
+    """True when a remote URL carries userinfo (a credential leak risk).
+
+    Any ``user@`` or ``user:pass@`` authority in a ``scheme://`` URL is
+    refused before any write or receipt output: the receipt embeds the URL
+    verbatim, so a credentialed URL would leak into the share, the queue
+    return file, and pasted reports. A bare local path and a normal
+    ``git@host:path`` scp form (user without a password) carry no secret
+    and are allowed; a scp user part containing ``:`` (``user:pass@``)
+    is refused as well.
+    """
+
+    if not url or not isinstance(url, str):
+        return False
+    text = url.strip()
+    if not text:
+        return False
+    if "://" in text:
+        try:
+            parsed = urllib.parse.urlsplit(text)
+        except ValueError:
+            return False
+        netloc = parsed.netloc or ""
+        if "@" in netloc:
+            return True
+        try:
+            if parsed.username or parsed.password:
+                return True
+        except ValueError:
+            return True
+        return False
+    if "@" in text:
+        user_part = text.split("@", 1)[0].split("/")[-1].split("\\")[-1]
+        if ":" in user_part:
+            return True
+    return False
+
+
+FIRST_REQUEST_NAME_RE = re.compile(r"^first-request-([0-9a-f]{16})\.json$")
+BASE_REQUEST_NAME_RE = re.compile(r"^base-request-([0-9a-f]{16})\.json$")
+PUBLISH_REQUEST_NAME_RE = re.compile(r"^publish-request-([0-9a-f]{16})\.json$")
+
+
+def request_file_token(name: str | os.PathLike) -> str | None:
+    """The embedded token of a ``*-request-<16hex>.json`` file name, or None."""
+
+    base = Path(str(name)).name
+    for pattern in (FIRST_REQUEST_NAME_RE, BASE_REQUEST_NAME_RE,
+                    PUBLISH_REQUEST_NAME_RE):
+        match = pattern.fullmatch(base)
+        if match:
+            return match.group(1)
+    return None
+
+
+def expected_request_name(schema: str, token: str) -> str | None:
+    """The one request file name bound to this schema and token."""
+
+    if schema == FIRST_REQUEST_SCHEMA:
+        return f"first-request-{token}.json"
+    if schema == BASE_REQUEST_SCHEMA:
+        return f"base-request-{token}.json"
+    if schema == PUBLISH_REQUEST_SCHEMA:
+        return f"publish-request-{token}.json"
+    return None
+
+
+def module_file_digest(module) -> str:
+    """SHA-256 of the actual file backing an imported module, or ``""``.
+
+    Legacy helper kept for older callers. It trusts the mutable
+    ``module.__file__`` attribute, so a module that rewrites its own
+    ``__file__`` can forge the answer. New trust checks must use
+    :func:`common_file_digest` (spec origin, never the mutable attribute)
+    or hash the resolved configured path directly.
+    """
+
+    try:
+        path = Path(str(getattr(module, "__file__", "")))
+        if not path.is_file():
+            return ""
+        return sha256_file(path)
+    except (OSError, ValueError):
+        return ""
+
+
+def common_file_digest() -> str:
+    """SHA-256 of the loaded ``dell_lan_common`` dependency, or ``""``.
+
+    Resolved through the import system (``find_spec`` origin), never the
+    mutable ``module.__file__`` attribute: a module that rewrites its own
+    ``__file__`` cannot redirect this digest. An unresolvable or unreadable
+    file yields ``""`` so the caller fails closed.
+    """
+
+    try:
+        spec = importlib.util.find_spec("dell_lan_common")
+        origin = getattr(spec, "origin", None) if spec is not None else None
+        if not origin or not Path(origin).is_file():
+            return ""
+        return sha256_file(Path(origin))
+    except (OSError, ValueError):
+        return ""
+
+
+def resolve_bridge_file(bridge_dir: Path) -> Path:
+    """The configured bridge client file inside ``bridge_dir`` (never executed)."""
+
+    return Path(bridge_dir) / "lan_bridge.py"
+
+
 def manifest_digest(files: list) -> str:
     """The bundle manifest digest: SHA-256 of the compact entry array."""
 
@@ -217,14 +337,79 @@ def git_ok(repo: Path, *args: str) -> tuple[bool, str]:
     return proc.returncode == 0, text
 
 
+def _bridge_api_gap(module) -> str | None:
+    """The first missing/invalid required bridge member, or None when complete.
+
+    The first-import flow calls ``load_key``, ``read``, ``open_envelope``,
+    and ``fetch_result`` and catches ``BridgeError``, ``ProtocolError``,
+    ``JobNotFoundError``, and ``FetchTimeout``. A pinned file that imports
+    cleanly but omits or mistypes any of these would otherwise fail later
+    with an unhandled ``AttributeError``/``TypeError`` and no bounded
+    receipt, so the gap is reported here as ``driver-stale``.
+    """
+
+    for name in ("load_key", "read", "open_envelope", "fetch_result"):
+        if not callable(getattr(module, name, None)):
+            return name
+    for name in ("BridgeError", "ProtocolError", "JobNotFoundError", "FetchTimeout"):
+        member = getattr(module, name, None)
+        if not isinstance(member, type) or not issubclass(member, BaseException):
+            return name
+    return None
+
+
 def load_bridge(bridge_dir: Path):
-    path = Path(bridge_dir) / "lan_bridge.py"
+    """Import the configured bridge client after the caller verified its pin.
+
+    The caller must hash :func:`resolve_bridge_file` against the trusted pin
+    *before* calling this: executing the file first and checking
+    ``bridge.__file__`` afterwards lets a malicious bridge run its side
+    effects even when its digest mismatches. A missing file fails closed
+    with ``queue-unreadable``; a bridge that cannot be imported (syntax
+    error, missing dependency, broken loader, or import-time termination
+    such as ``SystemExit``/``KeyboardInterrupt``) fails closed with
+    ``driver-stale`` so the caller still writes a bounded receipt instead
+    of an unhandled traceback or a false-success exit. A pinned file that
+    imports but does not expose the required bridge API also fails closed
+    with ``driver-stale``. A file that changes between the pin check
+    and this import is not detected from in-process measurement: execution
+    integrity rests on a read-only verified checkout deployed over a
+    trusted channel.
+    """
+
+    path = resolve_bridge_file(bridge_dir)
     if not path.is_file():
         raise Stop("queue-unreadable", detail=f"bridge not found: {path}")
-    spec = importlib.util.spec_from_file_location("dell_lan_bridge", str(path))
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["dell_lan_bridge"] = module
-    spec.loader.exec_module(module)
+    try:
+        spec = importlib.util.spec_from_file_location("dell_lan_bridge", str(path))
+        if spec is None or spec.loader is None:
+            raise Stop("driver-stale", detail="bridge import failed: no loader")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["dell_lan_bridge"] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException as error:
+            sys.modules.pop("dell_lan_bridge", None)
+            if isinstance(error, Stop):
+                raise
+            if isinstance(error, SystemExit):
+                raise Stop("driver-stale",
+                           detail=f"bridge import terminated: SystemExit({error.code})"[:DETAIL_MAX])
+            if isinstance(error, KeyboardInterrupt):
+                raise Stop("driver-stale",
+                           detail="bridge import interrupted"[:DETAIL_MAX])
+            raise Stop("driver-stale",
+                       detail=f"bridge import failed: {error}"[:DETAIL_MAX])
+    except Stop:
+        raise
+    except Exception as error:
+        raise Stop("driver-stale",
+                   detail=f"bridge import failed: {error}"[:DETAIL_MAX])
+    gap = _bridge_api_gap(module)
+    if gap is not None:
+        sys.modules.pop("dell_lan_bridge", None)
+        raise Stop("driver-stale",
+                   detail=f"bridge API incomplete: missing {gap}"[:DETAIL_MAX])
     return module
 
 
@@ -297,6 +482,55 @@ def verify_job(bridge, queue: Path, key: bytes, job_id: str, marker: str) -> dic
     command = str(job.get("command") or "")
     if marker not in command:
         raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    return job
+
+
+def verify_first_job(bridge, queue: Path, key: bytes, job_id: str) -> dict:
+    """Bind the sealed job to the exact first-export command (fail closed).
+
+    A substring marker is not enough: ``echo lenovo_first_export.py`` would
+    pass it while executing nothing. The sealed command must parse to exactly
+    ``<python> <driver> --request <request> --request-sha256 <digest>`` where
+    the driver basename is ``lenovo_first_export.py``, the request basename
+    is ``first-request-<16hex>.json`` and the digest is 64 hex. The driver
+    and request paths must both be absolute: a relative path names a
+    different file for every worker cwd and cannot pin the actually invoked
+    driver. Anything else is ``queue-job-mismatch``: the sealed result
+    proves nothing about this import. The parsed request file token is
+    stashed as ``_requestFileToken`` so the sealed payload token can be
+    bound to the exact file the job named.
+    """
+
+    try:
+        raw = bridge.read(str(queue / "jobs"), job_id)
+    except bridge.JobNotFoundError:
+        raise Stop("queue-job-missing", detail=job_id)
+    except (bridge.BridgeError, OSError) as error:
+        raise Stop("queue-job-unverifiable", detail=str(error)[:DETAIL_MAX])
+    try:
+        job = bridge.open_envelope(raw, key, "job", job_id)
+    except bridge.ProtocolError as error:
+        raise Stop("queue-job-unverifiable", detail=str(error)[:DETAIL_MAX])
+    command = str(job.get("command") or "")
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError as error:
+        raise Stop("queue-job-mismatch", detail=str(error)[:DETAIL_MAX])
+    if len(argv) != 6:
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    python, driver, flag_request, request_path, flag_digest, digest = argv
+    if not python or Path(driver).name != "lenovo_first_export.py":
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    if not Path(driver).is_absolute() or not Path(request_path).is_absolute():
+        raise Stop("queue-job-mismatch", detail="driver and request paths must be absolute")
+    if flag_request != "--request" or flag_digest != "--request-sha256":
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    request_token = request_file_token(Path(request_path).name)
+    if request_token is None:
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    if not re.fullmatch(r"[0-9a-f]{64}", digest.lower()):
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    job["_requestFileToken"] = request_token
     return job
 
 
