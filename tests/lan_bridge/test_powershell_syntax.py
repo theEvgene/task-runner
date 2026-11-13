@@ -180,6 +180,32 @@ class AdapterRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(verdict.position)
 
     @unittest.skipUnless(PS_RUNTIME, "no powershell runtime")
+    def test_broken_pipeline_reaches_parser(self):
+        # Balanced outer launcher: the refusal must come from
+        # Parser.ParseInput (EmptyPipeElement), not the launcher shape.
+        command = 'powershell -NoProfile -Command "Get-ChildItem |"'
+        verdict = gate.validate(command, "powershell")
+        self.assertFalse(verdict.ok)
+        self.assertEqual(verdict.dialect, "powershell")
+        self.assertIn("EmptyPipeElement", verdict.message)
+        self.assertIsNotNone(verdict.position)
+        self.assertGreaterEqual(verdict.position, 0)
+        self.assertLess(verdict.position, len(command))
+
+    @unittest.skipUnless(PS_RUNTIME, "no powershell runtime")
+    def test_unclosed_parenthesis_reaches_parser(self):
+        # Balanced outer launcher: the refusal must come from
+        # Parser.ParseInput (MissingEndParenthesis), not the launcher.
+        command = 'powershell -NoProfile -Command "Get-ChildItem (1"'
+        verdict = gate.validate(command, "powershell")
+        self.assertFalse(verdict.ok)
+        self.assertEqual(verdict.dialect, "powershell")
+        self.assertIn("MissingEndParenthesis", verdict.message)
+        self.assertIsNotNone(verdict.position)
+        self.assertGreaterEqual(verdict.position, 0)
+        self.assertLess(verdict.position, len(command))
+
+    @unittest.skipUnless(PS_RUNTIME, "no powershell runtime")
     def test_cli_syntax_error_refuses_before_write(self):
         proc = self._cli_submit(
             'powershell -NoProfile -Command "Get-ChildItem \'C:\\x"',
