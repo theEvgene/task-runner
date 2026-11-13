@@ -4,7 +4,8 @@
 Companion to ``lenovo_publish.py`` (the single command of a signed LAN job).
 This module holds the steps that talk to the Lenovo remote once the bundle is
 imported: the ``gitlab-mr-flow`` freshness preflight, the branch push, the
-Draft merge-request publish, and the read-only reconciliation probe, plus the
+Draft merge-request publish, the consented ``remove_draft`` step of a
+``ready`` request, and the read-only reconciliation probe, plus the
 per-action consent gate (``require``) they share with the driver.
 
 Split out so both driver modules stay under the 5500-token per-file budget;
@@ -20,7 +21,10 @@ from pathlib import Path
 from dell_lan_common import (
     DETAIL_MAX, Stop, git_ok, run,
 )
-from lenovo_publish_flow import capture, find_open_mr, load_flow, publish_draft
+from lenovo_publish_flow import (
+    capture, expected_ready_title, find_open_mr, load_flow, publish_draft,
+    require_ready_identity, undraft_mr,
+)
 
 
 def require(request: dict, action: str) -> None:
@@ -77,6 +81,20 @@ def remote_head(worktree: Path, branch: str) -> str | None:
 
 
 def publish(request: dict, worktree: Path, flow_dir: Path, result: dict) -> dict:
+    """Publish the Draft MR, and undraft it when the request consented to Ready.
+
+    A ``draft`` request ends after the Draft publish and its readback, exactly
+    as before: the ``remove_draft`` step never runs for it. A ``ready``
+    request needs ``undraft`` in ``authorized`` (gated here before any read or
+    write, plus the request-level gate): it then runs the external
+    ``remove_draft.py`` once against the same MR, re-captures the identity,
+    and proves the head SHA, the Ready title, and the input description still
+    match. No pipeline is waited for or polled on any path; the result
+    carries ``pipeline: {waited: false, polled: false}`` as the visible fact.
+    """
+
+    if request.get("state") == "ready":
+        require(request, "undraft")
     require(request, "mr")
     api, identity, publisher = load_flow(flow_dir)
     existing = find_open_mr(api, request["host"], request["project"], request["branch"])
@@ -85,6 +103,24 @@ def publish(request: dict, worktree: Path, flow_dir: Path, result: dict) -> dict
                     "draft": written.get("draft"), "created": existing is None}
     receipt = capture(identity, written["mr_url"], worktree)
     result["identity"] = receipt
+    result["pipeline"] = {"waited": False, "polled": False}
+    if request.get("state") != "ready":
+        result["undraft"] = None
+        return receipt
+    require(request, "undraft")
+    undraft_mr(flow_dir, written["mr_url"], request["host"], request["project"])
+    receipt = capture(identity, written["mr_url"], worktree)
+    if str(receipt.get("head_sha") or "").lower() != request["expectedCommit"]:
+        raise Stop("readback-mismatch", verdict="unknown", code=3,
+                   detail=(f"{receipt.get('head_sha')} != {request['expectedCommit']}"
+                           )[:DETAIL_MAX])
+    check = require_ready_identity(api, request, written["iid"])
+    result["mr"] = {"url": written["mr_url"], "iid": written["iid"],
+                    "draft": False, "created": existing is None}
+    result["identity"] = receipt
+    result["undraft"] = {"removedDraft": True, "titleChecked": True,
+                         "title": expected_ready_title(request),
+                         "descriptionCheck": check, "draft": False}
     return receipt
 
 

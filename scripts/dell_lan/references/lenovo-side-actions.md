@@ -37,8 +37,10 @@ refuses to replace an existing bundle file.
 
 Requires `import`, `push`, and `mr` in the request's `authorized` list,
 separately, and refuses an action that is not listed (`consent-missing`,
-exit 2) before it runs. A request whose `state` is not `draft` is refused as
-`request-malformed` before any action, so a Ready transition cannot pass the
+exit 2) before it runs. A `ready` request additionally requires `undraft`;
+a request whose `state` is neither `draft` nor `ready`, or a `ready` request
+without `undraft`, is refused as `request-malformed` / `consent-missing`
+before any action, so an unconsented Ready transition cannot pass the
 driver even if the request writer was bypassed. It then:
 
 1. verifies the request digest and the staged bundle against the manifest;
@@ -70,13 +72,23 @@ driver even if the request writer was bypassed. It then:
    `git ls-remote --heads origin <task-branch>`;
 7. finds an open MR for that source branch through `gitlab_api.api_get` and
    creates or updates the Draft MR through `publish_mr.publish` — a repeat run
-   updates the existing MR instead of opening a second one;
-8. reads the MR identity back through `mr_identity.capture_identity` and prints
-   one `dell-lan-publish-result/1` JSON line whose `identity` field is that
-   receipt verbatim.
+   updates the existing MR instead of opening a second one (`draft` keeps
+   `replace_description=False`; `ready` converges with `True`);
+8. for a `draft` request, reads the MR identity back through
+   `mr_identity.capture_identity` and prints one
+   `dell-lan-publish-result/1` JSON line whose `identity` field is that
+   receipt verbatim (`undraft` stays null, and no pipeline is waited for or
+   polled on any path — the result carries
+   `pipeline: {waited: false, polled: false}`);
+9. for a `ready` request, runs the external `remove_draft.py` once against
+   the same MR (`--mr-url`, `--host`, `--project`; no `--repo`), re-captures
+   the identity, and proves the head SHA, the Ready title, and the input
+   description still match (the Ready update converges via
+   `replace_description=True`, so the served text must equal the input); any
+   undraft failure or readback mismatch is `unknown` (exit 3), never success.
 
-A Ready transition is not implemented: `publish_mr` requires the
-`mr_prepare.py` target-SHA evidence, and iteration 1 publishes Draft only.
+A Ready transition without `undraft` consent is refused before any write;
+`publish_mr` alone never lifts Draft.
 
 ## What the result proves
 

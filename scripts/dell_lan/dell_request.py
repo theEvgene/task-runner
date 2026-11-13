@@ -38,7 +38,7 @@ TOKEN_RE = re.compile(r"^[0-9a-f]{16}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 KEY_RE = re.compile(r"^[A-Z][A-Z0-9]*-[1-9][0-9]*$")
 BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
-AUTHORIZABLE = ("import", "push", "mr", "reconcile")
+AUTHORIZABLE = ("import", "push", "mr", "undraft", "reconcile")
 PREVIOUS_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -198,10 +198,14 @@ def publish_request(args) -> dict:
         raise Stop("usage", code=2, detail="--jira-key must look like ABC-123")
     if not args.subject.strip() or "\n" in args.subject or "\r" in args.subject:
         raise Stop("usage", code=2, detail="--subject must be one non-empty line")
-    if args.state != "draft":
+    if args.state not in ("draft", "ready"):
         raise Stop("usage", code=2, detail=(
-            "iteration 1 publishes a Draft merge request only: a Ready transition needs the "
-            "existing mr_prepare.py target-SHA evidence, which this flow does not produce"))
+            "--state must be draft or ready"))
+    if args.state == "ready" and "undraft" not in [
+            item.strip() for item in (args.authorize or "").split(",") if item.strip()]:
+        raise Stop("usage", code=2, detail=(
+            "--state ready needs undraft in --authorize: removing Draft is a "
+            "separate consented action, never silent"))
     if not args.host or any(char in args.host for char in "/\\@"):
         raise Stop("usage", code=2, detail="--host must be the bare GitLab hostname")
     if not args.project or "/" not in args.project:
@@ -301,9 +305,11 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--change-type", required=True)
     publish.add_argument("--jira-key", required=True)
     publish.add_argument("--subject", required=True)
-    publish.add_argument("--state", default="draft")
+    publish.add_argument("--state", default="draft",
+                           help="draft, or ready (Ready needs undraft in --authorize)")
     publish.add_argument("--authorize", required=True,
-                         help="comma-separated: import,push,mr[,reconcile]")
+                         help="comma-separated: import,push,mr[,undraft][,reconcile] "
+                              "(undraft consents to the remove_draft step of a ready request)")
     publish.add_argument("--lenovo-checkout", required=True)
     publish.add_argument("--lenovo-worktree", required=True)
     publish.add_argument("--lenovo-flow-dir", default=None,

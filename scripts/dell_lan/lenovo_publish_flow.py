@@ -19,7 +19,7 @@ import importlib
 import sys
 from pathlib import Path
 
-from dell_lan_common import DETAIL_MAX, Stop
+from dell_lan_common import DETAIL_MAX, Stop, run
 
 PAGE_SIZE = 100
 MAX_PAGES = 50
@@ -109,9 +109,17 @@ def find_open_mr(api, host: str, project: str, branch: str) -> dict | None:
 
 
 def publish_draft(publisher, api, request: dict, existing: dict | None) -> dict:
-    """Create or update the Draft merge request through the existing writer."""
+    """Create or update the Draft merge request through the existing writer.
+
+    ``draft`` preserves the base append contract (``replace_description=False``).
+    ``ready`` passes ``replace_description=True`` so an existing same MR
+    converges to the exact request input: the explicit Ready request carries
+    the intended description under ``mr``+``undraft`` consent, and the exact
+    readback below would otherwise always fail on an appended update.
+    """
 
     description = Path(request["descriptionFile"]).read_text(encoding="utf-8")
+    replace = request.get("state") == "ready"
     try:
         result = publisher.publish(
             host=request["host"],
@@ -120,12 +128,12 @@ def publish_draft(publisher, api, request: dict, existing: dict | None) -> dict:
             key=request["jiraKey"],
             subject=request["subject"],
             description=description,
-            desired_state=request["state"],
+            desired_state="draft",
             no_test_results=False,
             source_branch=request["branch"],
             target_branch=request["targetBranch"],
             mr_url=(existing or {}).get("web_url"),
-            replace_description=False,
+            replace_description=replace,
         )
     except (publisher.PublicationError, api.GitlabUnavailable, OSError, ValueError) as error:
         raise Stop("mr-write-unknown", verdict="unknown", code=3, detail=str(error)[:DETAIL_MAX])
@@ -140,3 +148,92 @@ def capture(identity, mr_url: str, worktree: Path) -> dict:
     except (identity.IdentityError, identity.ContextMismatch) as error:
         raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
                    detail=str(error)[:DETAIL_MAX])
+
+
+def undraft_mr(flow_dir: Path, mr_url: str, host: str, project: str) -> None:
+    """Mark the published MR Ready through the external ``remove_draft.py``.
+
+    The script is owner-provided in ``flow_dir`` and is invoked with its real
+    CLI (``remove_draft.py --mr-url <url> --host <host> --project <project>``;
+    the real script accepts ``--mr-url``/``--url`` plus optional ``--host`` /
+    ``--project`` and has no ``--repo`` flag). A zero exit means the same MR
+    was marked Ready, anything else (missing script, non-zero exit) is
+    ``undraft-unknown`` (exit 3): the Draft write has landed, so a failed
+    undraft is never reported as success and never retried blindly.
+    """
+
+    script = Path(flow_dir) / "remove_draft.py"
+    if not script.is_file():
+        raise Stop("undraft-unknown", verdict="unknown", code=3,
+                   detail=f"remove_draft step unavailable: {script}"[:DETAIL_MAX])
+    proc = run([sys.executable, str(script),
+                "--mr-url", mr_url, "--host", host, "--project", project])
+    if proc.returncode != 0:
+        raise Stop("undraft-unknown", verdict="unknown", code=3,
+                   detail=(proc.stderr or proc.stdout).strip()[:DETAIL_MAX])
+
+
+def expected_ready_title(request: dict) -> str:
+    """The Ready title the writer produced, without the ``Draft: `` prefix."""
+
+    return f"{request['changeType']}({request['jiraKey']}): {request['subject']}"
+
+
+def descriptions_match(served: str, expected: str) -> bool:
+    """The one shared description check (#11 criterion, reused by #37).
+
+    Byte-for-byte equality of the served MR description against the request
+    input (both already UTF-8 strings, no normalization). #11 is still open on
+    the base with no helper to import, so this is the single place that states
+    the exactness criterion; the Ready path reuses it instead of duplicating
+    it. A suffix/``endswith`` check is not used because it would accept an
+    arbitrary preserved prefix.
+    """
+
+    return served == expected
+
+
+def require_ready_identity(api, request: dict, iid: int) -> str:
+    """Prove the undrafted MR still carries the exact input title/description.
+
+    Re-reads the single MR through the flow client's own ``api_get`` and
+    compares it against the request input: the Ready title built the same way
+    the writer builds the Draft title, and the description file bytes
+    (UTF-8, byte-for-byte). Exact equality is required: ``ready`` converges
+    the same MR via ``replace_description=True`` so the served text must equal
+    the input. Any mismatch is ``readback-mismatch`` (exit 3): the undraft
+    write may have landed, so the run reconciles instead of retrying blindly.
+    Returns ``exact``.
+    """
+
+    try:
+        record = api.api_get(
+            request["host"],
+            f"{api.project_api_base(request['host'], request['project'])}/merge_requests/{iid}")
+    except api.GitlabUnavailable as error:
+        raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
+                   detail=str(error)[:DETAIL_MAX])
+    if not isinstance(record, dict):
+        raise Stop("readback-mismatch", verdict="unknown", code=3,
+                   detail="single-MR read did not return a JSON object")
+    if record.get("draft") is not False:
+        raise Stop("readback-mismatch", verdict="unknown", code=3,
+                   detail="the MR is not marked Ready after the undraft step")
+    if str(record.get("title") or "") != expected_ready_title(request):
+        raise Stop("readback-mismatch", verdict="unknown", code=3,
+                   detail=(f"undrafted title {record.get('title')!r} "
+                           f"!= {expected_ready_title(request)!r}")[:DETAIL_MAX])
+    try:
+        description = Path(request["descriptionFile"]).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise Stop("readback-mismatch", verdict="unknown", code=3,
+                   detail=f"cannot re-read the input description: {error}"[:DETAIL_MAX])
+    served = record.get("description")
+    if not isinstance(served, str):
+        raise Stop("readback-mismatch", verdict="unknown", code=3,
+                   detail="the MR carries no description to compare")
+    if not descriptions_match(served, description):
+        raise Stop("readback-mismatch", verdict="unknown", code=3,
+                   detail=(f"undrafted description failed the exact check "
+                           f"({len(served)} vs {len(description)} chars)")[:DETAIL_MAX])
+    return "exact"
