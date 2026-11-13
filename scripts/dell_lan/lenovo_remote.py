@@ -85,14 +85,16 @@ def publish(request: dict, worktree: Path, flow_dir: Path, result: dict) -> dict
 
     A ``draft`` request ends after the Draft publish and its readback, exactly
     as before: the ``remove_draft`` step never runs for it. A ``ready``
-    request needs ``undraft`` in ``authorized`` (checked again here at the
-    point of use, after the request-level gate): it then runs the external
+    request needs ``undraft`` in ``authorized`` (gated here before any read or
+    write, plus the request-level gate): it then runs the external
     ``remove_draft.py`` once against the same MR, re-captures the identity,
     and proves the head SHA, the Ready title, and the input description still
     match. No pipeline is waited for or polled on any path; the result
     carries ``pipeline: {waited: false, polled: false}`` as the visible fact.
     """
 
+    if request.get("state") == "ready":
+        require(request, "undraft")
     require(request, "mr")
     api, identity, publisher = load_flow(flow_dir)
     existing = find_open_mr(api, request["host"], request["project"], request["branch"])

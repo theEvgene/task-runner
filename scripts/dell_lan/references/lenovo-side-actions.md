@@ -72,7 +72,8 @@ driver even if the request writer was bypassed. It then:
    `git ls-remote --heads origin <task-branch>`;
 7. finds an open MR for that source branch through `gitlab_api.api_get` and
    creates or updates the Draft MR through `publish_mr.publish` — a repeat run
-   updates the existing MR instead of opening a second one;
+   updates the existing MR instead of opening a second one (`draft` keeps
+   `replace_description=False`; `ready` converges with `True`);
 8. for a `draft` request, reads the MR identity back through
    `mr_identity.capture_identity` and prints one
    `dell-lan-publish-result/1` JSON line whose `identity` field is that
@@ -82,8 +83,8 @@ driver even if the request writer was bypassed. It then:
 9. for a `ready` request, runs the external `remove_draft.py` once against
    the same MR (`--mr-url`, `--host`, `--project`; no `--repo`), re-captures
    the identity, and proves the head SHA, the Ready title, and the input
-   description still match (exact on create; an update that preserved earlier
-   text fails closed, never silently overwritten); any
+   description still match (the Ready update converges via
+   `replace_description=True`, so the served text must equal the input); any
    undraft failure or readback mismatch is `unknown` (exit 3), never success.
 
 A Ready transition without `undraft` consent is refused before any write;

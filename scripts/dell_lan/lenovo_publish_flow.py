@@ -111,16 +111,15 @@ def find_open_mr(api, host: str, project: str, branch: str) -> dict | None:
 def publish_draft(publisher, api, request: dict, existing: dict | None) -> dict:
     """Create or update the Draft merge request through the existing writer.
 
-    Preserves the existing Draft behavior exactly (``replace_description=False``,
-    the append-on-update contract from the base): a ``draft`` request is unchanged
-    by #37, and a ``ready`` request first publishes the same Draft and only then
-    lifts it through the consented ``remove_draft`` step. The writer is never
-    asked to silently overwrite an existing description; when an update leaves
-    the served description different from the input, the Ready readback below
-    fails closed (``readback-mismatch``) instead of forcing equality.
+    ``draft`` preserves the base append contract (``replace_description=False``).
+    ``ready`` passes ``replace_description=True`` so an existing same MR
+    converges to the exact request input: the explicit Ready request carries
+    the intended description under ``mr``+``undraft`` consent, and the exact
+    readback below would otherwise always fail on an appended update.
     """
 
     description = Path(request["descriptionFile"]).read_text(encoding="utf-8")
+    replace = request.get("state") == "ready"
     try:
         result = publisher.publish(
             host=request["host"],
@@ -134,7 +133,7 @@ def publish_draft(publisher, api, request: dict, existing: dict | None) -> dict:
             source_branch=request["branch"],
             target_branch=request["targetBranch"],
             mr_url=(existing or {}).get("web_url"),
-            replace_description=False,
+            replace_description=replace,
         )
     except (publisher.PublicationError, api.GitlabUnavailable, OSError, ValueError) as error:
         raise Stop("mr-write-unknown", verdict="unknown", code=3, detail=str(error)[:DETAIL_MAX])
@@ -200,13 +199,11 @@ def require_ready_identity(api, request: dict, iid: int) -> str:
     Re-reads the single MR through the flow client's own ``api_get`` and
     compares it against the request input: the Ready title built the same way
     the writer builds the Draft title, and the description file bytes
-    (UTF-8, byte-for-byte). Exact equality is required: a create carries the
-    input exactly, while an update that preserved earlier text (the base
-    append contract, ``replace_description=False``) fails here with
-    ``readback-mismatch`` instead of being silently overwritten. Any mismatch
-    is ``readback-mismatch`` (exit 3): the undraft write may have landed, so
-    the run reconciles instead of retrying blindly, and a later publish
-    updates the same MR. Returns ``exact``.
+    (UTF-8, byte-for-byte). Exact equality is required: ``ready`` converges
+    the same MR via ``replace_description=True`` so the served text must equal
+    the input. Any mismatch is ``readback-mismatch`` (exit 3): the undraft
+    write may have landed, so the run reconciles instead of retrying blindly.
+    Returns ``exact``.
     """
 
     try:

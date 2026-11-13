@@ -335,18 +335,46 @@ class ReadyConsentTests(unittest.TestCase):
             "head_sha": TASK, "target_sha": "c" * 40,
             "web_url": f"https://{HOST}/{PROJECT}/-/merge_requests/1"}})
         result: dict = {}
-        with self.assertRaises(Stop) as caught:
-            lenovo_remote.publish(
-                self._request("ready", ["import", "push", "mr", "undraft"]),
-                self.worktree, self.flow, result)
-        self.assertEqual(caught.exception.code, 3)
-        self.assertEqual(caught.exception.reason, "readback-mismatch")
+        receipt = lenovo_remote.publish(
+            self._request("ready", ["import", "push", "mr", "undraft"]),
+            self.worktree, self.flow, result)
+        self.assertEqual(receipt["head_sha"], TASK)
+        self.assertFalse(result["mr"]["draft"])
+        self.assertFalse(result["mr"]["created"])
+        self.assertEqual(result["undraft"]["descriptionCheck"], "exact")
         state = json.loads(self.state.read_text(encoding="utf-8"))
         self.assertEqual(len(state["mrs"]), 1, "no second MR for one branch")
-        self.assertTrue(
-            state["mrs"]["1"]["description"].startswith("Earlier draft text.\n"),
-            "the existing description is preserved (append), never silently overwritten")
+        self.assertEqual(state["mrs"]["1"]["description"], DESCRIPTION)
+        self.assertEqual(state["mrs"]["1"]["title"], "feat(ABC-1): fixture task")
+        self.assertFalse(state["mrs"]["1"]["draft"])
+
+    def test_draft_update_preserves_earlier_text(self):
+        self._write_flow(with_undraft=True)
+        self._seed({"1": {
+            "iid": 1, "source_branch": BRANCH, "target_branch": BASE_BRANCH,
+            "title": "Draft: feat(ABC-1): fixture task",
+            "description": "Earlier draft text.\n", "draft": True,
+            "head_sha": TASK, "target_sha": "c" * 40,
+            "web_url": f"https://{HOST}/{PROJECT}/-/merge_requests/1"}})
+        result: dict = {}
+        lenovo_remote.publish(
+            self._request("draft", ["import", "push", "mr"]),
+            self.worktree, self.flow, result)
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertTrue(state["mrs"]["1"]["description"].startswith("Earlier draft text.\n"))
         self.assertNotEqual(state["mrs"]["1"]["description"], DESCRIPTION)
+        self.assertTrue(result["mr"]["draft"])
+
+    def test_publish_gates_undraft_before_any_flow_read(self):
+        self._write_flow(with_undraft=True)
+        self._seed()
+        with self.assertRaises(Stop) as caught:
+            lenovo_remote.publish(
+                self._request("ready", ["import", "push", "mr"]),
+                self.worktree, self.flow, {})
+        self.assertEqual(caught.exception.reason, "consent-missing")
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(state["mrs"], {})
 
     def test_undraft_title_mismatch_is_unknown_never_success(self):
         self._write_flow(with_undraft=True)

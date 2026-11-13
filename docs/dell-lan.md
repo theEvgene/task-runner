@@ -308,8 +308,10 @@ never runs the undraft step, so Draft stays the silent default and is never
 lifted by accident.
 
 With consent, the driver runs, in order: push → Draft MR create/update
-(never a second MR for one branch, Draft behavior unchanged:
-`replace_description=False`, so an update preserves earlier text) →
+(never a second MR for one branch; `draft` keeps `replace_description=False`
+so an update preserves earlier text, while `ready` passes
+`replace_description=True` so an existing same MR converges to the exact
+request input) →
 `remove_draft.py --mr-url <url> --host <host> --project <project>` from
 `--lenovo-flow-dir` → identity re-capture. The
 result then proves three things: the re-captured head SHA still equals the
@@ -317,8 +319,8 @@ task commit, the MR is no longer Draft, and the served title and
 description still match the request input byte-for-byte — the Ready title
 built the same way the writer builds the Draft title (without the
 `Draft: ` prefix), and the description file bytes (UTF-8). Exact equality
-is required: a create carries the input exactly, while an update that
-preserved earlier text fails closed instead of being silently overwritten.
+is required on the Ready path because the request supplies the intended
+description under `mr`+`undraft` consent.
 Any mismatch, or any undraft failure, is `unknown` (exit 3,
 `readback-mismatch` / `undraft-unknown`): the write may have landed, so the
 run reconciles through the read-only probe instead of retrying blind, and a
