@@ -43,6 +43,9 @@ def load_bridge(bridge_dir: Path):
     path = Path(bridge_dir) / "lan_bridge.py"
     if not path.is_file():
         raise ValueError(f"bridge not found: {path}")
+    # lan_bridge imports its sibling syntax gate; make that directory importable.
+    if str(path.parent) not in sys.path:
+        sys.path.insert(0, str(path.parent))
     spec = importlib.util.spec_from_file_location(
         "pipeline_observer_bridge", str(path))
     if spec is None or spec.loader is None:  # pragma: no cover - defensive

@@ -27,9 +27,10 @@ import tempfile
 import time
 from pathlib import Path
 
+import syntax as _syn
+
 MAX_ENVELOPE_BYTES = 2 * 1024 * 1024
 KEY_BYTES = 32
-ID_HEX_LEN = 32
 PUBLISH_MAX = 2 * 1024 * 1024
 DEFAULT_READ_MAX = 2 * 1024 * 1024
 # Owner wait defaults (#12/#13): fetch waits up to 240 s, checking every
@@ -374,8 +375,9 @@ def load_key(key_path: str, key_format: str = "raw",
 def submit_job(queue_dir: str, key: bytes, command: str,
                working_directory: str, timeout_seconds: int = 300,
                max_output_bytes: int = 65536,
-               return_files: list | None = None) -> str:
+               return_files: list | None = None, dialect=None) -> str:
     """Seal the command payload and publish it immutably; return the job id."""
+    _syn.enforce(command, dialect, BridgeError)
     job_id = generate_job_id()
     payload = build_job_payload(job_id=job_id, command=command,
                                 working_directory=working_directory,
@@ -455,7 +457,7 @@ def cmd_submit(args: argparse.Namespace) -> int:
         return_files = list(args.return_file or [])
         job_id = submit_job(args.queue, key, command, args.cwd,
                             int(args.timeout), int(args.max_output),
-                            return_files)
+                            return_files, args.dialect)
     except (BridgeError, ValueError, TypeError,
             FileQueueError, ProtocolError) as e:
         print(f"submit refused: {e}", file=sys.stderr)
@@ -524,6 +526,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_submit.add_argument("--timeout", type=int, default=300)
     p_submit.add_argument("--max-output", type=int, default=65536)
     p_submit.add_argument("--return-file", action="append", default=None)
+    _syn.add_cli(p_submit)
     p_submit.set_defaults(func=cmd_submit)
 
     p_fetch = sub.add_parser("fetch", help="wait for and verify the result")
