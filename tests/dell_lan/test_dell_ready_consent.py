@@ -409,21 +409,58 @@ class ReadyConsentTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 3)
         self.assertEqual(caught.exception.reason, "readback-mismatch")
 
-    def test_driver_never_touches_a_pipeline_observer(self):
-        """No pipeline-observer module is imported and no probe is executed.
+    def test_ready_runs_no_pipeline_observer(self):
+        """Consented Ready publishes with zero pipeline-observer invocations.
 
-        The policy sentence in the docstring may name the separate
-        ``docs/pipeline-observer.md`` route; what must never appear is an
-        executable reference to it.
+        The publish path has no observer seam by design: the only ways it
+        could invoke one are a module import (``load_flow``) or a subprocess
+        (``run``). Both seams are counted here at runtime, so a future
+        change that imports or executes the observer fails this test.
         """
+        self._write_flow(with_undraft=True)
+        self._seed()
+        calls: list = []
+        import importlib as _imports
+        import subprocess as _subprocess
+        import dell_lan_common as _common
+        import lenovo_publish_flow as _flow
 
-        for name in ("lenovo_publish.py", "lenovo_remote.py", "lenovo_publish_flow.py"):
-            source = (SCRIPTS / name).read_text(encoding="utf-8")
-            self.assertNotIn("pipeline_observer", source)
-            self.assertNotIn("probe.py", source)
-            mentions = source.count("pipeline-observer")
-            doc_refs = source.count("docs/pipeline-observer.md")
-            self.assertEqual(mentions, doc_refs)
+        def _note(kind: str, text: str) -> None:
+            lowered = text.lower()
+            if ("pipeline_observer" in lowered or "pipeline-observer" in lowered
+                    or "probe.py" in lowered or lowered == "probe"):
+                calls.append((kind, text))
+
+        real_import = _imports.import_module
+
+        def _import(name, *args, **kwargs):
+            _note("import", str(name))
+            return real_import(name, *args, **kwargs)
+
+        real_run = _common.run
+
+        def _run(command, *args, **kwargs):
+            _note("run", " ".join(str(part) for part in (command or [])))
+            return real_run(command, *args, **kwargs)
+
+        real_subprocess = _subprocess.run
+
+        def _subprocess_run(command, *args, **kwargs):
+            parts = command if isinstance(command, (list, tuple)) else [command]
+            _note("run", " ".join(str(part) for part in parts))
+            return real_subprocess(command, *args, **kwargs)
+
+        with unittest.mock.patch.object(_imports, "import_module", _import), \
+                unittest.mock.patch.object(_common, "run", _run), \
+                unittest.mock.patch.object(lenovo_remote, "run", _run), \
+                unittest.mock.patch.object(_flow, "run", _run), \
+                unittest.mock.patch.object(_subprocess, "run", _subprocess_run):
+            result: dict = {}
+            lenovo_remote.publish(
+                self._request("ready", ["import", "push", "mr", "undraft"]),
+                self.worktree, self.flow, result)
+        self.assertEqual(result["pipeline"], {"waited": False, "polled": False})
+        self.assertEqual(calls, [], f"pipeline observer invoked: {calls!r}")
 
 
 if __name__ == "__main__":
