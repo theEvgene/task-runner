@@ -19,7 +19,7 @@ import importlib
 import sys
 from pathlib import Path
 
-from dell_lan_common import DETAIL_MAX, Stop, run
+from dell_lan_common import DETAIL_MAX, Stop, run, sha256_bytes
 
 PAGE_SIZE = 100
 MAX_PAGES = 50
@@ -118,8 +118,17 @@ def publish_draft(publisher, api, request: dict, existing: dict | None) -> dict:
     readback below would otherwise always fail on an appended update.
     """
 
-    description = Path(request["descriptionFile"]).read_text(encoding="utf-8")
+    description = request.get("descriptionText")
+    if not isinstance(description, str):
+        description = load_description(request)
+        request["descriptionText"] = description
     replace = request.get("state") == "ready"
+    previous: str | None = None
+    previous_unknown = False
+    if existing is not None and not replace:
+        previous = existing.get("description")
+        if not isinstance(previous, str):
+            previous_unknown = True
     try:
         result = publisher.publish(
             host=request["host"],
@@ -137,7 +146,83 @@ def publish_draft(publisher, api, request: dict, existing: dict | None) -> dict:
         )
     except (publisher.PublicationError, api.GitlabUnavailable, OSError, ValueError) as error:
         raise Stop("mr-write-unknown", verdict="unknown", code=3, detail=str(error)[:DETAIL_MAX])
+    verify_draft_description(api, request, description, existing,
+                             result.get("iid"), replace, previous,
+                             previous_unknown)
     return result
+
+
+def load_description(request: dict) -> str:
+    """Read the Draft description bytes exactly as staged, decoded strictly.
+
+    Raw bytes are decoded as UTF-8 with no newline translation (``read_text``
+    would map CR LF to LF) and no normalization: the queue carries bytes, and
+    any normalization needs a proven GitLab contract recorded in the check. A
+    missing file or undecodable bytes fails closed as ``refused`` before any
+    external write, never as an unknown outcome.
+    """
+
+    path = Path(str(request.get("descriptionFile") or ""))
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise Stop("description-missing", detail=f"{path}: {error}"[:DETAIL_MAX])
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise Stop("description-invalid-utf8",
+                   detail=f"{path}: {error}"[:DETAIL_MAX])
+
+
+def verify_draft_description(api, request: dict, expected: str,
+                             existing: dict | None, iid,
+                             replace: bool, previous: str | None,
+                             previous_unknown: bool) -> None:
+    """Prove the stored Draft description equals the full expected text.
+
+    A create stores exactly what was sent. A ``ready`` update converges the
+    same MR via ``replace_description=True`` so it also stores exactly what
+    was sent. A ``draft`` update appends through the base writer contract, so
+    the stored text must equal ``previous + newline + sent`` where ``previous``
+    is the description observed on the pre-write list row. A suffix check is
+    not used: ``unexpected newline sent`` would pass it on a create and hide a
+    replaced prefix on an update. When the previous text cannot be known (an
+    update with a missing or non-string row description) the full expected
+    text cannot be known either, so the run fails closed as unknown instead
+    of inferring from a suffix. A missing row or a row without a description
+    proves nothing and fails closed as unknown; altered text is a refused
+    mismatch, never a success.
+    """
+
+    if existing is not None and not replace and previous_unknown:
+        raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
+                   detail="the pre-write MR row carries no description")
+    if existing is None or replace:
+        expected_full = expected
+    else:
+        expected_full = str(previous or "") + "\n" + expected
+    if isinstance(iid, bool) or not isinstance(iid, int):
+        raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
+                   detail="the write returned no integer MR iid")
+    try:
+        record = api.api_get(
+            request["host"],
+            f"{api.project_api_base(request['host'], request['project'])}/merge_requests/{iid}")
+    except api.GitlabUnavailable as error:
+        raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
+                   detail=str(error)[:DETAIL_MAX])
+    if not isinstance(record, dict):
+        raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
+                   detail="the single-MR read did not return a JSON object")
+    stored = record.get("description")
+    if not isinstance(stored, str):
+        raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
+                   detail="the MR carries no description to compare")
+    if not descriptions_match(stored, expected_full):
+        raise Stop("description-mismatch", detail=(
+            "stored sha256 "
+            f"{sha256_bytes(stored.encode('utf-8'))} != sent sha256 "
+            f"{sha256_bytes(expected_full.encode('utf-8'))}")[:DETAIL_MAX])
 
 
 def capture(identity, mr_url: str, worktree: Path) -> dict:
@@ -224,10 +309,10 @@ def require_ready_identity(api, request: dict, iid: int) -> str:
                    detail=(f"undrafted title {record.get('title')!r} "
                            f"!= {expected_ready_title(request)!r}")[:DETAIL_MAX])
     try:
-        description = Path(request["descriptionFile"]).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as error:
+        description = load_description(request)
+    except Stop as error:
         raise Stop("readback-mismatch", verdict="unknown", code=3,
-                   detail=f"cannot re-read the input description: {error}"[:DETAIL_MAX])
+                   detail=f"cannot re-read the input description: {error.detail}"[:DETAIL_MAX])
     served = record.get("description")
     if not isinstance(served, str):
         raise Stop("readback-mismatch", verdict="unknown", code=3,

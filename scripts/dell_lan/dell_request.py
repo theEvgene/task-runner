@@ -223,6 +223,12 @@ def publish_request(args) -> dict:
         raise Stop("usage", code=2, detail="--bundle must name one contained file")
     if not Path(args.description_file).is_file():
         raise Stop("usage", code=2, detail="--description-file does not exist")
+    try:
+        Path(args.description_file).read_bytes().decode("utf-8")
+    except OSError as error:
+        raise Stop("usage", code=2, detail=f"--description-file is unreadable: {error}")
+    except UnicodeDecodeError as error:
+        raise Stop("usage", code=2, detail=f"--description-file is not valid UTF-8: {error}")
     require_absolute_lenovo_paths(
         ("--lenovo-checkout", args.lenovo_checkout),
         ("--lenovo-worktree", args.lenovo_worktree),

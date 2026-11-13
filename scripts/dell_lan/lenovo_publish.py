@@ -19,6 +19,7 @@ from dell_lan_common import (
     DETAIL_MAX, PUBLISH_RESULT_SCHEMA, Stop, default_flow_dir, now_iso,
 )
 from lenovo_bundle import ACTIONS, bundle_tip, import_once, validated, verify_bundle
+from lenovo_publish_flow import load_description
 from lenovo_remote import observe, preflight, publish, push, require
 
 
@@ -46,6 +47,10 @@ def main(argv=None) -> int:
         result["authorized"] = request["authorized"]
         if request["reconcileOnly"]:
             require(request, "reconcile")
+        else:
+            # The push below is already a remote write, so undecodable input
+            # must fail here, before any external write, never at the MR stage.
+            request["descriptionText"] = load_description(request)
         result["stage"] = "bundle"
         bundle = verify_bundle(request, result)
         tip = bundle_tip(Path(request["lenovoCheckout"]), bundle)

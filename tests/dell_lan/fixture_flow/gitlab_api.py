@@ -44,7 +44,12 @@ def merge_request_url(host: str, project: str, iid: int) -> str:
 
 
 def api_get(host: str, path: str):
-    """List open merge requests from the fixture state file, honoring paging."""
+    """List open merge requests from the fixture state file, honoring paging.
+
+    Rows carry the stored description when the record has one, which is the
+    seam the driver's exact round-trip check reads; a row without it proves
+    nothing about the write.
+    """
 
     state = _state()
     if host != state.get("host"):
@@ -72,14 +77,17 @@ def api_get(host: str, path: str):
         }
     rows = []
     for record in state.get("mrs", {}).values():
-        rows.append({
+        row = {
             "iid": int(record["iid"]),
             "source_branch": record["source_branch"],
             "target_branch": record["target_branch"],
             "web_url": record["web_url"],
             "draft": bool(record.get("draft", True)),
             "state": "opened",
-        })
+        }
+        if "description" in record:
+            row["description"] = record["description"]
+        rows.append(row)
     params = dict(parse_qsl(query))
     if "page" in params or "per_page" in params:
         try:
@@ -120,6 +128,3 @@ def paginate(host: str, path: str, *, per_page: int = 100,
                     "truncated": False, "error": None}
     return {"items": items, "pages": pages, "complete": False,
             "truncated": True, "error": None}
-    if "state=opened" in query:
-        return rows
-    return rows

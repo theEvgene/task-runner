@@ -67,10 +67,16 @@ def api_get(host, path):
         raise GitlabUnavailable("unsupported path")
     suffix = head[len(base):]
     if suffix == "" or suffix.startswith("?"):
-        rows = [{"iid": r["iid"], "source_branch": r["source_branch"],
-                 "target_branch": r["target_branch"], "web_url": r["web_url"],
-                 "draft": bool(r.get("draft", True)), "state": "opened"}
-                for r in state.get("mrs", {}).values() if isinstance(r, dict)]
+        rows = []
+        for r in state.get("mrs", {}).values():
+            if not isinstance(r, dict):
+                continue
+            row = {"iid": r["iid"], "source_branch": r["source_branch"],
+                   "target_branch": r["target_branch"], "web_url": r["web_url"],
+                   "draft": bool(r.get("draft", True)), "state": "opened"}
+            if "description" in r:
+                row["description"] = r["description"]
+            rows.append(row)
         params = dict(parse_qsl(query))
         if "page" in params or "per_page" in params:
             per_page = int(params.get("per_page", 100))
@@ -194,7 +200,7 @@ class ReadyConsentTests(unittest.TestCase):
         self.worktree.mkdir()
         self.state = self.root / "mr-state.json"
         self.description = self.shared / "mr-description.md"
-        self.description.write_text(DESCRIPTION, encoding="utf-8")
+        self.description.write_bytes(DESCRIPTION.encode("utf-8"))
         self._saved_env = {name: os.environ.get(name) for name in
                            ("STUB_MR_STATE", "STUB_HEAD", "STUB_UNDRAFT_MODE")}
         os.environ["PYTHONUTF8"] = "1"
@@ -364,6 +370,21 @@ class ReadyConsentTests(unittest.TestCase):
         self.assertTrue(state["mrs"]["1"]["description"].startswith("Earlier draft text.\n"))
         self.assertNotEqual(state["mrs"]["1"]["description"], DESCRIPTION)
         self.assertTrue(result["mr"]["draft"])
+
+    def test_draft_update_without_previous_description_is_unknown(self):
+        self._write_flow(with_undraft=True)
+        self._seed({"1": {
+            "iid": 1, "source_branch": BRANCH, "target_branch": BASE_BRANCH,
+            "title": "Draft: feat(ABC-1): fixture task",
+            "draft": True,
+            "head_sha": TASK, "target_sha": "c" * 40,
+            "web_url": f"https://{HOST}/{PROJECT}/-/merge_requests/1"}})
+        with self.assertRaises(Stop) as caught:
+            lenovo_remote.publish(
+                self._request("draft", ["import", "push", "mr"]),
+                self.worktree, self.flow, {})
+        self.assertEqual(caught.exception.code, 3)
+        self.assertEqual(caught.exception.reason, "mr-readback-unavailable")
 
     def test_publish_gates_undraft_before_any_flow_read(self):
         self._write_flow(with_undraft=True)

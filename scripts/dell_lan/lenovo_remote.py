@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 from dell_lan_common import (
-    DETAIL_MAX, Stop, git_ok, run,
+    DETAIL_MAX, Stop, git_ok, run, sha256_bytes,
 )
 from lenovo_publish_flow import (
     capture, expected_ready_title, find_open_mr, load_flow, publish_draft,
@@ -99,8 +99,12 @@ def publish(request: dict, worktree: Path, flow_dir: Path, result: dict) -> dict
     api, identity, publisher = load_flow(flow_dir)
     existing = find_open_mr(api, request["host"], request["project"], request["branch"])
     written = publish_draft(publisher, api, request, existing)
+    text = request.get("descriptionText")
     result["mr"] = {"url": written["mr_url"], "iid": written["iid"],
-                    "draft": written.get("draft"), "created": existing is None}
+                    "draft": written.get("draft"), "created": existing is None,
+                    "descriptionVerified": True,
+                    "descriptionSha256": (sha256_bytes(text.encode("utf-8"))
+                                          if isinstance(text, str) else None)}
     receipt = capture(identity, written["mr_url"], worktree)
     result["identity"] = receipt
     result["pipeline"] = {"waited": False, "polled": False}
@@ -115,8 +119,12 @@ def publish(request: dict, worktree: Path, flow_dir: Path, result: dict) -> dict
                    detail=(f"{receipt.get('head_sha')} != {request['expectedCommit']}"
                            )[:DETAIL_MAX])
     check = require_ready_identity(api, request, written["iid"])
+    text = request.get("descriptionText")
     result["mr"] = {"url": written["mr_url"], "iid": written["iid"],
-                    "draft": False, "created": existing is None}
+                    "draft": False, "created": existing is None,
+                    "descriptionVerified": True,
+                    "descriptionSha256": (sha256_bytes(text.encode("utf-8"))
+                                          if isinstance(text, str) else None)}
     result["identity"] = receipt
     result["undraft"] = {"removedDraft": True, "titleChecked": True,
                          "title": expected_ready_title(request),

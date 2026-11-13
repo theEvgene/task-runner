@@ -299,6 +299,21 @@ the task commit), `simulated` (the same chain labelled a fixture), `stale`,
 `unknown` (exit 3), `rejected` (exit 1), `mismatch` (exit 1). Only
 `published` asserts remote publication.
 
+### Draft MR description: exact full-text round-trip
+
+The driver reads the description file as raw bytes, strict UTF-8, no newline
+translation, before any external write (a missing or undecodable file is
+refused at the request stage). After the MR write it re-reads the single MR
+and requires exact equality with the full expected text: a create, or a
+`ready` update (`replace_description=True`), stores exactly the sent text; a
+`draft` update appends, so the stored text must equal `previous + newline +
+sent` with `previous` from the pre-write list row. No suffix check is used:
+`unexpected newline sent` on a create, or a replaced prefix preserving the
+suffix on an update, is a refused `description-mismatch`. When `previous`
+cannot be known the run fails closed as unknown
+(`mr-readback-unavailable`). The `mr` receipt records
+`descriptionVerified: true` with the sent text's SHA-256.
+
 ## 6b. Ready route: consented undraft with readback, no pipeline wait
 
 A `ready` request is the same publish with one extra consented step. The

@@ -150,7 +150,7 @@ def import_once(request: dict, bundle: Path, tip: str, result: dict) -> Path:
         previous = None
     if tip != expected:
         raise Stop("artifact-mismatch", detail=f"bundle tip {tip} != {expected}")
-    ok, _ = git_ok(checkout, "rev-parse", "--verify", f"{request['expectedBaseSha']}{{commit}}")
+    ok, _ = git_ok(checkout, "rev-parse", "--verify", f"{request['expectedBaseSha']}^{{commit}}")
     if not ok:
         raise Stop("base-mismatch", detail="Lenovo checkout does not carry the expected base commit")
 

@@ -285,9 +285,12 @@ class Workspace:
                         token: str = "fedcba9876543210",
                         subject: str = "fixture task", state: str = "draft",
                         request_name: str | None = None,
-                        previous: str | None = None) -> dict:
-        description = self.shared / "mr-description.md"
-        description.write_text("Fixture change for the LAN local-dev flow.\n", encoding="utf-8")
+                        previous: str | None = None,
+                        description: str | None = None) -> dict:
+        text = (description if description is not None
+                else "Fixture change for the LAN local-dev flow.\n")
+        description_path = self.shared / "mr-description.md"
+        description_path.write_bytes(text.encode("utf-8"))
         command_file = self.root / f"publish-command-{token}.txt"
         name = request_name or f"publish-request-{token}.json"
         command = [
@@ -297,7 +300,7 @@ class Workspace:
             "--lenovo-flow-dir", str(FIXTURE_FLOW),
             "--manifest", str(self.manifest_file),
             "--bundle", str(self.bundle_file),
-            "--description-file", str(description),
+            "--description-file", str(description_path),
             "--expected-base", self.base, "--expected-commit", self.task,
             "--branch", TASK_BRANCH, "--target-branch", BASE_BRANCH,
             "--host", GITLAB_HOST, "--project", PROJECT, "--change-type", "feat",
