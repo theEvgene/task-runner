@@ -380,6 +380,9 @@ def load_bridge(bridge_dir: Path):
     path = resolve_bridge_file(bridge_dir)
     if not path.is_file():
         raise Stop("queue-unreadable", detail=f"bridge not found: {path}")
+    # lan_bridge imports its sibling syntax gate; make that directory importable.
+    if str(path.parent) not in sys.path:
+        sys.path.insert(0, str(path.parent))
     try:
         spec = importlib.util.spec_from_file_location("dell_lan_bridge", str(path))
         if spec is None or spec.loader is None:
