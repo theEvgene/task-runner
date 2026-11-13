@@ -55,6 +55,21 @@ def api_get(host: str, path: str):
     encoded = head[len("projects/"):].split("/merge_requests")[0]
     if unquote(encoded) != state.get("project"):
         raise GitlabUnavailable(f"unknown project: {encoded}")
+    suffix = head.split("/merge_requests", 1)[1]
+    if suffix.startswith("/") and suffix[1:].isdigit():
+        record = state.get("mrs", {}).get(suffix[1:])
+        if not isinstance(record, dict):
+            raise GitlabUnavailable(f"unknown fixture MR: {path}")
+        return {
+            "iid": int(record["iid"]),
+            "source_branch": record["source_branch"],
+            "target_branch": record["target_branch"],
+            "web_url": record["web_url"],
+            "draft": bool(record.get("draft", True)),
+            "title": record.get("title", ""),
+            "description": record.get("description", ""),
+            "state": "opened",
+        }
     rows = []
     for record in state.get("mrs", {}).values():
         rows.append({

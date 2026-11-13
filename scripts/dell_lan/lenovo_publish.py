@@ -8,9 +8,15 @@ the staged bundle against its manifest, imports it once into a dedicated Lenovo
 task worktree, runs the existing ``gitlab-mr-flow`` freshness gate, pushes the
 task branch, creates or updates the Draft merge request through
 ``publish_mr.py``, and reads the MR identity back through ``mr_identity.py``.
+A ``ready`` request adds one consented step after the Draft publish: the
+external ``remove_draft.py`` from ``--flow-dir`` marks the same MR Ready,
+and the driver re-captures the identity and proves the title and
+description still match the request input. The driver never waits for or
+polls a pipeline; that read-only check stays with
+``docs/pipeline-observer.md``.
 
-Consent is per action: the request lists ``import``, ``push``, ``mr``, and
-``reconcile`` in ``authorized``, and the driver refuses an action that is not
+Consent is per action: the request lists ``import``, ``push``, ``mr``,
+``undraft``, and ``reconcile`` in ``authorized``, and the driver refuses an action that is not
 listed. The reconciliation probe needs its own ``reconcile`` consent because
 it reads the remote on Lenovo. A write whose outcome cannot be observed is
 reported as ``unknown`` with exit 3 and is never retried here; ``--reconcile``
@@ -35,7 +41,7 @@ from dell_lan_common import (
 from lenovo_remote import observe, preflight, publish, push, require
 
 ZERO_OID = "0" * 40
-ACTIONS = ("import", "push", "mr", "reconcile")
+ACTIONS = ("import", "push", "mr", "undraft", "reconcile")
 
 
 def parse(argv=None):
@@ -72,11 +78,13 @@ def validated(request_path: Path, expected_digest: str, reconcile: bool) -> dict
     unknown = sorted(set(authorized) - set(ACTIONS))
     if unknown:
         raise Stop("request-malformed", detail=f"unknown authorization: {', '.join(unknown)}")
-    if request.get("state") != "draft":
+    if request.get("state") not in ("draft", "ready"):
         raise Stop("request-malformed", detail=(
-            "iteration 1 publishes a Draft merge request only; the request state must be "
-            "draft (a Ready transition needs the mr_prepare.py target-SHA evidence, which "
-            "this flow does not produce)"))
+            "the request state must be draft or ready"))
+    if request.get("state") == "ready" and "undraft" not in (request.get("authorized") or []):
+        raise Stop("consent-missing", code=2, detail=(
+            "the user has not authorized the Lenovo undraft action for this run; "
+            "ask once for that action and submit a new request that lists it"))
     previous = request.get("expectedPreviousCommit")
     if previous in (None, ""):
         request["expectedPreviousCommit"] = None
@@ -361,6 +369,7 @@ def main(argv=None) -> int:
     result = {"schema": PUBLISH_RESULT_SCHEMA, "outcome": "refused", "stage": "request",
               "token": None, "authorized": [], "bundle": None, "import": None,
               "preflight": None, "push": None, "mr": None, "identity": None,
+              "undraft": None, "pipeline": {"waited": False, "polled": False},
               "error": None, "finishedAt": now_iso()}
     code = 0
     try:

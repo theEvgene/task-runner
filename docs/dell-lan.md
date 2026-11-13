@@ -35,13 +35,17 @@ action and recorded before the job is written:
 2. the task import (Lenovo writes a task worktree and a branch ref);
 3. the push (Lenovo writes the remote branch);
 4. the merge-request create or update (Lenovo writes remote metadata);
-5. the read-only reconciliation probe (Lenovo reads the remote branch and the
+5. the undraft step (Lenovo runs the external `remove_draft.py` once against
+   the same MR) — only for a `ready` request;
+6. the read-only reconciliation probe (Lenovo reads the remote branch and the
    merge-request list).
 
 `dell_request.py publish --authorize` lists exactly the actions that were
 authorized, and `lenovo_publish.py` refuses any action that is not listed. A
-request without `push` or `mr` cannot publish even if it is submitted, and a
-`--reconcile` run needs `reconcile` in the list before any Lenovo read starts.
+request without `push` or `mr` cannot publish even if it is submitted,
+a `--state ready` request without `undraft` is refused before any write
+(exit 2, `consent-missing`), and a `--reconcile` run needs `reconcile`
+in the list before any Lenovo read starts.
 
 ## Preconditions (owner-provided, never guessed)
 
@@ -244,8 +248,8 @@ python scripts/dell_lan/dell_request.py publish \
   --branch <task-branch> --target-branch <base-branch> \
   --host <remote-host> --project <group/project> \
   --change-type <feat|fix> --jira-key <KEY-1> --subject "<one line>" \
-  --state draft \
-  --authorize <import,push,mr[,reconcile]> \
+  --state <draft|ready> \
+  --authorize <import,push,mr[,undraft][,reconcile]> \
   --lenovo-checkout <abs-lenovo-checkout> \
   --lenovo-worktree <abs-lenovo-task-worktree> \
   --request-name publish-request-<16hex>.json --command-file <command-file> \
@@ -253,11 +257,15 @@ python scripts/dell_lan/dell_request.py publish \
 ```
 
 Only the actions the user authorized go in `--authorize`; `reconcile` only
-when the read-only probe was authorized too. `--lenovo-flow-dir` names the
+when the read-only probe was authorized too, and `undraft` only when the
+user consented to marking the MR Ready (a `ready` request without it is
+refused by the writer, exit 2). `--lenovo-flow-dir` names the
 external flow checkout on Lenovo (or set `DELL_LAN_FLOW_DIR` there); without
-either, the driver fails closed before any write. Only `draft` publishes; a
-repeat transfer names `--expected-previous` so the branch moves only while it
-still holds the prior SHA.
+either, the driver fails closed before any write. A `draft` request
+publishes a Draft MR and never runs the undraft step; a repeat transfer
+names `--expected-previous` so the branch moves only while it still holds
+the prior SHA. A `ready` request follows the Ready route below instead of
+stopping at Draft.
 
 ## 6. Submit and let Lenovo publish; read back the exact SHA and MR
 
@@ -267,7 +275,10 @@ the staged bundle, imports the task commit once with a compare-and-swap on
 `refs/heads/<task-branch>` (a repeat names the prior SHA; mismatch, dirty
 tree, or rewrite is refused), runs the external freshness gate, pushes the
 branch, creates or updates the Draft MR (never a second MR for one branch),
-and reads the identity back. Completion: submit printed one `JOBID=<32hex>`.
+and reads the identity back. A `ready` request then runs the Ready route
+below: the external `remove_draft.py` marks the same MR Ready, and the
+driver re-captures the identity and proves the title and description still
+match the request input. Completion: submit printed one `JOBID=<32hex>`.
 
 Back on Dell, verify the bound result:
 
@@ -288,6 +299,37 @@ the task commit), `simulated` (the same chain labelled a fixture), `stale`,
 `unknown` (exit 3), `rejected` (exit 1), `mismatch` (exit 1). Only
 `published` asserts remote publication.
 
+## 6b. Ready route: consented undraft with readback, no pipeline wait
+
+A `ready` request is the same publish with one extra consented step. The
+driver refuses a `ready` request without `undraft` in `--authorize` before
+any write (exit 2, `consent-missing`); a `draft` request is unchanged and
+never runs the undraft step, so Draft stays the silent default and is never
+lifted by accident.
+
+With consent, the driver runs, in order: push → Draft MR create/update
+(never a second MR for one branch, Draft behavior unchanged:
+`replace_description=False`, so an update preserves earlier text) →
+`remove_draft.py --mr-url <url> --host <host> --project <project>` from
+`--lenovo-flow-dir` → identity re-capture. The
+result then proves three things: the re-captured head SHA still equals the
+task commit, the MR is no longer Draft, and the served title and
+description still match the request input byte-for-byte — the Ready title
+built the same way the writer builds the Draft title (without the
+`Draft: ` prefix), and the description file bytes (UTF-8). Exact equality
+is required: a create carries the input exactly, while an update that
+preserved earlier text fails closed instead of being silently overwritten.
+Any mismatch, or any undraft failure, is `unknown` (exit 3,
+`readback-mismatch` / `undraft-unknown`): the write may have landed, so the
+run reconciles through the read-only probe instead of retrying blind, and a
+later publish updates the same MR.
+
+The driver never waits for or polls a pipeline on any path: no pipeline
+observer is imported or executed, and every publish result carries
+`pipeline: {waited: false, polled: false}` as the visible fact. A pipeline
+read, when the user explicitly asks for one, stays a separate
+`docs/pipeline-observer.md` run and is never part of publication.
+
 ## 7. Reconcile an unknown or rejected outcome before any retry
 
 - **Unknown push** (`stage: push`, exit 3): keep the job id and re-fetch it; a
@@ -299,6 +341,10 @@ the task commit), `simulated` (the same chain labelled a fixture), `stale`,
   probe reports the existing MR; a later publish request updates it, so no
   second MR is opened. Never re-drive blind. While an outcome is unknown, the
   slot stays occupied and no second writer starts.
+- **Unknown undraft** (`stage: mr`, exit 3, `undraft-unknown` or
+  `readback-mismatch`): the same rule as an unknown MR write — the undraft
+  may have landed, so reconcile the same job id and let a later publish
+  update the same MR. Never a second MR, never a blind retry.
 - **Rejected** (exit 1): read the carried exit code and stderr, fix on the
   anchored base, and submit a new job id. The queue refuses to reuse an id.
 - **Stale**: keep working offline on the anchored base and re-sync before the

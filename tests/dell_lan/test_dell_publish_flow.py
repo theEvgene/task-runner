@@ -175,7 +175,7 @@ class TwoDirectionFlowTests(unittest.TestCase):
         self.assertIn("reconcile", driver["error"]["detail"])
         self.assertEqual(driver["authorized"], ["import", "push", "mr"])
 
-    def test_a_state_other_than_draft_is_refused_by_the_driver(self):
+    def test_ready_without_undraft_is_refused_before_any_write(self):
         ws = build_to_publish("9999999999999999")
         self.addCleanup(ws.cleanup)
         request = ws.publish_request(token="9999999999999999")
@@ -183,11 +183,11 @@ class TwoDirectionFlowTests(unittest.TestCase):
         job = ws.submit_publish(request)
         payload, proc = ws.run_job(job)
         driver = json.loads(proc.stdout)
-        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertEqual(driver["outcome"], "refused")
         self.assertEqual(driver["stage"], "request")
-        self.assertEqual(driver["error"]["reason"], "request-malformed")
-        self.assertIn("Draft", driver["error"]["detail"])
+        self.assertEqual(driver["error"]["reason"], "consent-missing")
+        self.assertIn("undraft", driver["error"]["detail"])
         self.assertIsNone(driver["push"])
         self.assertIsNone(driver["mr"])
         proc = run(["git", "-C", str(ws.origin), "rev-parse", "--verify",
@@ -217,7 +217,7 @@ class TwoDirectionFlowTests(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertEqual(json.loads(ws.state_path.read_text(encoding="utf-8"))["mrs"], {})
 
-    def test_ready_state_is_refused_with_its_missing_capability(self):
+    def test_ready_without_undraft_is_refused_by_the_writer(self):
         ws = build_to_publish("7777777777777777")
         self.addCleanup(ws.cleanup)
         proc = run([
@@ -236,7 +236,7 @@ class TwoDirectionFlowTests(unittest.TestCase):
             "--request-name", "ready.json", "--command-file", str(ws.root / "ready.txt"),
         ], env=ws.env())
         self.assertEqual(proc.returncode, 2)
-        self.assertIn("mr_prepare.py", proc.stderr)
+        self.assertIn("undraft", proc.stderr)
 
 
 if __name__ == "__main__":
