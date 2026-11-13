@@ -1,6 +1,7 @@
 """PowerShell syntax adapter tests (issues #29/#31): Parser.ParseInput only.
 
-Proves, through the ``validate(command, dialect)`` seam, that PowerShell
+Proves, through the ``validate(command, dialect)`` seam and through the
+submit CLI (exit 2), that PowerShell
 syntax errors refuse before any JOBID or queue write, that well-formed
 wrapped PowerShell (the ``& '...' '...'`` shape built by
 ``pipeline_observer/request.py`` inside an explicit launcher) passes down
@@ -11,6 +12,7 @@ check never claims the command exists or is safe: the
 nonexistent-cmdlet case pins that boundary.
 """
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -180,6 +182,32 @@ class AdapterRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(verdict.position)
 
     @unittest.skipUnless(PS_RUNTIME, "no powershell runtime")
+    def test_broken_pipeline_reaches_parser(self):
+        # Balanced outer launcher: the refusal must come from
+        # Parser.ParseInput (EmptyPipeElement), not the launcher shape.
+        command = 'powershell -NoProfile -Command "Get-ChildItem |"'
+        verdict = gate.validate(command, "powershell")
+        self.assertFalse(verdict.ok)
+        self.assertEqual(verdict.dialect, "powershell")
+        self.assertIn("EmptyPipeElement", verdict.message)
+        self.assertIsNotNone(verdict.position)
+        self.assertGreaterEqual(verdict.position, 0)
+        self.assertLess(verdict.position, len(command))
+
+    @unittest.skipUnless(PS_RUNTIME, "no powershell runtime")
+    def test_unclosed_parenthesis_reaches_parser(self):
+        # Balanced outer launcher: the refusal must come from
+        # Parser.ParseInput (MissingEndParenthesis), not the launcher.
+        command = 'powershell -NoProfile -Command "Get-ChildItem (1"'
+        verdict = gate.validate(command, "powershell")
+        self.assertFalse(verdict.ok)
+        self.assertEqual(verdict.dialect, "powershell")
+        self.assertIn("MissingEndParenthesis", verdict.message)
+        self.assertIsNotNone(verdict.position)
+        self.assertGreaterEqual(verdict.position, 0)
+        self.assertLess(verdict.position, len(command))
+
+    @unittest.skipUnless(PS_RUNTIME, "no powershell runtime")
     def test_cli_syntax_error_refuses_before_write(self):
         proc = self._cli_submit(
             'powershell -NoProfile -Command "Get-ChildItem \'C:\\x"',
@@ -188,6 +216,26 @@ class AdapterRuntimeTests(unittest.TestCase):
         self.assertNotIn("JOBID=", proc.stdout)
         self.assertIn("powershell", proc.stderr)
         self.assertEqual(_jobs_files(self.queue), [])
+
+    @unittest.skipUnless(PS_RUNTIME, "no powershell runtime")
+    def test_cli_broken_pipeline_refuses_before_write(self):
+        # Balanced outer launcher with a broken inner pipeline: the
+        # refusal must come from Parser.ParseInput (EmptyPipeElement),
+        # not the launcher shape, and must refuse through submit
+        # before any JOBID or queue write.
+        command = 'powershell -NoProfile -Command "Get-ChildItem |"'
+        proc = self._cli_submit(command, "--dialect", "powershell")
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertNotIn("JOBID=", proc.stdout)
+        # Stable parser ErrorId only; the full wording is version-specific.
+        self.assertIn("EmptyPipeElement", proc.stderr)
+        match = re.search(r"at offset (\d+)", proc.stderr)
+        self.assertIsNotNone(match, proc.stderr)
+        offset = int(match.group(1))
+        self.assertGreaterEqual(offset, 0)
+        self.assertLess(offset, len(command))
+        self.assertEqual(_jobs_files(self.queue), [])
+        self.assertNotIn(self.key.hex(), proc.stdout + proc.stderr)
 
     @unittest.skipUnless(PS_RUNTIME, "no powershell runtime")
     def test_wrapped_call_operator_shape_passes(self):
