@@ -352,6 +352,14 @@ read, when the user explicitly asks for one, stays a separate
 - **Stale**: keep working offline on the anchored base and re-sync before the
   next transfer.
 
+## Standalone transfer and publication
+
+Two narrower runs reuse this loop without changing it: a transfer-only
+import with no push or MR (#42), and the publication of a branch that
+already exists on Lenovo with no bundle and no second GitLab client
+(#43). Both live in `docs/dell-lan-standalone.md` and keep the combined
+`publish` route above unchanged.
+
 ## Boundaries
 
 - One source copy, imported once at an empty path, never replaced; one

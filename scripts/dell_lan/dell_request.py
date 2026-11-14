@@ -7,13 +7,18 @@ that already hosts the queue, and only the request's SHA-256 travels inside the
 HMAC-signed job payload. The Lenovo side re-hashes the file and refuses a
 request that the job did not name.
 
-Three requests exist, all in [the workflow](../../docs/dell-lan.md):
+Five requests exist, all in [the workflow](../../docs/dell-lan.md):
 
 - ``base`` asks Lenovo for a git bundle of the published base ref;
 - ``first`` asks Lenovo for the first verified copy of an explicitly named
   remote branch when no Lenovo checkout exists yet (``docs/first-import.md``);
 - ``publish`` asks Lenovo to import the staged task bundle and run the existing
   ``gitlab-mr-flow`` publication flow for it.
+- ``transfer`` asks Lenovo to import the staged task bundle only (no push/MR;
+  `docs/dell-lan-standalone.md`).
+- ``publish-existing`` asks Lenovo to publish a branch that already exists
+  there, reusing the same publication flow (no bundle, no second client;
+  `docs/dell-lan-standalone.md`).
 
 This script writes files only. It never submits a job, never contacts Lenovo,
 and never publishes anything.
@@ -33,6 +38,7 @@ from dell_lan_common import (
     expected_request_name, inside, remote_has_credentials, request_file_token,
     safe_name, sha256_bytes,
 )
+from dell_standalone_requests import publish_existing_request, transfer_request
 
 TOKEN_RE = re.compile(r"^[0-9a-f]{16}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -317,6 +323,52 @@ def build_parser() -> argparse.ArgumentParser:
                               "publication flow (default: the driver's own default)")
     publish.set_defaults(
         func=lambda args: write_request(args, publish_request(args), "lenovo_publish.py"))
+
+    transfer = sub.add_parser("transfer", help="ask Lenovo to import the task bundle only")
+    common(transfer)
+    transfer.add_argument("--manifest", required=True)
+    transfer.add_argument("--bundle", required=True)
+    transfer.add_argument("--expected-base", required=True)
+    transfer.add_argument("--expected-commit", required=True)
+    transfer.add_argument("--expected-previous", default=None,
+                          help="prior task-branch SHA for a repeat transfer")
+    transfer.add_argument("--branch", required=True)
+    transfer.add_argument("--authorize", default="import",
+                          help="comma-separated: import[,reconcile] (never push/mr)")
+    transfer.add_argument("--lenovo-checkout", required=True)
+    transfer.add_argument("--lenovo-worktree", required=True)
+    transfer.set_defaults(
+        func=lambda args: write_request(args, transfer_request(args), "lenovo_transfer.py"))
+
+    existing = sub.add_parser("publish-existing",
+                              help="ask Lenovo to publish a branch that already exists there")
+    common(existing)
+    existing.add_argument("--expected-base", required=True)
+    existing.add_argument("--expected-commit", required=True)
+    existing.add_argument("--branch", required=True)
+    existing.add_argument("--target-branch", required=True)
+    existing.add_argument("--host", required=True)
+    existing.add_argument("--project", required=True)
+    existing.add_argument("--change-type", default="",
+                          help="feat/fix; required only when no open MR exists")
+    existing.add_argument("--jira-key", default="",
+                          help="ABC-123; required only when no open MR exists")
+    existing.add_argument("--subject", default="",
+                          help="one-line title; required only when no open MR exists")
+    existing.add_argument("--description-file", default="",
+                          help="shared MR description; required only when no open MR exists")
+    existing.add_argument("--state", default="draft",
+                          help="draft, or ready (Ready needs undraft in --authorize)")
+    existing.add_argument("--authorize", required=True,
+                          help="comma-separated: push,mr[,undraft][,reconcile]")
+    existing.add_argument("--lenovo-checkout", required=True)
+    existing.add_argument("--lenovo-worktree", required=True)
+    existing.add_argument("--lenovo-flow-dir", default=None,
+                          help="absolute flow scripts dir on Lenovo holding the external "
+                               "publication flow (default: the driver's own default)")
+    existing.set_defaults(
+        func=lambda args: write_request(args, publish_existing_request(args),
+                                        "lenovo_publish_existing.py"))
     return parser
 
 
