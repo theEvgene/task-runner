@@ -16,7 +16,8 @@ import unittest
 from pathlib import Path
 
 from dell_fixture import (
-    READBACK, SHA_B, SHA_D, Workspace, command_file, run, sha256_bytes,
+    FIXTURE_FLOW, READBACK, SHA_B, SHA_D, Workspace, command_file, run,
+    sha256_bytes,
 )
 
 
@@ -177,7 +178,9 @@ class LocalReadbackTests(unittest.TestCase):
         self.assertIn("shared", data["detail"])
 
     def test_a_key_outside_every_protected_root_is_accepted(self):
-        job_id = self.ws.submit(command_file(self.ws))
+        job_id = self.ws.submit(
+            command_file(self.ws), dialect="cmd",
+            receipt_script_path=str(FIXTURE_FLOW / "mr_identity.py"))
         self.ws.seal_result(job_id, json.dumps(self.ws.identity()))
         proc, data = self.ws.readback(*self.ws.queue_args(job_id))
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -228,7 +231,9 @@ class LocalReadbackTests(unittest.TestCase):
         self.assertFalse(data["queue"]["jobVerified"], "no queue read may start on a refused key")
 
     def test_a_key_outside_every_root_is_accepted_without_bundle_arguments(self):
-        job_id = self.ws.submit(command_file(self.ws))
+        job_id = self.ws.submit(
+            command_file(self.ws), dialect="cmd",
+            receipt_script_path=str(FIXTURE_FLOW / "mr_identity.py"))
         self.ws.seal_result(job_id, json.dumps(self.ws.identity()))
         receipt = Path(self.ws.root) / "shared-root-only.json"
         proc = run(self.ws.readback_command(

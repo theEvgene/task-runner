@@ -1,26 +1,8 @@
-"""Lenovo queue worker for the signed LAN bridge (stdlib only).
+"""Lenovo signed-queue worker (stdlib only).
 
-Delivery: this file IS the worker. It travels with the task-runner checkout
-at the pinned revision the operator copies to Lenovo; nothing is downloaded
-or assumed present at a remembered path. The launcher starts the sibling
-copy by default (``--worker-dir`` override names another checkout explicitly).
-
-Loop: every poll, seal results only for jobs that have no result yet.
-Existing results are never read-modify-written and never replaced
-(``publish`` refuses duplicates: a second worker that wins the race loses
-here, which is the safe direction). A job whose envelope cannot be verified
-is never executed; a refusal result is sealed under the same id so the
-observer gets a terminal, verified failure instead of an endless unknown.
-Invalid working_directory or spawn failures seal a bounded terminal error
-instead of crashing or re-executing. Outputs plus encoded return files are
-fitted to a safe payload ceiling so the signed envelope stays under 2 MiB;
-a size refusal seals one minimal fallback result so the job never
-re-executes. A result that cannot be sealed for infrastructure reasons
-(publish failure) is reported as failed, never
-as sealed, and a finished ``--once``/``--max-jobs`` batch exits 2 when any
-job was refused or failed. The queue is never created here: a missing
-queue/jobs or queue/results dir is exit 2 (check path/mount), never an
-empty new queue.
+Verified jobs execute at most once and results publish immutably. Refusals,
+spawn failures, timeouts, and oversized output become bounded terminal
+results. Missing queue infrastructure and unsealed results fail closed.
 """
 
 from __future__ import annotations
@@ -55,6 +37,8 @@ def _load_bridge() -> object:
     ]
     for path in candidates:
         if path.is_file():
+            if str(path.parent) not in sys.path:
+                sys.path.insert(0, str(path.parent))
             spec = importlib.util.spec_from_file_location("lenovo_worker_bridge", str(path))
             module = importlib.util.module_from_spec(spec)
             sys.modules["lenovo_worker_bridge"] = module
@@ -64,6 +48,91 @@ def _load_bridge() -> object:
 
 
 bridge = _load_bridge()
+
+
+class ExecutorRefused(Exception):
+    """The executor cannot prove a truthful result."""
+
+
+def _load_truth() -> tuple[object | None, str]:
+    candidate = Path(__file__).resolve().parent / "powershell_truth.py"
+    if not candidate.is_file():
+        return None, "helper missing"
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "lenovo_worker_powershell_truth", str(candidate))
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["lenovo_worker_powershell_truth"] = module
+        spec.loader.exec_module(module)
+        return module, ""
+    except Exception:
+        return None, "helper unreadable"
+
+
+truth, truth_problem = _load_truth()
+
+
+def _load_fallback() -> object | None:
+    candidate = Path(__file__).resolve().parent / "cmd_fallback.py"
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "lenovo_worker_cmd_fallback", str(candidate))
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["lenovo_worker_cmd_fallback"] = module
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
+fallback = _load_fallback()
+
+
+def _effective_command(command: str, dialect: str | None = None) -> str:
+    if dialect not in (None, "cmd", "powershell"):
+        raise ExecutorRefused("unsupported authenticated dialect")
+    try:
+        local_kind = (fallback.launcher_kind(command) if fallback is not None
+                      else "unprovable-command-chain")
+    except Exception:
+        local_kind = "unprovable-command-chain"
+    if truth is not None:
+        try:
+            kind = truth.launcher_kind(command)
+        except Exception:
+            kind = None
+            helper_failed = True
+        else:
+            helper_failed = False
+        if not helper_failed:
+            if dialect == "powershell" and kind != "wrappable":
+                raise ExecutorRefused("powershell dialect is not wrappable")
+            if dialect == "cmd" and kind is not None:
+                raise ExecutorRefused("cmd dialect resolves to powershell")
+            if kind is None:
+                if local_kind is not None:
+                    raise ExecutorRefused(
+                        "powershell classifier disagreement")
+                return command
+            if kind == "wrappable":
+                try:
+                    return truth.wrap_powershell(command)
+                except Exception as error:
+                    unsupported = getattr(truth, "UnsupportedLauncher", None)
+                    if (isinstance(unsupported, type)
+                            and isinstance(error, unsupported)):
+                        raise ExecutorRefused(
+                            "powershell launcher refused")
+                    raise ExecutorRefused(
+                        "powershell wrapping failed")
+            raise ExecutorRefused(
+                "powershell launcher refused")
+    if dialect == "powershell":
+        raise ExecutorRefused("powershell executor unavailable")
+    if local_kind is None:
+        return command
+    problem = truth_problem or "helper failed"
+    raise ExecutorRefused(f"powershell executor unavailable ({problem})")
 
 
 def _now() -> str:
@@ -189,11 +258,20 @@ def _seal_result(queue: Path, key: bytes, job_id: str, **fields) -> str:
         return "failed"
 
 
-def _execute(command: str, workdir: str, timeout_s: int, limit: int) -> dict:
+def _execute(command: str, workdir: str, timeout_s: int, limit: int,
+             dialect: str | None = None) -> dict:
     started = _now()
     try:
+        effective = _effective_command(command, dialect)
+    except ExecutorRefused as error:
+        detail = f"executor refused: {error}"
+        return {"status": "error", "exit_code": 2,
+                "stdout": "", "stderr": detail[:limit],
+                "started_at": started, "timed_out": False,
+                "output_truncated": len(detail) > limit}
+    try:
         proc = subprocess.run(
-            command, shell=True, cwd=workdir, capture_output=True,
+            effective, shell=True, cwd=workdir, capture_output=True,
             text=True, encoding="utf-8", errors="replace", timeout=timeout_s, check=False,
         )
     except subprocess.TimeoutExpired as error:
@@ -202,16 +280,16 @@ def _execute(command: str, workdir: str, timeout_s: int, limit: int) -> dict:
         return {"status": "error", "exit_code": 124,
                 "stdout": out[:limit], "stderr": (f"timed out on the worker after {timeout_s}s\n" + err)[:limit],
                 "started_at": started, "timed_out": True, "output_truncated": len(out) > limit}
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         # Invalid cwd, spawn failure, or OS refusal: a bounded terminal
         # error, never a crash and never a silent re-execution.
-        detail = f"execution failed on the worker: {error}"
+        detail = "execution failed on the worker"
         return {"status": "error", "exit_code": 2,
                 "stdout": "", "stderr": detail[:limit],
                 "started_at": started, "timed_out": False,
                 "output_truncated": len(detail) > limit}
-    except Exception as error:  # defensive: any spawn failure stays terminal
-        detail = f"execution failed on the worker: {error}"
+    except Exception:  # defensive: any spawn failure stays terminal
+        detail = "execution failed on the worker"
         return {"status": "error", "exit_code": 2,
                 "stdout": "", "stderr": detail[:limit],
                 "started_at": started, "timed_out": False,
@@ -272,14 +350,18 @@ def _run_one(queue: Path, key: bytes, job_id: str) -> str:
         return "refused"
     try:
         job = bridge.open_envelope(raw, key, "job", job_id)
-    except Exception as error:
+    except Exception:
         return _seal_result(queue, key, job_id, status="error", exit_code=2,
-                            stderr=f"job-unverifiable: {error}")
+                            stderr="job-unverifiable")
     command = job.get("command")
     workdir = job.get("working_directory")
+    dialect = job.get("dialect")
     if not isinstance(command, str) or not command.strip() or not isinstance(workdir, str) or not workdir:
         return _seal_result(queue, key, job_id, status="error", exit_code=2,
                             stderr="job-unverifiable: empty command or missing working_directory")
+    if dialect not in (None, "cmd", "powershell"):
+        return _seal_result(queue, key, job_id, status="error", exit_code=2,
+                            stderr="job-unverifiable: unsupported authenticated dialect")
     try:
         timeout_s = int(job.get("timeout_seconds", 300))
         limit = int(job.get("max_output_bytes", 65536))
@@ -290,10 +372,10 @@ def _run_one(queue: Path, key: bytes, job_id: str) -> str:
         return _seal_result(queue, key, job_id, status="error", exit_code=2,
                             stderr="job-unverifiable: timeout/max_output out of range")
     try:
-        outcome = _execute(command, workdir, timeout_s, limit)
-    except Exception as error:  # _execute is total, but stay terminal anyway
+        outcome = _execute(command, workdir, timeout_s, limit, dialect)
+    except Exception:  # _execute is total, but stay terminal anyway
         outcome = {"status": "error", "exit_code": 2, "stdout": "",
-                   "stderr": f"execution failed on the worker: {error}"[:limit],
+                   "stderr": "execution failed on the worker"[:limit],
                    "started_at": _now(), "timed_out": False,
                    "output_truncated": False}
     try:
@@ -309,10 +391,11 @@ def _run_one(queue: Path, key: bytes, job_id: str) -> str:
         returned, _ = _collect_return_files(declared)
         outcome["files"] = returned
         outcome["output_truncated"] = outcome.get("output_truncated", False) or files_truncated
-    except Exception as error:  # return-file walk must never crash/re-execute
+    except Exception:  # return-file walk must never crash/re-execute
         outcome["files"] = {}
         outcome["output_truncated"] = True
-        outcome["stderr"] = (str(outcome.get("stderr") or "") + f"\nreturn-files skipped: {error}")[:limit]
+        outcome["stderr"] = (str(outcome.get("stderr") or "")
+                             + "\nreturn-files skipped")[:limit]
     return _seal_result(queue, key, job_id, **outcome)
 
 

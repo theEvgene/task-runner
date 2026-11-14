@@ -5,6 +5,13 @@ Thin driver: request intake lives in ``lenovo_bundle``, remote steps in
 ``lenovo_remote``. A ``ready`` request adds one consented step after the
 Draft publish: the external ``remove_draft.py`` marks the same MR Ready and
 the driver proves title/description still match. No pipeline wait on any path.
+
+Publication gate (issue #33/#36): ``outcome: ok`` is declared only on a
+confirmed structured receipt at stage ``readback`` whose identity
+``head_sha`` equals the expected task commit
+(``scripts/dell_lan/publish_receipt_gate.py``). Anything else is
+``refused``/``unknown``, never silent ok.
+
 Exit codes: ``0`` published/observed, ``1`` refused, ``2`` usage, ``3`` unknown.
 """
 
@@ -21,6 +28,7 @@ from dell_lan_common import (
 from lenovo_bundle import ACTIONS, bundle_tip, import_once, validated, verify_bundle
 from lenovo_publish_flow import load_description
 from lenovo_remote import observe, preflight, publish, push, require
+from publish_receipt_gate import is_published as _gate_published
 
 
 def parse(argv=None):
@@ -68,9 +76,12 @@ def main(argv=None) -> int:
             result["stage"] = "mr"
             receipt = publish(request, worktree, args.flow_dir or default_flow_dir(), result)
             result["stage"] = "readback"
-            if str(receipt.get("head_sha") or "").lower() != request["expectedCommit"]:
+            candidate = dict(result)
+            candidate["outcome"] = "ok"
+            candidate["identity"] = receipt
+            if not _gate_published(candidate, str(request["expectedCommit"])):
                 raise Stop("publication-head-mismatch",
-                           detail=f"{receipt.get('head_sha')} != {request['expectedCommit']}")
+                           detail=f"{(receipt or {}).get('head_sha')} != {request['expectedCommit']}")
             result["outcome"] = "ok"
     except Stop as stop:
         result["outcome"] = stop.verdict if stop.verdict in ("unknown", "refused") else "refused"

@@ -47,6 +47,8 @@ def _load_bridge():
             path = Path(override) / "lan_bridge.py"
     if not path.is_file():
         raise RuntimeError("bridge client not found (scripts/lan_bridge/lan_bridge.py)")
+    if str(path.parent) not in sys.path:
+        sys.path.insert(0, str(path.parent))
     spec = importlib.util.spec_from_file_location("lenovo_launch_bridge", str(path))
     module = importlib.util.module_from_spec(spec)
     sys.modules["lenovo_launch_bridge"] = module

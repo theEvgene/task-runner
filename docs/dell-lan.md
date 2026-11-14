@@ -269,8 +269,10 @@ stopping at Draft.
 
 ## 6. Submit and let Lenovo publish; read back the exact SHA and MR
 
-Submit the command file with the standard client. On Lenovo the single
-command runs `lenovo_publish.py`, which re-hashes the request, re-verifies
+Submit the command file with the standard client, passing `--dialect cmd`
+and `--receipt-script-path <receiptScriptPath>` from the request writer's
+JSON output. On Lenovo the single command runs `lenovo_publish.py`, which
+re-hashes the request, re-verifies
 the staged bundle, imports the task commit once with a compare-and-swap on
 `refs/heads/<task-branch>` (a repeat names the prior SHA; mismatch, dirty
 tree, or rewrite is refused), runs the external freshness gate, pushes the
@@ -338,6 +340,29 @@ observer is imported or executed, and every publish result carries
 `pipeline: {waited: false, polled: false}` as the visible fact. A pipeline
 read, when the user explicitly asks for one, stays a separate
 `docs/pipeline-observer.md` run and is never part of publication.
+
+## 6c. Executor truth and receipt gate (issues #33/#36)
+
+- Executor: `powershell_truth.py` runs the supported
+  `powershell -Command <script>` dialect through a valid encoded outer script,
+  parses the inner text as data inside `try`, and preserves native exit.
+  Exit code alone decides the envelope; `stderr` never does.
+- Other PowerShell shapes fail closed with non-zero `status: error`: file or
+  encoded launch, unsafe quoting, and nested cmd forms such as `%ComSpec% /c`,
+  `cmd /c start /wait`, `cmd /c if`, `call`, or `@powershell`. They are never
+  run unwrapped; diagnostics omit command text. Ordinary cmd remains unchanged.
+- Submit `--dialect` is signed; old jobs without it retain classification.
+  Cmd inline quoting cannot turn
+  a disguised PowerShell executable into an unwrapped launch, while an
+  ordinary command merely mentioning PowerShell still runs normally.
+- Receipt: `published` requires the structured driver receipt
+  (`outcome: ok`, `stage: readback`, matching `identity.head_sha`), checked
+  by `publish_receipt_gate.py` in the driver and Dell readback.
+  Strict argv parsing binds it to the signed `receipt_script_path` by exact
+  normalized path, not basename; `C:\attacker\lenovo_publish.py` and
+  `C:\attacker\mr_identity.py` cannot forge accepted evidence.
+  Mismatch or absent readback is not success; `unknown` stays exit 3
+  with a same-id reconcile, never a blind retry and never a second MR.
 
 ## 7. Reconcile an unknown or rejected outcome before any retry
 

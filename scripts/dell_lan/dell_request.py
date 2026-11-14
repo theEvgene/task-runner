@@ -105,6 +105,7 @@ def write_request(args, request: dict, driver: str) -> int:
         "requestSha256": digest,
         "commandFile": str(command_file),
         "command": command,
+        "receiptScriptPath": driver_path,
         "returnFile": str(out_dir / request["manifestName"]) if "manifestName" in request else None,
     }
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
