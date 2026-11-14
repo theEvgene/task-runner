@@ -47,10 +47,10 @@ def main(argv=None) -> int:
         result["authorized"] = request["authorized"]
         if request["reconcileOnly"]:
             require(request, "reconcile")
-        else:
-            # The push below is already a remote write, so unbound or
-            # undecodable input must fail here, never at the MR stage.
-            request["descriptionText"] = load_description(request, verify_binding=True)
+        # Reconciliation may report the signed request as observed, and a
+        # normal run may push before the MR step. Both paths must therefore
+        # bind the same Dell-observed bytes before any result is trusted.
+        request["descriptionText"] = load_description(request, verify_binding=True)
         result["stage"] = "bundle"
         bundle = verify_bundle(request, result)
         tip = bundle_tip(Path(request["lenovoCheckout"]), bundle)

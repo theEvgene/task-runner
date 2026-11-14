@@ -129,6 +129,9 @@ def publish_draft(publisher, api, request: dict, existing: dict | None) -> dict:
         previous = existing.get("description")
         if not isinstance(previous, str):
             previous_unknown = True
+    if previous_unknown:
+        raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
+                   detail="the pre-write MR row carries no description")
     try:
         result = publisher.publish(
             host=request["host"],
@@ -317,11 +320,10 @@ def require_ready_identity(api, request: dict, iid: int) -> str:
         raise Stop("readback-mismatch", verdict="unknown", code=3,
                    detail=(f"undrafted title {record.get('title')!r} "
                            f"!= {expected_ready_title(request)!r}")[:DETAIL_MAX])
-    try:
-        description = load_description(request)
-    except Stop as error:
+    description = request.get("descriptionText")
+    if not isinstance(description, str):
         raise Stop("readback-mismatch", verdict="unknown", code=3,
-                   detail=f"cannot re-read the input description: {error.detail}"[:DETAIL_MAX])
+                   detail="the validated input description is unavailable")
     served = record.get("description")
     if not isinstance(served, str):
         raise Stop("readback-mismatch", verdict="unknown", code=3,

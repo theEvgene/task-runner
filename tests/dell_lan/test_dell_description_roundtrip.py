@@ -175,6 +175,29 @@ class DraftDescriptionExactTests(unittest.TestCase):
         self.assertEqual(ws.state_path.read_bytes(), before)
         self.assertEqual(len(json.loads(before)["mrs"]), 1)
 
+    def test_reconcile_refuses_description_replaced_after_signing(self):
+        ws = build(FIRST)
+        self.addCleanup(ws.cleanup)
+        request = ws.publish_request(
+            authorize="import,push,mr,reconcile", description=FIRST,
+            token="acacacacacacacac")
+        ws.extra_env["DELL_FIXTURE_FAIL_DESCRIPTION_READBACK"] = "1"
+        try:
+            payload, proc = ws.run_job(ws.submit_publish(request))
+        finally:
+            ws.extra_env.pop("DELL_FIXTURE_FAIL_DESCRIPTION_READBACK", None)
+        self.assertEqual(proc.returncode, 3, proc.stderr)
+        before = ws.state_path.read_bytes()
+        (ws.shared / "mr-description.md").write_bytes(SECOND.encode("utf-8"))
+
+        payload, proc = ws.run_job(ws.reconcile(request))
+
+        observed = json.loads(proc.stdout)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertEqual(observed["stage"], "request")
+        self.assertEqual(observed["error"]["reason"], "description-digest-mismatch")
+        self.assertEqual(ws.state_path.read_bytes(), before)
+
     def test_create_with_prepended_corruption_is_mismatch(self):
         ws = build(FIRST)
         self.addCleanup(ws.cleanup)
