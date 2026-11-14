@@ -84,6 +84,17 @@ def main(argv=None) -> int:
             if not _gate_published(candidate, str(request["expectedCommit"])):
                 raise Stop("publication-head-mismatch",
                            detail=f"{(receipt or {}).get('head_sha')} != {request['expectedCommit']}")
+            for field, expected, reason in (
+                    ("project_path", request["project"], "publication-project-mismatch"),
+                    ("source_branch", request["branch"], "publication-branch-mismatch"),
+                    ("target_branch", request["targetBranch"], "publication-target-mismatch")):
+                if receipt.get(field) != expected:
+                    raise Stop(reason, detail=str(receipt.get(field))[:DETAIL_MAX])
+            mr = result.get("mr") or {}
+            if receipt.get("mr_url") != mr.get("url") or receipt.get("iid") != mr.get("iid"):
+                raise Stop("publication-mr-mismatch", detail=(
+                    f"receipt {receipt.get('mr_url')}#{receipt.get('iid')} != "
+                    f"result {mr.get('url')}#{mr.get('iid')}")[:DETAIL_MAX])
             result["outcome"] = "ok"
     except Stop as stop:
         result["outcome"] = stop.verdict if stop.verdict in ("unknown", "refused") else "refused"

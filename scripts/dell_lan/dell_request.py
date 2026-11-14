@@ -33,7 +33,10 @@ import sys
 from pathlib import Path
 
 from shell_command import ShellDialectError, build_for_transport
-from dell_request_common import SingleDialect, flow_args, require_absolute_lenovo_paths
+from dell_request_common import (
+    SingleDialect, add_reconcile_argument, flow_args, render_reconcile,
+    require_absolute_lenovo_paths,
+)
 
 from dell_lan_common import (
     BASE_REQUEST_SCHEMA, DETAIL_MAX, FIRST_REQUEST_SCHEMA,
@@ -104,9 +107,8 @@ def write_request(args, request: dict, driver: str, dialect: str) -> int:
     ] + flow_args(args)
     try:
         command = build_for_transport(command_parts, dialect)
-        reconcile_command = (build_for_transport(
-            command_parts + ["--reconcile"], dialect)
-            if driver == "lenovo_publish.py" and not args.reconcile else None)
+        reconcile_command = render_reconcile(
+            command_parts, driver, dialect, getattr(args, "reconcile", False))
     except ShellDialectError as error:
         raise Stop("usage", code=2, detail=str(error)) from error
     request_path.parent.mkdir(parents=True, exist_ok=True)
@@ -343,8 +345,7 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--lenovo-flow-dir", default=None,
                          help="absolute flow scripts dir on Lenovo holding the external "
                               "publication flow (default: the driver's own default)")
-    publish.add_argument("--reconcile", action="store_true",
-                         help="render the consent-gated read-only recovery command")
+    add_reconcile_argument(publish)
     publish.set_defaults(
         func=lambda args: write_request(
             args, publish_request(args), "lenovo_publish.py", args.dialect))
@@ -365,6 +366,7 @@ def build_parser() -> argparse.ArgumentParser:
                           help="comma-separated: import[,reconcile] (never push/mr)")
     transfer.add_argument("--lenovo-checkout", required=True)
     transfer.add_argument("--lenovo-worktree", required=True)
+    add_reconcile_argument(transfer)
     transfer.set_defaults(
         func=lambda args: write_request(
             args, transfer_request(args), "lenovo_transfer.py", args.dialect))
@@ -398,6 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
     existing.add_argument("--lenovo-flow-dir", default=None,
                           help="absolute flow scripts dir on Lenovo holding the external "
                                "publication flow (default: the driver's own default)")
+    add_reconcile_argument(existing)
     existing.set_defaults(
         func=lambda args: write_request(
             args, publish_existing_request(args), "lenovo_publish_existing.py", args.dialect))

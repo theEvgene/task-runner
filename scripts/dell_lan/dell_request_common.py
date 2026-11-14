@@ -6,6 +6,13 @@ import argparse
 from pathlib import Path
 
 from dell_lan_common import Stop
+from shell_command import build_for_transport
+
+RECONCILE_DRIVERS = {
+    "lenovo_publish.py",
+    "lenovo_publish_existing.py",
+    "lenovo_transfer.py",
+}
 
 
 class SingleDialect(argparse.Action):
@@ -35,3 +42,15 @@ def flow_args(args) -> list[str]:
     if getattr(args, "reconcile", False):
         result.append("--reconcile")
     return result
+
+
+def add_reconcile_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--reconcile", action="store_true",
+                        help="render the consent-gated read-only recovery command")
+
+
+def render_reconcile(command_parts: list[str], driver: str, dialect: str,
+                     enabled: bool) -> str | None:
+    if enabled or driver not in RECONCILE_DRIVERS:
+        return None
+    return build_for_transport(command_parts + ["--reconcile"], dialect)

@@ -194,6 +194,43 @@ class TwoDirectionFlowTests(unittest.TestCase):
         state = json.loads(ws.state_path.read_text(encoding="utf-8"))
         self.assertEqual(len(state["mrs"]), 1)
 
+    def test_combined_flow_refuses_same_source_mr_with_wrong_target(self):
+        ws = build_to_publish("1414141414141414")
+        self.addCleanup(ws.cleanup)
+        wrong_url = f"https://gitlab.fixture.invalid/{PROJECT}/-/merge_requests/1"
+        state = json.loads(ws.state_path.read_text(encoding="utf-8"))
+        state["mrs"]["1"] = {
+            "iid": 1,
+            "source_branch": TASK_BRANCH,
+            "target_branch": "wrong-target",
+            "title": "Draft: feat(ABC-1): wrong target",
+            "description": "Wrong target fixture.\n",
+            "draft": True,
+            "head_sha": ws.task,
+            "target_sha": ws.base,
+            "web_url": wrong_url,
+        }
+        state["nextIid"] = 2
+        ws.state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        for token, include_metadata in (
+                ("1515151515151515", False),
+                ("1616161616161616", True)):
+            with self.subTest(include_metadata=include_metadata):
+                request = ws.publish_request(
+                    token=token, include_metadata=include_metadata)
+                job = ws.submit_publish(request)
+                _, proc = ws.run_job(job)
+                driver = json.loads(proc.stdout)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertEqual(driver["outcome"], "refused")
+                self.assertEqual(
+                    driver["error"]["reason"], "publication-target-mismatch")
+
+        final_state = json.loads(ws.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(list(final_state["mrs"]), ["1"])
+        self.assertEqual(final_state["mrs"]["1"]["target_branch"], "wrong-target")
+
     def test_reconcile_probe_needs_its_own_consent(self):
         ws = build_to_publish("8888888888888888")
         self.addCleanup(ws.cleanup)

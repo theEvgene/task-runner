@@ -95,7 +95,9 @@ def publish(request: dict, worktree: Path, flow_dir: Path, result: dict) -> dict
         require(request, "undraft")
     require(request, "mr")
     api, identity, publisher = load_flow(flow_dir)
-    existing = find_open_mr(api, request["host"], request["project"], request["branch"])
+    existing = find_open_mr(
+        api, request["host"], request["project"], request["branch"],
+        request["targetBranch"])
     missing = missing_mr_fields(request)
     if existing is None and missing:
         result["missing"] = missing
@@ -162,7 +164,9 @@ def observe(request: dict, worktree: Path, flow_dir: Path, result: dict) -> dict
     result["push"] = {"remote": "origin", "branch": request["branch"],
                       "localSha": request["expectedCommit"], "observedRemoteSha": observed,
                       "exitCode": None}
-    existing = find_open_mr(api, request["host"], request["project"], request["branch"])
+    existing = find_open_mr(
+        api, request["host"], request["project"], request["branch"],
+        request["targetBranch"])
     if not existing:
         result["mr"] = {"url": None, "iid": None, "draft": None, "created": False}
         return None

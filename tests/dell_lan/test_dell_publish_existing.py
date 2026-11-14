@@ -243,6 +243,25 @@ class PublishExistingTests(unittest.TestCase):
         state = json.loads(ws.state_path.read_text(encoding="utf-8"))
         self.assertEqual(len(state["mrs"]), 2, "no blind creation on ambiguity")
 
+    def test_generated_reconcile_command_runs_through_signed_queue(self):
+        ws = build_with_branch("aa00000000000055")
+        self.addCleanup(ws.cleanup)
+        request = existing_request(
+            ws, "bb00000000000055", authorize="push,mr,reconcile")
+        self.assertIsInstance(request["reconcileCommand"], str)
+        self.assertIn("--reconcile", request["reconcileCommand"])
+
+        Path(request["commandFile"]).write_text(
+            request["reconcileCommand"], encoding="utf-8")
+        job = submit_request(ws, request)
+        _, proc = ws.run_job(job)
+        driver = json.loads(proc.stdout)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(driver["outcome"], "observed")
+        self.assertEqual(driver["stage"], "reconcile")
+        self.assertIsNone(driver["mr"]["url"])
+
 
 if __name__ == "__main__":
     unittest.main()

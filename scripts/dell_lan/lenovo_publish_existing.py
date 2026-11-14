@@ -160,7 +160,9 @@ def main(argv=None) -> int:
             result["stage"] = "mr"
             require(request, "mr")
             api, identity, publisher = load_flow(flow_dir)
-            existing = find_open_mr(api, request["host"], request["project"], request["branch"])
+            existing = find_open_mr(
+                api, request["host"], request["project"], request["branch"],
+                request["targetBranch"])
             if existing is not None:
                 url = existing.get("web_url") or api.merge_request_url(
                     request["host"], request["project"], existing.get("iid"))

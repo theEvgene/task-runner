@@ -100,7 +100,8 @@ def _paged_fallback(api, host: str, path: str) -> list:
         f"open-MR list truncated after {MAX_PAGES} pages")[:DETAIL_MAX])
 
 
-def find_open_mr(api, host: str, project: str, branch: str) -> dict | None:
+def find_open_mr(api, host: str, project: str, branch: str,
+                 target_branch: str | None = None) -> dict | None:
     """The open merge request for this source branch, or None.
 
     The list endpoint is read through the flow client's own paged reader so
@@ -136,7 +137,13 @@ def find_open_mr(api, host: str, project: str, branch: str) -> dict | None:
                 if isinstance(row, dict) and row.get("source_branch") == branch]
     if len(matching) > 1:
         raise Stop("mr-ambiguous", detail=f"{len(matching)} open merge requests for {branch}")
-    return matching[0] if matching else None
+    existing = matching[0] if matching else None
+    if (existing is not None and target_branch is not None
+            and existing.get("target_branch") != target_branch):
+        raise Stop("publication-target-mismatch", detail=(
+            f"open MR for {branch} targets {existing.get('target_branch')}, "
+            f"not {target_branch}")[:DETAIL_MAX])
+    return existing
 
 
 def publish_draft(publisher, api, request: dict, existing: dict | None) -> dict:

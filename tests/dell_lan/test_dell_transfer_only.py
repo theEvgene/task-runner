@@ -132,6 +132,32 @@ class TransferOnlyTests(unittest.TestCase):
         state = json.loads(ws.state_path.read_text(encoding="utf-8"))
         self.assertEqual(state["mrs"], {}, "transfer must not create an MR")
 
+    def test_generated_reconcile_command_runs_through_signed_queue(self):
+        ws = build_staged()
+        self.addCleanup(ws.cleanup)
+        request = transfer_request(
+            ws, "3434343434343434", authorize="import,reconcile")
+        self.assertIsInstance(request["reconcileCommand"], str)
+        self.assertIn("--reconcile", request["reconcileCommand"])
+
+        initial_job = submit_request(ws, request)
+        _, initial = ws.run_job(initial_job)
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+
+        Path(request["commandFile"]).write_text(
+            request["reconcileCommand"], encoding="utf-8")
+        job = submit_request(ws, request)
+        _, proc = ws.run_job(job)
+        driver = json.loads(proc.stdout)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(driver["outcome"], "observed")
+        self.assertEqual(driver["stage"], "reconcile")
+        self.assertTrue(driver["import"]["matches"])
+        self.assertEqual(driver["import"]["commit"], ws.task)
+        self.assertIsNone(driver["push"])
+        self.assertIsNone(driver["mr"])
+
     def test_repeat_transfer_with_previous_sha_moves_branch(self):
         ws = build_staged()
         self.addCleanup(ws.cleanup)
