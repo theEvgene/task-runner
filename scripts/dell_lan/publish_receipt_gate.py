@@ -56,7 +56,8 @@ def _command_argv(command: str) -> list[str] | None:
             active = True
             i += 1
             continue
-        # command_line() doubles a backslash run before a literal quote.
+        # The shared cmd dialect builder doubles a backslash run before a
+        # literal quote.
         if char == "\\":
             start = i
             while i < len(command) and command[i] == "\\":
