@@ -307,15 +307,15 @@ re-reads the file with no newline translation and requires both facts to match
 before import, push, or MR work. A missing, replaced, undecodable, or legacy
 request without those integrity fields is refused at the request stage; it is
 never accepted by path alone. After the MR write the driver re-reads the single
-MR and requires exact equality with the full expected text: a create, or a
-`ready` update (`replace_description=True`), stores exactly the sent text; a
-`draft` update appends, so the stored text must equal `previous + newline +
-sent` with `previous` from the pre-write list row. No suffix check is used:
-`unexpected newline sent` on a create, or a replaced prefix preserving the
-suffix on an update, is a refused `description-mismatch`. When `previous`
-cannot be known the run fails closed as unknown
-(`mr-readback-unavailable`). The `mr` receipt records
-`descriptionVerified: true` with the sent text's SHA-256.
+MR and requires exact equality with the full signed text. Both create and
+update converge with `replace_description=True`; an append would make the
+complete expected update depend on unsigned remote state. No suffix check is
+used: a changed prefix is a refused `description-mismatch`. Missing or
+unreadable remote text fails closed as unknown (`mr-readback-unavailable`).
+Reconciliation performs the same single-MR comparison before reporting
+`observed`, and Dell readback requires matching signed-expected and observed
+SHA-256 facts before it can set `publication.bound`. The `mr` receipt records
+those hashes plus `descriptionVerified: true`.
 
 ## 6b. Ready route: consented undraft with readback, no pipeline wait
 
@@ -326,10 +326,8 @@ never runs the undraft step, so Draft stays the silent default and is never
 lifted by accident.
 
 With consent, the driver runs, in order: push → Draft MR create/update
-(never a second MR for one branch; `draft` keeps `replace_description=False`
-so an update preserves earlier text, while `ready` passes
-`replace_description=True` so an existing same MR converges to the exact
-request input) →
+(never a second MR for one branch; every update converges to the complete
+signed description with `replace_description=True`) →
 `remove_draft.py --mr-url <url> --host <host> --project <project>` from
 `--lenovo-flow-dir` → identity re-capture. The
 result then proves three things: the re-captured head SHA still equals the
@@ -358,9 +356,11 @@ read, when the user explicitly asks for one, stays a separate
   appended — which observes the remote branch and the MR list and writes
   nothing. The probe needs `reconcile` in the request's `--authorize`.
 - **Unknown MR write** (`stage: mr`, exit 3): the write may have landed. The
-  probe reports the existing MR; a later publish request updates it, so no
-  second MR is opened. Never re-drive blind. While an outcome is unknown, the
-  slot stays occupied and no second writer starts.
+  probe reports the existing MR only after its complete description exactly
+  matches the signed request; mismatch is refused and unavailable evidence is
+  unknown. The probe never writes or creates a second MR. Never re-drive blind.
+  While an outcome is unknown, the slot stays occupied and no second writer
+  starts.
 - **Unknown undraft** (`stage: mr`, exit 3, `undraft-unknown` or
   `readback-mismatch`): the same rule as an unknown MR write — the undraft
   may have landed, so reconcile the same job id and let a later publish

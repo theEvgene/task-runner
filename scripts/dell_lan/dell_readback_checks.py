@@ -22,6 +22,7 @@ from pathlib import Path
 from dell_lan_common import (
     Stop as CommonStop, manifest_digest, read_key as read_queue_key,
 )
+from description_proof import description_proof
 
 SCHEMA = "dell-lan-readback/2"
 SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -242,6 +243,9 @@ def unwrap_driver(document: dict, args, queue: dict) -> tuple[dict | None, dict]
     if observed and observed != args.task_commit:
         raise Stop("publication-push-mismatch", queue=queue, detail=f"{observed} != {args.task_commit}")
     mr = document.get("mr") if isinstance(document.get("mr"), dict) else {}
+    if not description_proof(mr)["descriptionVerified"]:
+        raise Stop("publication-readback-malformed", queue=queue, detail=(
+            "driver carries no exact signed-description proof"))
     if isinstance(identity, dict):
         if mr.get("url") and mr["url"] != identity.get("mr_url"):
             raise Stop("publication-readback-malformed", queue=queue,
@@ -403,6 +407,7 @@ def check_result(args, bridge) -> dict:
         "authorized": (envelope or {}).get("authorized"),
         "pushObservedSha": ((envelope or {}).get("push") or {}).get("observedRemoteSha"),
         "mrCreated": ((envelope or {}).get("mr") or {}).get("created"),
+        **description_proof(((envelope or {}).get("mr") or {})),
         "gitlabHost": identity["gitlab_host"],
         "projectPath": identity["project_path"],
         "iid": iid,

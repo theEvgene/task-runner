@@ -18,12 +18,10 @@ import json
 import sys
 from pathlib import Path
 
-from dell_lan_common import (
-    DETAIL_MAX, Stop, git_ok, run, sha256_bytes,
-)
+from dell_lan_common import DETAIL_MAX, Stop, git_ok, run
 from lenovo_publish_flow import (
     capture, expected_ready_title, find_open_mr, load_flow, publish_draft,
-    require_ready_identity, undraft_mr,
+    require_ready_identity, undraft_mr, verify_description,
 )
 
 
@@ -99,12 +97,13 @@ def publish(request: dict, worktree: Path, flow_dir: Path, result: dict) -> dict
     api, identity, publisher = load_flow(flow_dir)
     existing = find_open_mr(api, request["host"], request["project"], request["branch"])
     written = publish_draft(publisher, api, request, existing)
-    text = request.get("descriptionText")
+    observed_description_sha = written.pop("_descriptionObservedSha256")
     result["mr"] = {"url": written["mr_url"], "iid": written["iid"],
                     "draft": written.get("draft"), "created": existing is None,
                     "descriptionVerified": True,
-                    "descriptionSha256": (sha256_bytes(text.encode("utf-8"))
-                                          if isinstance(text, str) else None)}
+                    "descriptionSha256": observed_description_sha,
+                    "descriptionExpectedSha256": request["descriptionSha256"],
+                    "descriptionObservedSha256": observed_description_sha}
     receipt = capture(identity, written["mr_url"], worktree)
     result["identity"] = receipt
     result["pipeline"] = {"waited": False, "polled": False}
@@ -119,12 +118,12 @@ def publish(request: dict, worktree: Path, flow_dir: Path, result: dict) -> dict
                    detail=(f"{receipt.get('head_sha')} != {request['expectedCommit']}"
                            )[:DETAIL_MAX])
     check = require_ready_identity(api, request, written["iid"])
-    text = request.get("descriptionText")
     result["mr"] = {"url": written["mr_url"], "iid": written["iid"],
                     "draft": False, "created": existing is None,
                     "descriptionVerified": True,
-                    "descriptionSha256": (sha256_bytes(text.encode("utf-8"))
-                                          if isinstance(text, str) else None)}
+                    "descriptionSha256": observed_description_sha,
+                    "descriptionExpectedSha256": request["descriptionSha256"],
+                    "descriptionObservedSha256": observed_description_sha}
     result["identity"] = receipt
     result["undraft"] = {"removedDraft": True, "titleChecked": True,
                          "title": expected_ready_title(request),
@@ -151,8 +150,17 @@ def observe(request: dict, worktree: Path, flow_dir: Path, result: dict) -> dict
         raise Stop("mr-readback-unavailable", detail="MR list row carries no IID")
     url = existing.get("web_url") or api.merge_request_url(
         request["host"], request["project"], iid)
+    text = request.get("descriptionText")
+    if not isinstance(text, str):
+        raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
+                   detail="the signed input description is unavailable")
+    observed_description_sha = verify_description(api, request, text, iid)
     result["mr"] = {"url": url, "iid": iid,
-                    "draft": bool(existing.get("draft")), "created": False}
+                    "draft": bool(existing.get("draft")), "created": False,
+                    "descriptionVerified": True,
+                    "descriptionSha256": observed_description_sha,
+                    "descriptionExpectedSha256": request["descriptionSha256"],
+                    "descriptionObservedSha256": observed_description_sha}
     receipt = capture(identity, url, worktree if worktree.is_dir() else None)
     result["identity"] = receipt
     return receipt

@@ -1,14 +1,12 @@
 """Exact Draft description round-trip on publish and readback (#11 correction).
 
 The driver reads the description bytes strictly as UTF-8 with no newline
-translation and proves the stored MR text equals the full expected text: a
-create stores exactly what was sent, a draft update appends it after a
-newline to the previously observed text (the base writer contract). A suffix
-check is not used: ``unexpected newline sent`` on a create, or a replaced
-prefix that preserves the suffix on an update, must be a refused mismatch,
-never a success. When the previous text cannot be known the run fails closed
-as unknown instead of inferring from a suffix. Fixture only: disposable
-repos, the real signed queue, doubles for the external flow; no network.
+translation and proves the stored MR text equals the full signed text on both
+create and update. A suffix check is not used: ``unexpected newline sent``
+must be a refused mismatch, never a success. Reconciliation repeats the same
+single-MR full-text check before Dell can bind publication. Fixture only:
+disposable repos, the real signed queue, doubles for the external flow; no
+network.
 """
 
 from __future__ import annotations
@@ -76,7 +74,7 @@ class DraftDescriptionExactTests(unittest.TestCase):
         state = json.loads(ws.state_path.read_text(encoding="utf-8"))
         self.assertEqual(state["mrs"], {})
 
-    def test_update_appends_after_newline_without_second_mr(self):
+    def test_update_replaces_with_complete_signed_text_without_second_mr(self):
         ws = build(FIRST)
         self.addCleanup(ws.cleanup)
         job = ws.submit_publish(ws.publish_request(
@@ -94,7 +92,7 @@ class DraftDescriptionExactTests(unittest.TestCase):
         self.assertTrue(driver["mr"]["descriptionVerified"])
         state = json.loads(ws.state_path.read_text(encoding="utf-8"))
         self.assertEqual(len(state["mrs"]), 1)
-        self.assertEqual(state["mrs"]["1"]["description"], FIRST + "\n" + SECOND)
+        self.assertEqual(state["mrs"]["1"]["description"], SECOND)
 
     def test_missing_description_is_refused_before_remote_write(self):
         ws = build(FIRST)
@@ -166,14 +164,56 @@ class DraftDescriptionExactTests(unittest.TestCase):
         before = ws.state_path.read_bytes()
         self.assertEqual(len(json.loads(before)["mrs"]), 1)
 
-        payload, proc = ws.run_job(ws.reconcile(request))
+        reconcile_job = ws.reconcile(request)
+        payload, proc = ws.run_job(reconcile_job)
 
         observed = json.loads(proc.stdout)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(observed["outcome"], "observed")
         self.assertFalse(observed["mr"]["created"])
+        self.assertTrue(observed["mr"]["descriptionVerified"])
+        self.assertEqual(observed["mr"]["descriptionExpectedSha256"], sha(FIRST))
+        self.assertEqual(observed["mr"]["descriptionObservedSha256"], sha(FIRST))
         self.assertEqual(ws.state_path.read_bytes(), before)
         self.assertEqual(len(json.loads(before)["mrs"]), 1)
+        readback_proc, readback = ws.readback(*ws.queue_args(reconcile_job))
+        self.assertEqual(readback_proc.returncode, 0, (readback_proc.stderr, readback))
+        self.assertTrue(readback["publication"]["bound"])
+        self.assertTrue(readback["publication"]["descriptionVerified"])
+        self.assertEqual(readback["publication"]["descriptionExpectedSha256"], sha(FIRST))
+        self.assertEqual(readback["publication"]["descriptionObservedSha256"], sha(FIRST))
+
+    def test_corrupted_remote_description_cannot_reconcile_or_bind(self):
+        ws = build(FIRST)
+        self.addCleanup(ws.cleanup)
+        request = ws.publish_request(
+            authorize="import,push,mr,reconcile", description=FIRST,
+            token="adadadadadadadad")
+        ws.extra_env["DELL_FIXTURE_FAIL_DESCRIPTION_READBACK"] = "1"
+        try:
+            payload, proc = ws.run_job(ws.submit_publish(request))
+        finally:
+            ws.extra_env.pop("DELL_FIXTURE_FAIL_DESCRIPTION_READBACK", None)
+        self.assertEqual(proc.returncode, 3, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["outcome"], "unknown")
+
+        state = json.loads(ws.state_path.read_text(encoding="utf-8"))
+        state["mrs"]["1"]["description"] = "corrupted prefix\n" + FIRST
+        ws.state_path.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        reconcile_job = ws.reconcile(request)
+        payload, proc = ws.run_job(reconcile_job)
+
+        observed = json.loads(proc.stdout)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertEqual(observed["outcome"], "refused")
+        self.assertEqual(observed["stage"], "reconcile")
+        self.assertEqual(observed["error"]["reason"], "description-mismatch")
+        self.assertEqual(len(json.loads(ws.state_path.read_text(encoding="utf-8"))["mrs"]), 1)
+        readback_proc, readback = ws.readback(*ws.queue_args(reconcile_job))
+        self.assertEqual(readback_proc.returncode, 1, readback_proc.stderr)
+        self.assertFalse(readback["publication"]["bound"])
 
     def test_reconcile_refuses_description_replaced_after_signing(self):
         ws = build(FIRST)
@@ -241,7 +281,7 @@ class DraftDescriptionExactTests(unittest.TestCase):
         state = json.loads(ws.state_path.read_text(encoding="utf-8"))
         stored = state["mrs"]["1"]["description"]
         self.assertTrue(stored.endswith("\n" + SECOND))
-        self.assertNotEqual(stored, FIRST + "\n" + SECOND)
+        self.assertNotEqual(stored, SECOND)
 
 
 if __name__ == "__main__":

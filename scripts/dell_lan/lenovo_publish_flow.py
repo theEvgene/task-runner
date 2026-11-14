@@ -111,27 +111,16 @@ def find_open_mr(api, host: str, project: str, branch: str) -> dict | None:
 def publish_draft(publisher, api, request: dict, existing: dict | None) -> dict:
     """Create or update the Draft merge request through the existing writer.
 
-    ``draft`` preserves the base append contract (``replace_description=False``).
-    ``ready`` passes ``replace_description=True`` so an existing same MR
-    converges to the exact request input: the explicit Ready request carries
-    the intended description under ``mr``+``undraft`` consent, and the exact
-    readback below would otherwise always fail on an appended update.
+    The signed description is the complete intended MR text on create and
+    update.  Existing MRs therefore converge with ``replace_description=True``;
+    appending would make an update's complete expected text depend on unsigned
+    pre-write state and reconciliation could not prove the result later.
     """
 
     description = request.get("descriptionText")
     if not isinstance(description, str):
         description = load_description(request)
         request["descriptionText"] = description
-    replace = request.get("state") == "ready"
-    previous: str | None = None
-    previous_unknown = False
-    if existing is not None and not replace:
-        previous = existing.get("description")
-        if not isinstance(previous, str):
-            previous_unknown = True
-    if previous_unknown:
-        raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
-                   detail="the pre-write MR row carries no description")
     try:
         result = publisher.publish(
             host=request["host"],
@@ -145,13 +134,12 @@ def publish_draft(publisher, api, request: dict, existing: dict | None) -> dict:
             source_branch=request["branch"],
             target_branch=request["targetBranch"],
             mr_url=(existing or {}).get("web_url"),
-            replace_description=replace,
+            replace_description=True,
         )
     except (publisher.PublicationError, api.GitlabUnavailable, OSError, ValueError) as error:
         raise Stop("mr-write-unknown", verdict="unknown", code=3, detail=str(error)[:DETAIL_MAX])
-    verify_draft_description(api, request, description, existing,
-                             result.get("iid"), replace, previous,
-                             previous_unknown)
+    result["_descriptionObservedSha256"] = verify_description(
+        api, request, description, result.get("iid"))
     return result
 
 
@@ -186,33 +174,15 @@ def load_description(request: dict, *, verify_binding: bool = False) -> str:
                    detail=f"{path}: {error}"[:DETAIL_MAX])
 
 
-def verify_draft_description(api, request: dict, expected: str,
-                             existing: dict | None, iid,
-                             replace: bool, previous: str | None,
-                             previous_unknown: bool) -> None:
-    """Prove the stored Draft description equals the full expected text.
+def verify_description(api, request: dict, expected: str, iid) -> str:
+    """Prove and return the SHA-256 of the complete served description.
 
-    A create stores exactly what was sent. A ``ready`` update converges the
-    same MR via ``replace_description=True`` so it also stores exactly what
-    was sent. A ``draft`` update appends through the base writer contract, so
-    the stored text must equal ``previous + newline + sent`` where ``previous``
-    is the description observed on the pre-write list row. A suffix check is
-    not used: ``unexpected newline sent`` would pass it on a create and hide a
-    replaced prefix on an update. When the previous text cannot be known (an
-    update with a missing or non-string row description) the full expected
-    text cannot be known either, so the run fails closed as unknown instead
-    of inferring from a suffix. A missing row or a row without a description
-    proves nothing and fails closed as unknown; altered text is a refused
-    mismatch, never a success.
+    ``expected`` came from the byte-count/SHA-bound request file.  The single
+    MR read is authoritative for the stored text; list-row text and suffix
+    matches are insufficient.  An unreadable description is unknown, while a
+    complete but different value is a deterministic mismatch.
     """
 
-    if existing is not None and not replace and previous_unknown:
-        raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
-                   detail="the pre-write MR row carries no description")
-    if existing is None or replace:
-        expected_full = expected
-    else:
-        expected_full = str(previous or "") + "\n" + expected
     if isinstance(iid, bool) or not isinstance(iid, int):
         raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
                    detail="the write returned no integer MR iid")
@@ -230,11 +200,12 @@ def verify_draft_description(api, request: dict, expected: str,
     if not isinstance(stored, str):
         raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
                    detail="the MR carries no description to compare")
-    if not descriptions_match(stored, expected_full):
+    if not descriptions_match(stored, expected):
         raise Stop("description-mismatch", detail=(
             "stored sha256 "
             f"{sha256_bytes(stored.encode('utf-8'))} != sent sha256 "
-            f"{sha256_bytes(expected_full.encode('utf-8'))}")[:DETAIL_MAX])
+            f"{sha256_bytes(expected.encode('utf-8'))}")[:DETAIL_MAX])
+    return sha256_bytes(stored.encode("utf-8"))
 
 
 def capture(identity, mr_url: str, worktree: Path) -> dict:

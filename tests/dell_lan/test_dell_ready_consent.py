@@ -229,7 +229,7 @@ class ReadyConsentTests(unittest.TestCase):
         state = json.loads(self.state.read_text(encoding="utf-8"))
         self.assertEqual(state["mrs"]["1"]["description"], DESCRIPTION)
 
-    def test_draft_update_preserves_earlier_text(self):
+    def test_draft_update_replaces_with_complete_signed_text(self):
         self._write_flow(with_undraft=True)
         self._seed({"1": {
             "iid": 1, "source_branch": BRANCH, "target_branch": BASE_BRANCH,
@@ -242,11 +242,12 @@ class ReadyConsentTests(unittest.TestCase):
             self._request("draft", ["import", "push", "mr"]),
             self.worktree, self.flow, result)
         state = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertTrue(state["mrs"]["1"]["description"].startswith("Earlier draft text.\n"))
-        self.assertNotEqual(state["mrs"]["1"]["description"], DESCRIPTION)
+        self.assertEqual(state["mrs"]["1"]["description"], DESCRIPTION)
+        self.assertEqual(len(state["mrs"]), 1)
+        self.assertTrue(result["mr"]["descriptionVerified"])
         self.assertTrue(result["mr"]["draft"])
 
-    def test_draft_update_without_previous_description_is_unknown(self):
+    def test_draft_update_does_not_depend_on_unsigned_previous_description(self):
         self._write_flow(with_undraft=True)
         self._seed({"1": {
             "iid": 1, "source_branch": BRANCH, "target_branch": BASE_BRANCH,
@@ -254,15 +255,14 @@ class ReadyConsentTests(unittest.TestCase):
             "draft": True,
             "head_sha": TASK, "target_sha": "c" * 40,
             "web_url": f"https://{HOST}/{PROJECT}/-/merge_requests/1"}})
-        before = self.state.read_bytes()
-        with self.assertRaises(Stop) as caught:
-            lenovo_remote.publish(
-                self._request("draft", ["import", "push", "mr"]),
-                self.worktree, self.flow, {})
-        self.assertEqual(caught.exception.code, 3)
-        self.assertEqual(caught.exception.reason, "mr-readback-unavailable")
-        self.assertEqual(self.state.read_bytes(), before,
-                         "an unobservable prior description must block the write")
+        result: dict = {}
+        lenovo_remote.publish(
+            self._request("draft", ["import", "push", "mr"]),
+            self.worktree, self.flow, result)
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(state["mrs"]["1"]["description"], DESCRIPTION)
+        self.assertEqual(len(state["mrs"]), 1)
+        self.assertTrue(result["mr"]["descriptionVerified"])
 
     def test_publish_gates_undraft_before_any_flow_read(self):
         self._write_flow(with_undraft=True)
