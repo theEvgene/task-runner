@@ -10,6 +10,7 @@ Externally invoked agents start here explicitly; this repo assumes no global aut
 - Prepare an existing GitLab MR for Ready on Lenovo -> `docs/mr-ready.md`.
 - Verify the target base and create a task worktree -> `docs/fresh-base.md`.
 - Send one signed command through the LAN queue -> `docs/lan-bridge.md`.
+- Check readiness for one selected Dell-to-Lenovo scenario -> `docs/readiness.md` + `scripts/readiness/check.py`.
 - Start the Lenovo worker and cleaner with one shortcut after a reboot (existing SMB share, local credentials) -> `docs/lenovo-worker-shortcut.md`.
 - Import the first verified copy of a remote branch with no Lenovo checkout -> `docs/first-import.md`.
 - Run the full Dell-to-Lenovo dev loop (base, local work, publish, readback) -> `docs/dell-lan.md`.
