@@ -19,6 +19,7 @@ from pipeline_observer.gate import (  # noqa: E402
     canonical_url,
 )
 from pipeline_observer.readback import load_bridge  # noqa: E402
+from dell_lan.publish_receipt_gate import documented_command_kind  # noqa: E402
 
 SCHEMA = "mr-ready-readback/1"
 RUN_SCHEMA = "mr-ready-run/1"
@@ -52,8 +53,51 @@ def _identity_problem(receipt: dict[str, Any], expected_url: str) -> str | None:
     return None
 
 
+def _phase_gate_passed(receipt: dict[str, Any]) -> bool:
+    phase = receipt.get("phase")
+    phase_gate = receipt.get("phase_gate")
+    if phase not in ("first-review", "review-fix") or not isinstance(phase_gate, dict):
+        return False
+    if phase_gate.get("phase") != phase:
+        return False
+    if phase_gate.get("source") == "preflight":
+        preflight = phase_gate.get("receipt")
+        if not isinstance(preflight, dict):
+            return False
+        gate = preflight.get("phase_gate")
+        return (isinstance(gate, dict) and gate.get("phase") == phase and
+                gate.get("decision") == "pass" and
+                gate.get("blocking_reasons") == [])
+    if phase_gate.get("source") == "diagnosis-remote":
+        plan = phase_gate.get("plan")
+        items = plan.get("items") if isinstance(plan, dict) else None
+        return (isinstance(plan, dict) and plan.get("phase") == phase and
+                isinstance(items, list) and bool(items) and
+                all(isinstance(item, dict) and item.get("status") == "satisfied"
+                    for item in items))
+    return False
+
+
+def verify_job(job: dict[str, Any], job_id: str) -> str | None:
+    """Return a provenance problem unless the signed job ran its sealed runner."""
+
+    if job.get("kind") != "job" or job.get("id") != job_id:
+        return "signed job identity does not match the requested job id"
+    if documented_command_kind(
+            str(job.get("command") or ""),
+            job.get("receipt_script_path")) != "mr-ready-runner":
+        return "signed job is not bound to the actual mr_ready_run.py argv"
+    return None
+
+
 def verify(payload: dict[str, Any], job_id: str,
-           expected_mr_url: str) -> dict[str, Any]:
+           expected_mr_url: str, job: dict[str, Any]) -> dict[str, Any]:
+    provenance_problem = verify_job(job, job_id)
+    if provenance_problem:
+        return _result(
+            job_id, "mismatch", "runner_provenance_mismatch",
+            detail=provenance_problem,
+            next_action="discard this result and submit the documented runner with --receipt-script-path")
     if payload.get("kind") != "result" or payload.get("id") != job_id:
         return _result(job_id, "mismatch", "result_identity_mismatch")
     if payload.get("timed_out") or payload.get("output_truncated"):
@@ -97,10 +141,13 @@ def verify(payload: dict[str, Any], job_id: str,
             exit_code == 0 and worker_status in ("ok", "completed") and
             receipt.get("blockers") == [] and
             isinstance(gate, dict) and gate.get("outcome") == "passed" and
-            isinstance(receipt.get("phase_gate"), dict) and
+            _phase_gate_passed(receipt) and
             isinstance(publish, dict) and publish.get("draft") is False and
             publish.get("mr_url") == receipt.get("mr_url") and
-            publish.get("target_sha") == receipt.get("target_sha")
+            publish.get("iid") == receipt.get("iid") and
+            publish.get("target_branch") == receipt.get("target_branch") and
+            publish.get("target_sha") == receipt.get("target_sha") and
+            publish.get("title") == receipt.get("title")
         )
         if not valid:
             return _result(
@@ -151,10 +198,12 @@ def main(argv: list[str] | None = None) -> int:
         canonical_url(args.expected_mr_url)
         bridge = load_bridge(args.bridge_dir)
         key = bridge.load_key(args.key_file, args.key_format, args.queue)
+        raw_job = bridge.read(str(Path(args.queue) / "jobs"), args.job_id)
+        job = bridge.open_envelope(raw_job, key, "job", args.job_id)
         payload = bridge.fetch_result(
             args.queue, key, args.job_id,
             timeout_seconds=args.timeout, poll_seconds=args.poll)
-        result = verify(payload, args.job_id, args.expected_mr_url)
+        result = verify(payload, args.job_id, args.expected_mr_url, job)
     except Exception as error:  # bridge-specific timeout/error classes are dynamic
         result = _result(
             args.job_id, "unknown", "readback_unavailable", detail=str(error),

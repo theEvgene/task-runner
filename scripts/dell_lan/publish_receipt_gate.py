@@ -80,11 +80,54 @@ def _command_argv(command: str) -> list[str] | None:
     return argv
 
 
+def _powershell_command_argv(command: str) -> list[str] | None:
+    """Parse the restricted PowerShell argv emitted by ``_ps_quote``.
+
+    The supported shape is ``& 'arg' 'arg'`` with embedded single quotes
+    doubled.  No expressions, substitutions, pipelines, or bare arguments
+    are accepted.
+    """
+
+    if not isinstance(command, str):
+        return None
+    text = command.strip()
+    if not text.startswith("&") or (len(text) > 1 and not text[1].isspace()):
+        return None
+    i = 1
+    argv: list[str] = []
+    while i < len(text):
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i == len(text):
+            break
+        if text[i] != "'":
+            return None
+        i += 1
+        token: list[str] = []
+        while i < len(text):
+            if text[i] != "'":
+                token.append(text[i])
+                i += 1
+                continue
+            if i + 1 < len(text) and text[i + 1] == "'":
+                token.append("'")
+                i += 2
+                continue
+            i += 1
+            break
+        else:
+            return None
+        if i < len(text) and not text[i].isspace():
+            return None
+        argv.append("".join(token))
+    return argv or None
+
+
 def documented_command_kind(command: str,
                             intended_script_path: object = None) -> str | None:
     """Return the receipt contract bound to the signed exact script path."""
 
-    argv = _command_argv(command)
+    argv = _command_argv(command) or _powershell_command_argv(command)
     if not argv or len(argv) < 2:
         return None
     executable = PureWindowsPath(argv[0]).name
@@ -101,6 +144,8 @@ def documented_command_kind(command: str,
         return "publish-driver"
     if script == "mr_identity.py" and len(argv) > 2 and argv[2] == "capture":
         return "direct-identity"
+    if script == "mr_ready_run.py":
+        return "mr-ready-runner"
     return None
 
 

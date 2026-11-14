@@ -144,6 +144,7 @@ def build_request(
         "lenovo": {"python": python, "client_dir": client_dir,
                    "checkout": checkout, "profile": profile,
                    "description_file": description_file},
+        "receipt_script_path": str(runner),
         "job": {"timeout_seconds": timeout_seconds,
                 "max_output_bytes": max_output_bytes},
         "command": command,
