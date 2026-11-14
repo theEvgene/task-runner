@@ -298,10 +298,12 @@ class FakeBridge:
 
     fail_with = None
 
-    def __init__(self, key: bytes, command: str, payload: dict | None) -> None:
+    def __init__(self, key: bytes, command: str, payload: dict | None,
+                 receipt_script_path: str | None = None) -> None:
         self.key = key
         self.command = command
         self.payload = payload
+        self.receipt_script_path = receipt_script_path
 
     def load_key(self, path: str, key_format: str, queue: str) -> bytes:
         return self.key
@@ -310,7 +312,8 @@ class FakeBridge:
         return b"job-envelope"
 
     def open_envelope(self, raw: bytes, key: bytes, kind: str, job_id: str) -> dict:
-        return {"command": self.command}
+        return {"command": self.command,
+                "receipt_script_path": self.receipt_script_path}
 
     def fetch_result(self, queue: str, key: bytes, job_id: str,
                      timeout_seconds: float, poll_seconds: float) -> dict:
@@ -335,8 +338,12 @@ def unknown_args(root: Path) -> SimpleNamespace:
     )
 
 
-DRIVER_COMMAND = ('"python" "skills/dell-lan-local-dev/scripts/lenovo_publish.py" '
+DRIVER_SCRIPT = r"C:\skill\scripts\dell_lan\lenovo_publish.py"
+IDENTITY_SCRIPT = r"C:\flow\gitlab-mr-flow\scripts\mr_identity.py"
+DRIVER_COMMAND = (f'"python" "{DRIVER_SCRIPT}" '
                   '--request "x" --request-sha256 "y"')
+IDENTITY_COMMAND = (f'"python" "{IDENTITY_SCRIPT}" capture '
+                    '--url "https://gitlab.example/mr/1"')
 
 
 def payload(status: str, exit_code: int, stdout: str = "",
@@ -345,11 +352,78 @@ def payload(status: str, exit_code: int, stdout: str = "",
             "stderr": "", "timed_out": timed_out, "output_truncated": truncated}
 
 
+def identity_receipt() -> dict:
+    return {
+        "schema_version": 1,
+        "gitlab_host": "gitlab.example",
+        "project_path": "group/project",
+        "source_branch": "task/test",
+        "target_branch": "main",
+        "mr_url": "https://gitlab.example/mr/1",
+        "iid": 1,
+        "state": "opened",
+        "head_sha": "a" * 40,
+        "target_sha": "c" * 40,
+        "captured_at": "2026-11-14T00:00:00+00:00",
+    }
+
+
+class ReadbackCommandSchemaBindingTests(unittest.TestCase):
+    def run_check(self, command: str, document: dict,
+                  receipt_script_path: str | None = None):
+        root = Path(tempfile.mkdtemp(prefix="dell-schema-binding-"))
+        (root / "key.bin").write_bytes(b"k" * 32)
+        bridge = FakeBridge(
+            b"k" * 32, command,
+            payload("ok", 0, stdout=json.dumps(document)),
+            receipt_script_path or (IDENTITY_SCRIPT if "mr_identity" in command
+                                    else DRIVER_SCRIPT))
+        return check_result(unknown_args(root), bridge)
+
+    def test_publish_driver_cannot_bypass_gate_with_raw_identity_stdout(self):
+        with self.assertRaises(Stop) as caught:
+            self.run_check(DRIVER_COMMAND, identity_receipt())
+        self.assertEqual(caught.exception.reason,
+                         "publication-readback-malformed")
+        self.assertIn("structured result envelope", caught.exception.detail)
+
+    def test_direct_identity_command_still_accepts_raw_identity_stdout(self):
+        result = self.run_check(IDENTITY_COMMAND, identity_receipt())
+        self.assertTrue(result["publication"]["bound"])
+        self.assertIsNone(result["publication"]["driver"])
+
+    def test_publish_driver_accepts_gated_structured_stdout(self):
+        identity = identity_receipt()
+        document = {
+            "schema": "dell-lan-publish-result/1",
+            "outcome": "ok",
+            "stage": "readback",
+            "identity": identity,
+            "push": {"observedRemoteSha": "a" * 40},
+            "mr": {"url": identity["mr_url"], "iid": identity["iid"]},
+        }
+        result = self.run_check(DRIVER_COMMAND, document)
+        self.assertTrue(result["publication"]["bound"])
+        self.assertEqual(result["publication"]["driverStage"], "readback")
+
+    def test_attacker_driver_basename_is_not_authenticated_evidence(self):
+        command = r'python C:\attacker\lenovo_publish.py --request x'
+        with self.assertRaises(Stop) as caught:
+            self.run_check(command, identity_receipt(), DRIVER_SCRIPT)
+        self.assertEqual(caught.exception.reason, "queue-job-mismatch")
+
+    def test_attacker_identity_basename_is_not_authenticated_evidence(self):
+        command = r'python C:\attacker\mr_identity.py capture --url https://x'
+        with self.assertRaises(Stop) as caught:
+            self.run_check(command, identity_receipt(), IDENTITY_SCRIPT)
+        self.assertEqual(caught.exception.reason, "queue-job-mismatch")
+
+
 class UnknownProofTests(unittest.TestCase):
     def check(self, payload_: dict) -> Stop:
         root = Path(tempfile.mkdtemp(prefix="dell-unknown-"))
         (root / "key.bin").write_bytes(b"k" * 32)
-        bridge = FakeBridge(b"k" * 32, DRIVER_COMMAND, payload_)
+        bridge = FakeBridge(b"k" * 32, DRIVER_COMMAND, payload_, DRIVER_SCRIPT)
         with self.assertRaises(Stop) as caught:
             check_result(unknown_args(root), bridge)
         return caught.exception

@@ -132,12 +132,24 @@ class SubmitGateTests(unittest.TestCase):
             self.key, "job", job_id)
         self.assertEqual(payload["command"],
                          "Invoke-NonexistentCmdlet-XYZ -Foo 1")
+        self.assertEqual(payload["dialect"], "stub")
 
     def test_disabled_gate_keeps_legacy_behavior(self):
         job_id = bridge.submit_job(self.queue, self.key, "& 'unclosed",
                                    "C:\\s")
         self.assertRegex(job_id, r"^[0-9a-f]{32}$")
         self.assertEqual(len(_jobs_files(self.queue)), 1)
+
+    def test_receipt_script_path_is_authenticated_exactly(self):
+        gate._ADAPTERS["stub"] = _stub_valid
+        intended = r"C:\skill\scripts\dell_lan\lenovo_publish.py"
+        job_id = bridge.submit_job(
+            self.queue, self.key, "python x.py", "C:\\s",
+            dialect="stub", receipt_script_path=intended)
+        payload = bridge.open_envelope(
+            bridge.read(str(Path(self.queue) / "jobs"), job_id),
+            self.key, "job", job_id)
+        self.assertEqual(payload["receipt_script_path"], intended)
 
     def test_cli_cmd_refusal_before_write_without_secrets(self):
         secret = "TOPSECRET_ZXCV_9876"

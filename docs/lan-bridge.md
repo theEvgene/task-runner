@@ -41,7 +41,8 @@ python scripts/lan_bridge/lan_bridge.py submit \
   --command-file <cmd-file> --cwd <working-dir-on-worker> \
   --timeout <seconds> --max-output <bytes> \
   [--return-file <path-on-worker> ...] \
-  [--dialect powershell|cmd]
+  [--dialect powershell|cmd] \
+  [--receipt-script-path <absolute-intended-script>]
 ```
 
 Exit `2` refuses without executing: empty command, bad key, key inside the
@@ -195,6 +196,46 @@ No verified result yet (bounded wait expired, exit `3`) is **unknown**: not
 evidence the job is running, done, or failed. The timeout message says so and
 points at re-reading the SAME id. There is no "running" outcome anywhere in
 the client or `wait.py`.
+
+Executor truth (issues #33/#36): on the worker, a PowerShell launcher
+command is replaced by an already-valid encoded outer program. That program
+decodes the inner command as data, parses it with `ScriptBlock.Create` inside
+an established `try` boundary, and invokes it with
+`$ErrorActionPreference='Stop'`, preserving a native exit with
+`exit $LASTEXITCODE` (`scripts/lenovo_worker/powershell_truth.py`). A parse
+error or a swallowed non-terminating error therefore surfaces as a non-zero
+executor exit. The envelope verdict is the exit code only; `stderr`
+text never changes it in either direction. Only the submit-gate dialect
+`powershell -Command "<script>"` (or a bare unquoted script) is wrapped;
+any other launcher shape refuses with a non-zero exit rather than running
+unwrapped. Executable-prefix indirections are classified recursively:
+`call powershell`, `@powershell`, their combinations, and `cmd /c` or `/k`
+payloads (including `/d /s /c` canonical outer quoting and quoted executable
+paths) refuse rather than execute unwrapped. Structurally identical chains
+whose executable is not PowerShell still follow the ordinary cmd path.
+Ambiguous cmd switch prefixes fail closed when their payload is PowerShell.
+If the wrapping helper is missing or its classifier breaks, the independent
+`cmd_fallback.py` boundary classifier still refuses PowerShell behind chains,
+`cmd /c`, `call`, `start`, or `if`. Unbalanced, compound, batch, `for`, and
+dynamic executable boundaries also fail closed; statically simple non-PowerShell
+commands keep the ordinary cmd path.
+
+Protocol scope: an explicit `--dialect` is stored inside the signed
+`lenovo-job/1` payload and drives worker dispatch. Old queued jobs without the
+optional field keep the conservative classifier for compatibility. A `cmd`
+job whose executable token resolves to PowerShell (including inline cmd quotes
+such as `po"wer"shell.exe`) refuses rather than crossing into an unwrapped
+dialect; text after an ordinary executable, such as
+`echo powershell documentation`, remains ordinary cmd. The executor does not
+claim to inspect commands later chosen inside an arbitrary batch file or
+native program.
+
+For a job whose result will be accepted as publication evidence,
+`--receipt-script-path` seals the absolute intended Python script path. The
+readback gate compares that field with the command's actual script argv using
+Windows path normalization and exact equality; the same basename under an
+attacker directory is not evidence. Old jobs without this optional field can
+still execute, but cannot establish a publication receipt.
 
 ## Timings without chatter
 

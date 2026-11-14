@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 import syntax as _syn
+from job_payload import build_job_payload
 
 MAX_ENVELOPE_BYTES = 2 * 1024 * 1024
 KEY_BYTES = 32
@@ -192,29 +193,6 @@ def validate_max_output_bytes(value: int) -> int:
     return value
 
 
-def build_job_payload(job_id: str, command: str, working_directory: str,
-                      timeout_seconds: int = 300, max_output_bytes: int = 65536,
-                      return_files: list | None = None) -> dict:
-    """Build the signed job payload: the command travels inside the MAC."""
-    if not _is_hex32(job_id):
-        raise ValueError("job_id must be 32 lowercase hex")
-    if not isinstance(command, str) or not command.strip():
-        raise ValueError("command must be a nonempty string")
-    if not isinstance(working_directory, str) or not working_directory:
-        raise ValueError("working_directory is required")
-    timeout_seconds = validate_timeout(timeout_seconds)
-    max_output_bytes = validate_max_output_bytes(max_output_bytes)
-    if return_files is None:
-        return_files = []
-    if not isinstance(return_files, list):
-        raise ValueError("return_files must be list")
-    return {"kind": "job", "id": job_id, "command": command,
-            "working_directory": working_directory,
-            "timeout_seconds": timeout_seconds,
-            "max_output_bytes": max_output_bytes,
-            "return_files": list(return_files)}
-
-
 def build_result_payload(job_id: str, status: str, exit_code: int | None = None,
                          stdout: str = "", stderr: str = "",
                          started_at: str = "", finished_at: str = "",
@@ -375,7 +353,8 @@ def load_key(key_path: str, key_format: str = "raw",
 def submit_job(queue_dir: str, key: bytes, command: str,
                working_directory: str, timeout_seconds: int = 300,
                max_output_bytes: int = 65536,
-               return_files: list | None = None, dialect=None) -> str:
+               return_files: list | None = None, dialect=None,
+               receipt_script_path: str | None = None) -> str:
     """Seal the command payload and publish it immutably; return the job id."""
     _syn.enforce(command, dialect, BridgeError)
     job_id = generate_job_id()
@@ -383,7 +362,8 @@ def submit_job(queue_dir: str, key: bytes, command: str,
                                 working_directory=working_directory,
                                 timeout_seconds=timeout_seconds,
                                 max_output_bytes=max_output_bytes,
-                                return_files=return_files)
+                                return_files=return_files, dialect=dialect,
+                                receipt_script_path=receipt_script_path)
     publish(str(Path(queue_dir) / "jobs"), job_id, seal(payload, key))
     return job_id
 
@@ -457,7 +437,8 @@ def cmd_submit(args: argparse.Namespace) -> int:
         return_files = list(args.return_file or [])
         job_id = submit_job(args.queue, key, command, args.cwd,
                             int(args.timeout), int(args.max_output),
-                            return_files, args.dialect)
+                            return_files, args.dialect,
+                            args.receipt_script_path)
     except (BridgeError, ValueError, TypeError,
             FileQueueError, ProtocolError) as e:
         print(f"submit refused: {e}", file=sys.stderr)
@@ -526,6 +507,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_submit.add_argument("--timeout", type=int, default=300)
     p_submit.add_argument("--max-output", type=int, default=65536)
     p_submit.add_argument("--return-file", action="append", default=None)
+    p_submit.add_argument(
+        "--receipt-script-path", default=None,
+        help="absolute intended receipt-producing script path, sealed into the job",
+    )
     _syn.add_cli(p_submit)
     p_submit.set_defaults(func=cmd_submit)
 

@@ -12,10 +12,11 @@ One shortcut restores access to the EXISTING share and starts the worker
 
 ## Worker delivery (determined from this repo)
 
-This repository vendors no prebuilt worker binary and no service: the only
-worker implementation is `scripts/lenovo_worker/worker.py` in this checkout
-(stdlib only, same HMAC protocol as `scripts/lan_bridge/lan_bridge.py`),
-and the only cleaner is the sibling `cleaner.py`. Delivery = this checkout
+This repository vendors no prebuilt worker binary and no service: the worker
+entry is `scripts/lenovo_worker/worker.py` with its sibling executor classifiers
+(`powershell_truth.py` and `cmd_fallback.py`; all stdlib only, same HMAC protocol
+as `scripts/lan_bridge/lan_bridge.py`), and the only cleaner is the sibling
+`cleaner.py`. Delivery = this checkout
 at the pinned revision the operator copies to Lenovo. `launch.py` starts the
 sibling copies by default; `--worker-dir` or explicit `workerCommand` /
 `cleanerCommand` in the local config names another checkout. A remembered

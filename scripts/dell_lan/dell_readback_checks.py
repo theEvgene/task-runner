@@ -23,6 +23,9 @@ from dell_lan_common import (
     Stop as CommonStop, manifest_digest, read_key as read_queue_key,
 )
 from description_proof import description_proof, direct_unproven
+from publish_receipt_gate import (
+    documented_command_kind, is_published as _gate_published,
+)
 
 SCHEMA = "dell-lan-readback/2"
 SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -36,12 +39,10 @@ PUBLISH_DRIVER = "scripts/dell_lan/lenovo_publish.py"
 DETAIL_MAX = 400
 
 
-def documented_command(command: str) -> bool:
+def documented_command(command: str, intended_script_path: object = None) -> bool:
     """True for the two commands this skill documents as publication evidence."""
 
-    if "lenovo_publish.py" in command:
-        return True
-    return "mr_identity.py" in command and "capture" in command
+    return documented_command_kind(command, intended_script_path) is not None
 
 NEXT_ACTION = {
     "clean": "transfer for Lenovo publication when authorized",
@@ -218,13 +219,7 @@ def check_bundle(manifest_path: Path, bundle_dir: Path, task_commit: str) -> dic
 
 
 def unwrap_driver(document: dict, args, queue: dict) -> tuple[dict | None, dict]:
-    """Validate the Lenovo publication driver envelope before its identity receipt.
-
-    The driver is the submission, not a second receipt shape: publication
-    evidence stays the nested ``mr_identity`` receipt. This function only
-    proves that the envelope is internally consistent and that the push it
-    observed carried the task commit.
-    """
+    """Validate a driver envelope before its nested identity receipt."""
 
     outcome = document.get("outcome")
     if outcome == "unknown":
@@ -234,6 +229,10 @@ def unwrap_driver(document: dict, args, queue: dict) -> tuple[dict | None, dict]
     if outcome not in ("ok", "observed"):
         raise Stop("publication-job-failed", verdict="rejected", queue=queue,
                    detail=f"driver outcome {outcome}")
+    if outcome == "ok" and not _gate_published(document, args.task_commit):
+        if document.get("stage") != "readback":
+            raise Stop("publication-readback-malformed", queue=queue,
+                       detail=f"ok at {document.get('stage')}")
     identity = document.get("identity")
     if identity is None:
         raise Stop("publication-absent", queue=queue, detail=(
@@ -287,8 +286,7 @@ def check_result(args, bridge) -> dict:
         raise Stop(stop.reason, verdict=stop.verdict, code=stop.code,
                    detail=stop.detail)
 
-    # The submission is verified too: the same id must carry the documented
-    # readback command, or the result proves nothing about this task.
+    # The same signed job id must carry the documented readback executable.
     try:
         raw_job = bridge.read(str(queue / "jobs"), args.job_id)
     except bridge.JobNotFoundError:
@@ -300,7 +298,9 @@ def check_result(args, bridge) -> dict:
     except bridge.ProtocolError as error:
         raise Stop("queue-job-unverifiable", detail=str(error)[:DETAIL_MAX])
     command = str(job.get("command") or "")
-    if not documented_command(command):
+    command_kind = documented_command_kind(
+        command, job.get("receipt_script_path"))
+    if command_kind is None:
         raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
 
     try:
@@ -349,11 +349,7 @@ def check_result(args, bridge) -> dict:
                           and document.get("schema") == PUBLISH_RESULT_SCHEMA
                           and document.get("outcome") == "unknown")
         if driver_unknown or timed_out or truncated or exit_code == 3:
-            # No proof of failure, so no rejected verdict and no new-job-id
-            # advice: a timed-out job may have completed late, a truncated
-            # envelope hides the driver verdict, and exit 3 is the driver's
-            # own unknown contract. Advising a new job id here could
-            # double-publish; keep the slot and reconcile the same job id.
+            # The outcome may have completed late: reconcile this job id.
             raise Stop("outcome-unknown", verdict="unknown", code=3, queue=facts, detail=json.dumps({
                 "stage": (document or {}).get("stage"),
                 "reason": ((document or {}).get("error") or {}).get("reason"),
@@ -371,9 +367,15 @@ def check_result(args, bridge) -> dict:
     except json.JSONDecodeError as error:
         raise Stop("publication-readback-malformed", queue=facts, detail=str(error)[:DETAIL_MAX])
     driver = isinstance(document, dict) and document.get("schema") == PUBLISH_RESULT_SCHEMA
-    if driver:
+    if command_kind == "publish-driver":
+        if not driver:
+            raise Stop("publication-readback-malformed", queue=facts,
+                       detail="publish driver did not return its structured result envelope")
         identity, envelope = unwrap_driver(document, args, queue=facts)
     else:
+        if driver:
+            raise Stop("publication-readback-malformed", queue=facts,
+                       detail="direct identity job returned a publish driver envelope")
         identity, envelope = document, None
     if not isinstance(identity, dict) or identity.get("schema_version") != 1:
         raise Stop("publication-readback-malformed", queue=facts,

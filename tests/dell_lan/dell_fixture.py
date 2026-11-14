@@ -158,7 +158,8 @@ class Workspace:
         return payload, proc
 
     def submit(self, command_file: Path, return_file: Path | None = None,
-               cwd: Path | None = None) -> str:
+               cwd: Path | None = None, dialect: str | None = None,
+               receipt_script_path: str | None = None) -> str:
         command = [
             sys.executable, str(BRIDGE_CLI), "submit", "--queue", str(self.queue),
             "--key-file", str(self.key), "--command-file", str(command_file),
@@ -166,6 +167,10 @@ class Workspace:
         ]
         if return_file is not None:
             command += ["--return-file", str(return_file)]
+        if dialect is not None:
+            command += ["--dialect", dialect]
+        if receipt_script_path is not None:
+            command += ["--receipt-script-path", receipt_script_path]
         proc = run(command)
         if proc.returncode != 0:
             raise AssertionError(f"bridge submit failed: {proc.stderr}")
@@ -320,7 +325,9 @@ class Workspace:
         return data
 
     def submit_publish(self, request: dict) -> str:
-        return self.submit(request["commandFile"])
+        return self.submit(
+            request["commandFile"], dialect="cmd",
+            receipt_script_path=request["receiptScriptPath"])
 
     def rewrite_request(self, request: dict, **fields) -> Path:
         """Rewrite a request file outside the writer and re-point its command digest.
@@ -348,7 +355,9 @@ class Workspace:
         command_file = Path(request["commandFile"])
         text = command_file.read_text(encoding="utf-8").strip()
         command_file.write_text(text + ' --reconcile\n', encoding="utf-8")
-        return self.submit(command_file)
+        return self.submit(
+            command_file, dialect="cmd",
+            receipt_script_path=request["receiptScriptPath"])
 
     def readback(self, *extra: str, receipt: Path | None = None) -> tuple[subprocess.CompletedProcess, dict | None]:
         receipt = receipt or (self.root / f"readback-{os.urandom(4).hex()}.json")

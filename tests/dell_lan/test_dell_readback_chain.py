@@ -15,7 +15,7 @@ import json
 import unittest
 from pathlib import Path
 
-from dell_fixture import BRIDGE_CLI, SHA_D, Workspace, command_file
+from dell_fixture import BRIDGE_CLI, FIXTURE_FLOW, SHA_D, Workspace, command_file
 
 import lan_bridge
 
@@ -31,7 +31,9 @@ class SignedChainTests(unittest.TestCase):
         cls.ws.cleanup()
 
     def submit(self) -> str:
-        return self.ws.submit(self.command)
+        return self.ws.submit(
+            self.command, dialect="cmd",
+            receipt_script_path=str(FIXTURE_FLOW / "mr_identity.py"))
 
     def publish(self, job_id: str, **identity) -> None:
         self.ws.seal_result(job_id, json.dumps(self.ws.identity(**identity)))
