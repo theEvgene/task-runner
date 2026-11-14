@@ -83,6 +83,8 @@ def verify_job(job: dict[str, Any], job_id: str) -> str | None:
 
     if job.get("kind") != "job" or job.get("id") != job_id:
         return "signed job identity does not match the requested job id"
+    if job.get("dialect") != "powershell":
+        return "signed job does not authenticate the powershell dialect"
     if documented_command_kind(
             str(job.get("command") or ""),
             job.get("receipt_script_path")) != "mr-ready-runner":

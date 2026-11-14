@@ -28,6 +28,18 @@ from pipeline_observer.request import (  # noqa: E402
 )
 
 SCHEMA = "mr-ready-request/1"
+POWERSHELL_DIALECT = "powershell"
+POWERSHELL_LAUNCHER = "powershell.exe -NoProfile -NonInteractive -Command"
+
+
+def _launcher_safe(value: str, label: str) -> str:
+    """Validate one literal argv value for the supported launcher shape."""
+
+    _shell_safe(value, label)
+    if '"' in value:
+        raise GateInputError(
+            f"{label} must not contain a double quote in the PowerShell launcher")
+    return value
 
 
 def build_command(
@@ -65,7 +77,8 @@ def build_command(
         parts += ["--previous-head", previous_head]
     parts += ["--max-retries", str(max_retries),
               "--wait-seconds", str(wait_seconds)]
-    return "& " + " ".join(_ps_quote(part) for part in parts)
+    inner = "& " + " ".join(_ps_quote(part) for part in parts)
+    return f'{POWERSHELL_LAUNCHER} "{inner}"'
 
 
 def build_request(
@@ -108,18 +121,18 @@ def build_request(
                          (client_dir, "--lenovo-client-dir"),
                          (checkout, "--lenovo-checkout")):
         _absolute(value, label)
-        _shell_safe(value, label)
+        _launcher_safe(value, label)
     runner = Path(client_dir) / "mr_ready_run.py"
-    _shell_safe(str(runner), "mr_ready_run.py path")
+    _launcher_safe(str(runner), "mr_ready_run.py path")
     for value, label in ((key, "--key"), (subject, "--subject")):
-        _shell_safe(value, label)
+        _launcher_safe(value, label)
     for scope in scopes:
-        _shell_safe(scope, "--scope")
+        _launcher_safe(scope, "--scope")
     for value, label in ((description_file, "--description-file"),
                          (profile, "--profile")):
         if value is not None:
             _absolute(value, label)
-            _shell_safe(value, label)
+            _launcher_safe(value, label)
     if previous_head is not None:
         if (len(previous_head) != 40 or
                 any(char not in "0123456789abcdef" for char in previous_head)):
@@ -145,7 +158,8 @@ def build_request(
                    "checkout": checkout, "profile": profile,
                    "description_file": description_file},
         "receipt_script_path": str(runner),
-        "job": {"timeout_seconds": timeout_seconds,
+        "job": {"dialect": POWERSHELL_DIALECT,
+                "timeout_seconds": timeout_seconds,
                 "max_output_bytes": max_output_bytes},
         "command": command,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

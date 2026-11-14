@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -13,10 +15,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "mr_ready"))
 sys.path.insert(0, str(ROOT / "scripts" / "lan_bridge"))
+sys.path.insert(0, str(ROOT / "scripts" / "lenovo_worker"))
 
 import readback  # noqa: E402
 import request  # noqa: E402
 import lan_bridge  # noqa: E402
+import worker as lenovo_worker  # noqa: E402
 
 URL = "https://gitlab.example/team/app/-/merge_requests/7"
 HEAD = "1" * 40
@@ -67,9 +71,11 @@ def job(command: str | None = None, receipt_script_path: str = RUNNER) -> dict:
     return {
         "kind": "job", "id": "a" * 32,
         "command": command or (
+            "powershell.exe -NoProfile -NonInteractive -Command \""
             "& 'C:\\Python\\python.exe' "
             "'C:\\personal-agent-toolkit\\skills\\gitlab-mr-flow\\scripts\\mr_ready_run.py' "
-            f"'--url' '{URL}'"),
+            f"'--url' '{URL}'\""),
+        "dialect": "powershell",
         "receipt_script_path": receipt_script_path,
     }
 
@@ -82,13 +88,53 @@ class RequestRoutingTests(unittest.TestCase):
             "C:\\repo", "feat", "ABC-1", "Коротко", ["src/**"])
         self.assertIn("mr_ready_run.py", command)
         self.assertIn("--repo", command)
+        self.assertTrue(command.startswith(
+            "powershell.exe -NoProfile -NonInteractive -Command \"& "))
         self.assertNotIn("dell_lan", command)
         self.assertNotIn("publish_mr.py", command)
         self.assertNotIn("--state", command)
         self.assertEqual(built["action"], "prepare-existing-mr-ready")
         self.assertEqual(built["receipt_script_path"], RUNNER)
+        self.assertEqual(built["job"]["dialect"], "powershell")
         self.assertIn("branch_transfer", built["forbidden"])
         self.assertIn("create_merge_request", built["forbidden"])
+
+    @unittest.skipUnless(os.name == "nt" and shutil.which("powershell.exe"),
+                         "requires the Windows Lenovo worker boundary")
+    def test_generated_command_executes_through_signed_worker_boundary(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mr-ready-worker-") as tmp:
+            root = Path(tmp)
+            queue = root / "queue"
+            (queue / "jobs").mkdir(parents=True)
+            (queue / "results").mkdir()
+            client_dir = root / "client"
+            client_dir.mkdir()
+            runner = client_dir / "mr_ready_run.py"
+            runner.write_text(
+                "import json\nprint(json.dumps({'runner': 'started'}))\n",
+                encoding="utf-8")
+            key = b"k" * 32
+            built, command = request.build_request(
+                URL, sys.executable, str(client_dir), str(root), "feat",
+                "ABC-1", "Short subject", ["src/**"])
+            job_id = lan_bridge.submit_job(
+                str(queue), key, command, str(root), timeout_seconds=30,
+                dialect=built["job"]["dialect"],
+                receipt_script_path=built["receipt_script_path"])
+
+            counts = lenovo_worker.run_once(queue, key)
+
+            self.assertEqual(counts["sealed"], 1)
+            opened_job = lan_bridge.open_envelope(
+                lan_bridge.read(queue / "jobs", job_id), key, "job", job_id)
+            self.assertIsNone(readback.verify_job(opened_job, job_id))
+            result = lan_bridge.open_envelope(
+                lan_bridge.read(queue / "results", job_id), key,
+                "result", job_id)
+            self.assertEqual(result["status"], "ok", result["stderr"])
+            self.assertEqual(result["exit_code"], 0, result["stderr"])
+            self.assertEqual(json.loads(result["stdout"]),
+                             {"runner": "started"})
 
 
 class ReadbackTests(unittest.TestCase):
@@ -170,6 +216,14 @@ class ReadbackTests(unittest.TestCase):
         result = readback.verify(
             payload(run_receipt(), 0), "a" * 32, URL,
             job(receipt_script_path=""))
+        self.assertEqual(result["verdict"], "mismatch")
+        self.assertEqual(result["reason"], "runner_provenance_mismatch")
+
+    def test_missing_authenticated_dialect_never_confirms_ready(self) -> None:
+        unsigned_dialect = job()
+        unsigned_dialect.pop("dialect")
+        result = readback.verify(
+            payload(run_receipt(), 0), "a" * 32, URL, unsigned_dialect)
         self.assertEqual(result["verdict"], "mismatch")
         self.assertEqual(result["reason"], "runner_provenance_mismatch")
 

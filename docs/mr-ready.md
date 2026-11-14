@@ -36,16 +36,21 @@ Inspect the request, then submit `command.txt` with the standard signed bridge:
 python scripts/lan_bridge/lan_bridge.py submit \
   --queue <queue-dir> --key-file <key-path> [--key-format raw|base64] \
   --command-file <command.txt> --cwd <Lenovo checkout> \
+  --dialect powershell \
   --timeout 1800 --max-output 262144 \
   --receipt-script-path <request.json receipt_script_path>
 ```
 
-The signed job is the authorization boundary. `--receipt-script-path` must be
+The command file contains the worker-supported explicit
+`powershell.exe -NoProfile -NonInteractive -Command` launcher. The signed job
+is the authorization boundary: `--dialect powershell` must be present, and
+`--receipt-script-path` must be
 the absolute `receipt_script_path` emitted in `request.json`; readback opens
-that authenticated job and compares the actual Python script argv to the
-sealed path before trusting stdout. Jobs without that exact binding fail
-closed. Retry is capped by `--max-retries`, and there is no background
-watcher. Do not resubmit while a write outcome is unknown.
+that authenticated job, unwraps the supported launcher, and compares the
+actual inner Python script argv to the sealed path before trusting stdout.
+Jobs without both authenticated bindings fail closed. Retry is capped by
+`--max-retries`, and there is no background watcher. Do not resubmit while a
+write outcome is unknown.
 
 ## Read the result on Dell
 
