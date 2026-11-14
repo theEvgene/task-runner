@@ -19,6 +19,11 @@ from pathlib import PureWindowsPath
 
 PUBLISH_RESULT_SCHEMA = "dell-lan-publish-result/1"
 _PYTHON = re.compile(r"^(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?$", re.IGNORECASE)
+_POWERSHELL_LAUNCHER = re.compile(
+    r"^(powershell(?:\.exe)?|pwsh(?:\.exe)?)\s+"
+    r"-NoProfile\s+-NonInteractive\s+-Command\s+\"([^\"]+)\"\s*$",
+    re.IGNORECASE,
+)
 
 
 def _command_argv(command: str) -> list[str] | None:
@@ -80,27 +85,86 @@ def _command_argv(command: str) -> list[str] | None:
     return argv
 
 
+def _powershell_command_argv(command: str) -> list[str] | None:
+    """Parse the restricted PowerShell argv emitted by ``_ps_quote``.
+
+    The supported shape is ``& 'arg' 'arg'`` with embedded single quotes
+    doubled.  No expressions, substitutions, pipelines, or bare arguments
+    are accepted.
+    """
+
+    if not isinstance(command, str):
+        return None
+    text = command.strip()
+    if not text.startswith("&") or (len(text) > 1 and not text[1].isspace()):
+        return None
+    i = 1
+    argv: list[str] = []
+    while i < len(text):
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i == len(text):
+            break
+        if text[i] != "'":
+            return None
+        i += 1
+        token: list[str] = []
+        while i < len(text):
+            if text[i] != "'":
+                token.append(text[i])
+                i += 1
+                continue
+            if i + 1 < len(text) and text[i + 1] == "'":
+                token.append("'")
+                i += 2
+                continue
+            i += 1
+            break
+        else:
+            return None
+        if i < len(text) and not text[i].isspace():
+            return None
+        argv.append("".join(token))
+    return argv or None
+
+
+def _wrapped_powershell_command_argv(command: str) -> list[str] | None:
+    """Parse the supported explicit launcher and its literal inner argv."""
+
+    if not isinstance(command, str):
+        return None
+    matched = _POWERSHELL_LAUNCHER.fullmatch(command.strip())
+    if matched is None:
+        return None
+    return _powershell_command_argv(matched.group(2))
+
+
 def documented_command_kind(command: str,
                             intended_script_path: object = None) -> str | None:
     """Return the receipt contract bound to the signed exact script path."""
 
-    argv = _command_argv(command)
-    if not argv or len(argv) < 2:
-        return None
-    executable = PureWindowsPath(argv[0]).name
-    if not _PYTHON.fullmatch(executable):
-        return None
     if not isinstance(intended_script_path, str) or not intended_script_path:
         return None
-    actual = ntpath.normcase(ntpath.normpath(argv[1]))
     intended = ntpath.normcase(ntpath.normpath(intended_script_path))
-    if actual != intended:
+    candidates = (
+        _command_argv(command),
+        _powershell_command_argv(command),
+        _wrapped_powershell_command_argv(command),
+    )
+    argv = next((candidate for candidate in candidates
+                 if candidate and len(candidate) >= 2
+                 and _PYTHON.fullmatch(PureWindowsPath(candidate[0]).name)
+                 and ntpath.normcase(ntpath.normpath(candidate[1])) == intended),
+                None)
+    if argv is None:
         return None
     script = PureWindowsPath(intended_script_path).name.lower()
     if script == "lenovo_publish.py":
         return "publish-driver"
     if script == "mr_identity.py" and len(argv) > 2 and argv[2] == "capture":
         return "direct-identity"
+    if script == "mr_ready_run.py":
+        return "mr-ready-runner"
     return None
 
 
