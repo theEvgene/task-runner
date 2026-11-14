@@ -7,13 +7,18 @@ that already hosts the queue, and only the request's SHA-256 travels inside the
 HMAC-signed job payload. The Lenovo side re-hashes the file and refuses a
 request that the job did not name.
 
-Three requests exist, all in [the workflow](../../docs/dell-lan.md):
+Five requests exist, all in [the workflow](../../docs/dell-lan.md):
 
 - ``base`` asks Lenovo for a git bundle of the published base ref;
 - ``first`` asks Lenovo for the first verified copy of an explicitly named
   remote branch when no Lenovo checkout exists yet (``docs/first-import.md``);
 - ``publish`` asks Lenovo to import the staged task bundle and run the existing
   ``gitlab-mr-flow`` publication flow for it.
+- ``transfer`` asks Lenovo to import the staged task bundle only (no push/MR;
+  `docs/dell-lan-standalone.md`).
+- ``publish-existing`` asks Lenovo to publish a branch that already exists
+  there, reusing the same publication flow (no bundle, no second client;
+  `docs/dell-lan-standalone.md`).
 
 This script writes files only. It never submits a job, never contacts Lenovo,
 and never publishes anything.
@@ -28,6 +33,10 @@ import sys
 from pathlib import Path
 
 from shell_command import ShellDialectError, build_for_transport
+from dell_request_common import (
+    SingleDialect, add_reconcile_argument, flow_args, render_reconcile,
+    require_absolute_lenovo_paths,
+)
 
 from dell_lan_common import (
     BASE_REQUEST_SCHEMA, DETAIL_MAX, FIRST_REQUEST_SCHEMA,
@@ -35,6 +44,7 @@ from dell_lan_common import (
     expected_request_name, inside, remote_has_credentials, request_file_token,
     safe_name, sha256_bytes,
 )
+from dell_standalone_requests import publish_existing_request, transfer_request
 
 TOKEN_RE = re.compile(r"^[0-9a-f]{16}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -42,15 +52,6 @@ KEY_RE = re.compile(r"^[A-Z][A-Z0-9]*-[1-9][0-9]*$")
 BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 AUTHORIZABLE = ("import", "push", "mr", "undraft", "reconcile")
 PREVIOUS_RE = re.compile(r"^[0-9a-f]{40}$")
-
-
-class SingleDialect(argparse.Action):
-    """Accept exactly one explicit dialect declaration."""
-
-    def __call__(self, parser, namespace, value, option_string=None) -> None:
-        if getattr(namespace, self.dest, None) is not None:
-            parser.error(f"{option_string} must be declared exactly once")
-        setattr(namespace, self.dest, value)
 
 
 def usage(message: str) -> int:
@@ -106,9 +107,8 @@ def write_request(args, request: dict, driver: str, dialect: str) -> int:
     ] + flow_args(args)
     try:
         command = build_for_transport(command_parts, dialect)
-        reconcile_command = (build_for_transport(
-            command_parts + ["--reconcile"], dialect)
-            if driver == "lenovo_publish.py" and not args.reconcile else None)
+        reconcile_command = render_reconcile(
+            command_parts, driver, dialect, getattr(args, "reconcile", False))
     except ShellDialectError as error:
         raise Stop("usage", code=2, detail=str(error)) from error
     request_path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,28 +130,6 @@ def write_request(args, request: dict, driver: str, dialect: str) -> int:
     }
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     return 0
-
-
-def require_absolute_lenovo_paths(*pairs: tuple[str, str]) -> None:
-    """A path that crosses to Lenovo must be absolute there; a relative one is meaningless."""
-
-    for label, value in pairs:
-        if not value or not Path(value).is_absolute():
-            raise Stop("usage", code=2, detail=(
-                f"{label} must be the absolute path on the Lenovo machine"))
-
-
-def flow_args(args) -> list[str]:
-    """Extra Lenovo command arguments for the publish driver, if any were named."""
-
-    flow_dir = getattr(args, "lenovo_flow_dir", None)
-    result: list[str] = []
-    if flow_dir:
-        require_absolute_lenovo_paths(("--lenovo-flow-dir", flow_dir))
-        result += ["--flow-dir", str(Path(flow_dir))]
-    if getattr(args, "reconcile", False):
-        result.append("--reconcile")
-    return result
 
 
 def base_request(args) -> dict:
@@ -216,12 +194,13 @@ def publish_request(args) -> dict:
     for label, value in (("--branch", args.branch), ("--target-branch", args.target_branch)):
         if not BRANCH_RE.match(value or "") or ".." in (value or "") or value.startswith("-"):
             raise Stop("usage", code=2, detail=f"{label} is not a safe branch name")
-    if args.change_type not in ("feat", "fix"):
+    if args.change_type and args.change_type not in ("feat", "fix"):
         raise Stop("usage", code=2, detail="--change-type must be feat or fix")
-    if not KEY_RE.match(args.jira_key or ""):
+    if args.jira_key and not KEY_RE.match(args.jira_key):
         raise Stop("usage", code=2, detail="--jira-key must look like ABC-123")
-    if not args.subject.strip() or "\n" in args.subject or "\r" in args.subject:
-        raise Stop("usage", code=2, detail="--subject must be one non-empty line")
+    subject = (args.subject or "").strip()
+    if subject and ("\n" in subject or "\r" in subject):
+        raise Stop("usage", code=2, detail="--subject must be one line")
     if args.state not in ("draft", "ready"):
         raise Stop("usage", code=2, detail=(
             "--state must be draft or ready"))
@@ -239,22 +218,30 @@ def publish_request(args) -> dict:
     if unknown:
         raise Stop("usage", code=2, detail=f"unknown authorization: {', '.join(unknown)}")
     shared = Path(args.shared)
-    for label, value in (("--manifest", args.manifest), ("--bundle", args.bundle),
-                         ("--description-file", args.description_file)):
+    for label, value in (("--manifest", args.manifest), ("--bundle", args.bundle)):
         if not inside(Path(value), shared):
             raise Stop("usage", code=2, detail=f"{label} must live on the shared LAN path")
     if not safe_name(Path(args.bundle).name):
         raise Stop("usage", code=2, detail="--bundle must name one contained file")
-    description_path = Path(args.description_file)
-    if not description_path.is_file():
-        raise Stop("usage", code=2, detail="--description-file does not exist")
-    try:
-        description_bytes = description_path.read_bytes()
-        description_bytes.decode("utf-8")
-    except OSError as error:
-        raise Stop("usage", code=2, detail=f"--description-file is unreadable: {error}")
-    except UnicodeDecodeError as error:
-        raise Stop("usage", code=2, detail=f"--description-file is not valid UTF-8: {error}")
+    description_path = Path(args.description_file) if args.description_file else None
+    description_bytes = None
+    description_sha = None
+    if description_path is not None:
+        if not inside(description_path, shared):
+            raise Stop("usage", code=2,
+                       detail="--description-file must live on the shared LAN path")
+        if not description_path.is_file():
+            raise Stop("usage", code=2, detail="--description-file does not exist")
+        try:
+            raw_description = description_path.read_bytes()
+            raw_description.decode("utf-8")
+        except OSError as error:
+            raise Stop("usage", code=2, detail=f"--description-file is unreadable: {error}")
+        except UnicodeDecodeError as error:
+            raise Stop("usage", code=2,
+                       detail=f"--description-file is not valid UTF-8: {error}")
+        description_bytes = len(raw_description)
+        description_sha = sha256_bytes(raw_description)
     require_absolute_lenovo_paths(
         ("--lenovo-checkout", args.lenovo_checkout),
         ("--lenovo-worktree", args.lenovo_worktree),
@@ -277,12 +264,12 @@ def publish_request(args) -> dict:
         "targetBranch": args.target_branch,
         "host": args.host,
         "project": args.project,
-        "changeType": args.change_type,
-        "jiraKey": args.jira_key,
-        "subject": args.subject.strip(),
-        "descriptionFile": str(description_path),
-        "descriptionBytes": len(description_bytes),
-        "descriptionSha256": sha256_bytes(description_bytes),
+        "changeType": args.change_type or "",
+        "jiraKey": args.jira_key or "",
+        "subject": subject,
+        "descriptionFile": str(description_path) if description_path else "",
+        "descriptionBytes": description_bytes,
+        "descriptionSha256": description_sha,
         "state": args.state,
         "lenovoCheckout": str(Path(args.lenovo_checkout)),
         "lenovoWorktree": str(Path(args.lenovo_worktree)),
@@ -330,7 +317,8 @@ def build_parser() -> argparse.ArgumentParser:
                          help="shell that will execute the generated command file; never inferred")
     publish.add_argument("--manifest", required=True)
     publish.add_argument("--bundle", required=True)
-    publish.add_argument("--description-file", required=True)
+    publish.add_argument("--description-file", default="",
+                         help="required only when no open MR exists")
     publish.add_argument("--expected-base", required=True)
     publish.add_argument("--expected-commit", required=True)
     publish.add_argument("--expected-previous", default=None,
@@ -341,9 +329,12 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--target-branch", required=True)
     publish.add_argument("--host", required=True)
     publish.add_argument("--project", required=True)
-    publish.add_argument("--change-type", required=True)
-    publish.add_argument("--jira-key", required=True)
-    publish.add_argument("--subject", required=True)
+    publish.add_argument("--change-type", default="",
+                         help="feat/fix; required only when no open MR exists")
+    publish.add_argument("--jira-key", default="",
+                         help="ABC-123; required only when no open MR exists")
+    publish.add_argument("--subject", default="",
+                         help="one-line title; required only when no open MR exists")
     publish.add_argument("--state", default="draft",
                            help="draft, or ready (Ready needs undraft in --authorize)")
     publish.add_argument("--authorize", required=True,
@@ -354,11 +345,65 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--lenovo-flow-dir", default=None,
                          help="absolute flow scripts dir on Lenovo holding the external "
                               "publication flow (default: the driver's own default)")
-    publish.add_argument("--reconcile", action="store_true",
-                         help="render the consent-gated read-only recovery command")
+    add_reconcile_argument(publish)
     publish.set_defaults(
         func=lambda args: write_request(
             args, publish_request(args), "lenovo_publish.py", args.dialect))
+
+    transfer = sub.add_parser("transfer", help="ask Lenovo to import the task bundle only")
+    common(transfer)
+    transfer.add_argument("--dialect", required=True, choices=("cmd", "powershell"),
+                          action=SingleDialect,
+                          help="shell that will execute the generated command file; never inferred")
+    transfer.add_argument("--manifest", required=True)
+    transfer.add_argument("--bundle", required=True)
+    transfer.add_argument("--expected-base", required=True)
+    transfer.add_argument("--expected-commit", required=True)
+    transfer.add_argument("--expected-previous", default=None,
+                          help="prior task-branch SHA for a repeat transfer")
+    transfer.add_argument("--branch", required=True)
+    transfer.add_argument("--authorize", default="import",
+                          help="comma-separated: import[,reconcile] (never push/mr)")
+    transfer.add_argument("--lenovo-checkout", required=True)
+    transfer.add_argument("--lenovo-worktree", required=True)
+    add_reconcile_argument(transfer)
+    transfer.set_defaults(
+        func=lambda args: write_request(
+            args, transfer_request(args), "lenovo_transfer.py", args.dialect))
+
+    existing = sub.add_parser("publish-existing",
+                              help="ask Lenovo to publish a branch that already exists there")
+    common(existing)
+    existing.add_argument("--dialect", required=True, choices=("cmd", "powershell"),
+                          action=SingleDialect,
+                          help="shell that will execute the generated command file; never inferred")
+    existing.add_argument("--expected-base", required=True)
+    existing.add_argument("--expected-commit", required=True)
+    existing.add_argument("--branch", required=True)
+    existing.add_argument("--target-branch", required=True)
+    existing.add_argument("--host", required=True)
+    existing.add_argument("--project", required=True)
+    existing.add_argument("--change-type", default="",
+                          help="feat/fix; required only when no open MR exists")
+    existing.add_argument("--jira-key", default="",
+                          help="ABC-123; required only when no open MR exists")
+    existing.add_argument("--subject", default="",
+                          help="one-line title; required only when no open MR exists")
+    existing.add_argument("--description-file", default="",
+                          help="shared MR description; required only when no open MR exists")
+    existing.add_argument("--state", default="draft",
+                          help="draft, or ready (Ready needs undraft in --authorize)")
+    existing.add_argument("--authorize", required=True,
+                          help="comma-separated: push,mr[,undraft][,reconcile]")
+    existing.add_argument("--lenovo-checkout", required=True)
+    existing.add_argument("--lenovo-worktree", required=True)
+    existing.add_argument("--lenovo-flow-dir", default=None,
+                          help="absolute flow scripts dir on Lenovo holding the external "
+                               "publication flow (default: the driver's own default)")
+    add_reconcile_argument(existing)
+    existing.set_defaults(
+        func=lambda args: write_request(
+            args, publish_existing_request(args), "lenovo_publish_existing.py", args.dialect))
     return parser
 
 

@@ -47,6 +47,7 @@ def main(argv=None) -> int:
               "token": None, "authorized": [], "bundle": None, "import": None,
               "preflight": None, "push": None, "mr": None, "identity": None,
               "undraft": None, "pipeline": {"waited": False, "polled": False},
+              "missing": None,
               "error": None, "finishedAt": now_iso()}
     code = 0
     try:
@@ -58,7 +59,8 @@ def main(argv=None) -> int:
         # Reconciliation may report the signed request as observed, and a
         # normal run may push before the MR step. Both paths must therefore
         # bind the same Dell-observed bytes before any result is trusted.
-        request["descriptionText"] = load_description(request, verify_binding=True)
+        if request.get("descriptionFile"):
+            request["descriptionText"] = load_description(request, verify_binding=True)
         result["stage"] = "bundle"
         bundle = verify_bundle(request, result)
         tip = bundle_tip(Path(request["lenovoCheckout"]), bundle)
@@ -82,6 +84,17 @@ def main(argv=None) -> int:
             if not _gate_published(candidate, str(request["expectedCommit"])):
                 raise Stop("publication-head-mismatch",
                            detail=f"{(receipt or {}).get('head_sha')} != {request['expectedCommit']}")
+            for field, expected, reason in (
+                    ("project_path", request["project"], "publication-project-mismatch"),
+                    ("source_branch", request["branch"], "publication-branch-mismatch"),
+                    ("target_branch", request["targetBranch"], "publication-target-mismatch")):
+                if receipt.get(field) != expected:
+                    raise Stop(reason, detail=str(receipt.get(field))[:DETAIL_MAX])
+            mr = result.get("mr") or {}
+            if receipt.get("mr_url") != mr.get("url") or receipt.get("iid") != mr.get("iid"):
+                raise Stop("publication-mr-mismatch", detail=(
+                    f"receipt {receipt.get('mr_url')}#{receipt.get('iid')} != "
+                    f"result {mr.get('url')}#{mr.get('iid')}")[:DETAIL_MAX])
             result["outcome"] = "ok"
     except Stop as stop:
         result["outcome"] = stop.verdict if stop.verdict in ("unknown", "refused") else "refused"

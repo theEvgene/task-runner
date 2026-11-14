@@ -21,7 +21,7 @@ from pathlib import Path
 from dell_lan_common import DETAIL_MAX, Stop, git_ok, run
 from lenovo_publish_flow import (
     capture, expected_ready_title, find_open_mr, load_flow, publish_draft,
-    require_ready_identity, undraft_mr, verify_description,
+    missing_mr_fields, require_ready_identity, undraft_mr, verify_description,
 )
 
 
@@ -95,7 +95,31 @@ def publish(request: dict, worktree: Path, flow_dir: Path, result: dict) -> dict
         require(request, "undraft")
     require(request, "mr")
     api, identity, publisher = load_flow(flow_dir)
-    existing = find_open_mr(api, request["host"], request["project"], request["branch"])
+    existing = find_open_mr(
+        api, request["host"], request["project"], request["branch"],
+        request["targetBranch"])
+    missing = missing_mr_fields(request)
+    if existing is None and missing:
+        result["missing"] = missing
+        raise Stop("missing-data", detail=(
+            f"absent MR data: {', '.join(missing)}; resubmit the same branch and commit"))
+    if (existing is not None
+            and (existing.get("draft") is False
+                 or (missing and request.get("state") != "ready"))):
+        url = existing.get("web_url") or api.merge_request_url(
+            request["host"], request["project"], existing.get("iid"))
+        receipt = capture(identity, url, worktree)
+        result["mr"] = {"url": url, "iid": existing.get("iid"),
+                        "draft": bool(existing.get("draft")), "created": False}
+        result["identity"] = receipt
+        result["pipeline"] = {"waited": False, "polled": False}
+        result["undraft"] = None
+        return receipt
+    if existing is not None and missing and request.get("state") == "ready":
+        result["missing"] = missing
+        raise Stop("missing-data", detail=(
+            "the existing MR is Draft; Ready verification needs the missing "
+            f"metadata: {', '.join(missing)}"))
     written = publish_draft(publisher, api, request, existing)
     observed_description_sha = written.pop("_descriptionObservedSha256")
     result["mr"] = {"url": written["mr_url"], "iid": written["iid"],
@@ -141,7 +165,9 @@ def observe(request: dict, worktree: Path, flow_dir: Path, result: dict) -> dict
     result["push"] = {"remote": "origin", "branch": request["branch"],
                       "localSha": request["expectedCommit"], "observedRemoteSha": observed,
                       "exitCode": None}
-    existing = find_open_mr(api, request["host"], request["project"], request["branch"])
+    existing = find_open_mr(
+        api, request["host"], request["project"], request["branch"],
+        request["targetBranch"])
     if not existing:
         result["mr"] = {"url": None, "iid": None, "draft": None, "created": False}
         return None
@@ -151,16 +177,17 @@ def observe(request: dict, worktree: Path, flow_dir: Path, result: dict) -> dict
     url = existing.get("web_url") or api.merge_request_url(
         request["host"], request["project"], iid)
     text = request.get("descriptionText")
-    if not isinstance(text, str):
-        raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
-                   detail="the signed input description is unavailable")
-    observed_description_sha = verify_description(api, request, text, iid)
-    result["mr"] = {"url": url, "iid": iid,
-                    "draft": bool(existing.get("draft")), "created": False,
-                    "descriptionVerified": True,
-                    "descriptionSha256": observed_description_sha,
-                    "descriptionExpectedSha256": request["descriptionSha256"],
-                    "descriptionObservedSha256": observed_description_sha}
+    if isinstance(text, str):
+        observed_description_sha = verify_description(api, request, text, iid)
+        result["mr"] = {"url": url, "iid": iid,
+                        "draft": bool(existing.get("draft")), "created": False,
+                        "descriptionVerified": True,
+                        "descriptionSha256": observed_description_sha,
+                        "descriptionExpectedSha256": request["descriptionSha256"],
+                        "descriptionObservedSha256": observed_description_sha}
+    else:
+        result["mr"] = {"url": url, "iid": iid,
+                        "draft": bool(existing.get("draft")), "created": False}
     receipt = capture(identity, url, worktree if worktree.is_dir() else None)
     result["identity"] = receipt
     return receipt

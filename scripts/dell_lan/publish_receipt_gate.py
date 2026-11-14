@@ -18,6 +18,7 @@ import ntpath
 from pathlib import PureWindowsPath
 
 PUBLISH_RESULT_SCHEMA = "dell-lan-publish-result/1"
+PUBLISH_EXISTING_RESULT_SCHEMA = "dell-lan-publish-existing-result/1"
 _PYTHON = re.compile(r"^(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?$", re.IGNORECASE)
 _POWERSHELL_LAUNCHER = re.compile(
     r"^(powershell(?:\.exe)?|pwsh(?:\.exe)?)\s+"
@@ -162,6 +163,10 @@ def documented_command_kind(command: str,
     script = PureWindowsPath(intended_script_path).name.lower()
     if script == "lenovo_publish.py":
         return "publish-driver"
+    if script == "lenovo_transfer.py":
+        return "transfer-driver"
+    if script == "lenovo_publish_existing.py":
+        return "publish-existing-driver"
     if script == "mr_identity.py" and len(argv) > 2 and argv[2] == "capture":
         return "direct-identity"
     if script == "mr_ready_run.py":
@@ -186,7 +191,8 @@ def is_published(driver_result: dict, expected_commit: str) -> bool:
 
     if not isinstance(driver_result, dict):
         return False
-    if driver_result.get("schema") != PUBLISH_RESULT_SCHEMA:
+    if driver_result.get("schema") not in (
+            PUBLISH_RESULT_SCHEMA, PUBLISH_EXISTING_RESULT_SCHEMA):
         return False
     if driver_result.get("outcome") != "ok":
         return False

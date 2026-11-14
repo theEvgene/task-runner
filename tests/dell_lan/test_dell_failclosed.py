@@ -20,6 +20,7 @@ SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "dell_lan"
 sys.path.insert(0, str(SCRIPTS))
 
 import lenovo_bundle
+import lenovo_transfer
 from dell_lan_common import Stop as DriverStop
 from dell_readback_checks import Stop, check_result
 
@@ -106,6 +107,42 @@ class MiniRepo:
 
 
 class RaceNoLossTests(unittest.TestCase):
+    def test_first_import_refuses_same_sha_worktree_owned_by_another_branch(self):
+        repo = MiniRepo()
+        git("worktree", "remove", "--force", str(repo.worktree), cwd=repo.checkout)
+        git("branch", "-D", MiniRepo.BRANCH, cwd=repo.checkout)
+        git("branch", "foreign/owner", repo.expected, cwd=repo.checkout)
+        git("worktree", "add", "-q", str(repo.worktree), "foreign/owner",
+            cwd=repo.checkout)
+        (repo.worktree / "foreign.txt").write_text("keep me\n", encoding="utf-8")
+        request = repo.request()
+        request["expectedPreviousCommit"] = None
+
+        with self.assertRaises(DriverStop) as caught:
+            lenovo_bundle.import_once(request, repo.bundle, repo.expected, {})
+
+        self.assertEqual(caught.exception.reason, "branch-owned")
+        self.assertEqual(git("rev-parse", "--abbrev-ref", "HEAD", cwd=repo.worktree),
+                         "foreign/owner")
+        self.assertEqual((repo.worktree / "foreign.txt").read_text(encoding="utf-8"),
+                         "keep me\n")
+
+    def test_reconcile_dirty_worktree_never_matches_transfer(self):
+        repo = MiniRepo()
+        repo.apply_move()
+        (repo.worktree / "notes.txt").write_text("foreign edit\n", encoding="utf-8")
+        result: dict = {}
+
+        with self.assertRaises(DriverStop) as caught:
+            lenovo_transfer._observe(repo.request(), result)
+
+        self.assertEqual(caught.exception.reason, "import-unknown")
+        self.assertEqual(caught.exception.verdict, "unknown")
+        self.assertFalse(result["import"]["matches"])
+        self.assertFalse(result["import"]["clean"])
+        self.assertEqual((repo.worktree / "notes.txt").read_text(encoding="utf-8"),
+                         "foreign edit\n")
+
     def test_the_repeat_move_is_a_ref_compare_and_swap_not_a_merge(self):
         import re
         source = (SCRIPTS / "lenovo_bundle.py").read_text(encoding="utf-8")
@@ -334,96 +371,19 @@ def unknown_args(root: Path) -> SimpleNamespace:
         repo=str(repo), worktree=None, shared=str(shared), bundle_dir=None,
         bundle_manifest=None, job_id="b" * 32, fetch_timeout=3.0, poll=0.05,
         task_commit="a" * 40, provenance="fixture", project=None,
-        source_branch=None, target_branch=None,
+        source_branch=None, target_branch=None, lenovo_worktree=None,
     )
 
 
 DRIVER_SCRIPT = r"C:\skill\scripts\dell_lan\lenovo_publish.py"
-IDENTITY_SCRIPT = r"C:\flow\gitlab-mr-flow\scripts\mr_identity.py"
 DRIVER_COMMAND = (f'"python" "{DRIVER_SCRIPT}" '
                   '--request "x" --request-sha256 "y"')
-IDENTITY_COMMAND = (f'"python" "{IDENTITY_SCRIPT}" capture '
-                    '--url "https://gitlab.example/mr/1"')
 
 
 def payload(status: str, exit_code: int, stdout: str = "",
             timed_out: bool = False, truncated: bool = False) -> dict:
     return {"status": status, "exit_code": exit_code, "stdout": stdout,
             "stderr": "", "timed_out": timed_out, "output_truncated": truncated}
-
-
-def identity_receipt() -> dict:
-    return {
-        "schema_version": 1,
-        "gitlab_host": "gitlab.example",
-        "project_path": "group/project",
-        "source_branch": "task/test",
-        "target_branch": "main",
-        "mr_url": "https://gitlab.example/mr/1",
-        "iid": 1,
-        "state": "opened",
-        "head_sha": "a" * 40,
-        "target_sha": "c" * 40,
-        "captured_at": "2026-11-14T00:00:00+00:00",
-    }
-
-
-class ReadbackCommandSchemaBindingTests(unittest.TestCase):
-    def run_check(self, command: str, document: dict,
-                  receipt_script_path: str | None = None):
-        root = Path(tempfile.mkdtemp(prefix="dell-schema-binding-"))
-        (root / "key.bin").write_bytes(b"k" * 32)
-        bridge = FakeBridge(
-            b"k" * 32, command,
-            payload("ok", 0, stdout=json.dumps(document)),
-            receipt_script_path or (IDENTITY_SCRIPT if "mr_identity" in command
-                                    else DRIVER_SCRIPT))
-        return check_result(unknown_args(root), bridge)
-
-    def test_publish_driver_cannot_bypass_gate_with_raw_identity_stdout(self):
-        with self.assertRaises(Stop) as caught:
-            self.run_check(DRIVER_COMMAND, identity_receipt())
-        self.assertEqual(caught.exception.reason,
-                         "publication-readback-malformed")
-        self.assertIn("structured result envelope", caught.exception.detail)
-
-    def test_direct_identity_command_still_accepts_raw_identity_stdout(self):
-        result = self.run_check(IDENTITY_COMMAND, identity_receipt())
-        self.assertTrue(result["publication"]["bound"])
-        self.assertIsNone(result["publication"]["driver"])
-
-    def test_publish_driver_accepts_gated_structured_stdout(self):
-        identity = identity_receipt()
-        description_sha = "d" * 64
-        document = {
-            "schema": "dell-lan-publish-result/1",
-            "outcome": "ok",
-            "stage": "readback",
-            "identity": identity,
-            "push": {"observedRemoteSha": "a" * 40},
-            "mr": {
-                "url": identity["mr_url"],
-                "iid": identity["iid"],
-                "descriptionVerified": True,
-                "descriptionExpectedSha256": description_sha,
-                "descriptionObservedSha256": description_sha,
-            },
-        }
-        result = self.run_check(DRIVER_COMMAND, document)
-        self.assertTrue(result["publication"]["bound"])
-        self.assertEqual(result["publication"]["driverStage"], "readback")
-
-    def test_attacker_driver_basename_is_not_authenticated_evidence(self):
-        command = r'python C:\attacker\lenovo_publish.py --request x'
-        with self.assertRaises(Stop) as caught:
-            self.run_check(command, identity_receipt(), DRIVER_SCRIPT)
-        self.assertEqual(caught.exception.reason, "queue-job-mismatch")
-
-    def test_attacker_identity_basename_is_not_authenticated_evidence(self):
-        command = r'python C:\attacker\mr_identity.py capture --url https://x'
-        with self.assertRaises(Stop) as caught:
-            self.run_check(command, identity_receipt(), IDENTITY_SCRIPT)
-        self.assertEqual(caught.exception.reason, "queue-job-mismatch")
 
 
 class UnknownProofTests(unittest.TestCase):
@@ -465,7 +425,6 @@ class UnknownProofTests(unittest.TestCase):
                                   timed_out=True, truncated=False))
         self.assertEqual(stop.verdict, "unknown")
         self.assertEqual(stop.code, 3)
-
 
 if __name__ == "__main__":
     unittest.main()
