@@ -34,7 +34,10 @@ def driver(outcome="ok", stage="readback", head=TASK, schema="dell-lan-publish-r
     return {"schema": schema, "outcome": outcome, "stage": stage,
             "identity": {"head_sha": head, "mr_url": "https://x/mr/1", "iid": 1},
             "push": {"observedRemoteSha": head},
-            "mr": {"url": "https://x/mr/1", "iid": 1},
+            "mr": {"url": "https://x/mr/1", "iid": 1,
+                   "descriptionVerified": True,
+                   "descriptionExpectedSha256": "c" * 64,
+                   "descriptionObservedSha256": "c" * 64},
             "error": None}
 
 
@@ -156,6 +159,8 @@ class PublishDriverGateTests(unittest.TestCase):
         patches = (
             mock.patch.object(lenovo_publish, "parse", return_value=args),
             mock.patch.object(lenovo_publish, "validated", return_value=request),
+            mock.patch.object(lenovo_publish, "load_description",
+                              return_value="fixture description\n"),
             mock.patch.object(lenovo_publish, "verify_bundle", return_value={}),
             mock.patch.object(lenovo_publish, "bundle_tip", return_value=TASK),
             mock.patch.object(lenovo_publish, "import_once", return_value=Path(".")),
@@ -164,7 +169,7 @@ class PublishDriverGateTests(unittest.TestCase):
             publish_patch,
         )
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
-                patches[5], patches[6], patches[7], \
+                patches[5], patches[6], patches[7], patches[8], \
                 redirect_stdout(stdout), redirect_stderr(stderr):
             code = lenovo_publish.main([])
         return code, json.loads(stdout.getvalue())
