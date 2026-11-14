@@ -26,6 +26,9 @@ from description_proof import description_proof, direct_unproven
 from publish_receipt_gate import (
     documented_command_kind, is_published as _gate_published,
 )
+from dell_standalone_common import (
+    PUBLISH_EXISTING_RESULT_SCHEMA, TRANSFER_RESULT_SCHEMA,
+)
 
 SCHEMA = "dell-lan-readback/2"
 SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -36,11 +39,19 @@ GITLAB_READBACK = "gitlab-mr-flow/scripts/mr_identity.py capture"
 QUEUE_VERIFY = "lan-task-bridge/scripts/lan_bridge.py fetch (open_envelope: MAC + kind/id)"
 BUNDLE_TOOL = "scripts/dell_lan/stage_bundle.py"
 PUBLISH_DRIVER = "scripts/dell_lan/lenovo_publish.py"
+TRANSFER_DRIVER = "scripts/dell_lan/lenovo_transfer.py"
+PUBLISH_EXISTING_DRIVER = "scripts/dell_lan/lenovo_publish_existing.py"
+DRIVER_SCHEMAS = {
+    PUBLISH_RESULT_SCHEMA: PUBLISH_DRIVER,
+    TRANSFER_RESULT_SCHEMA: TRANSFER_DRIVER,
+    PUBLISH_EXISTING_RESULT_SCHEMA: PUBLISH_EXISTING_DRIVER,
+}
+PUBLICATION_DRIVER_SCHEMAS = {PUBLISH_RESULT_SCHEMA, PUBLISH_EXISTING_RESULT_SCHEMA}
 DETAIL_MAX = 400
 
 
 def documented_command(command: str, intended_script_path: object = None) -> bool:
-    """True for the two commands this skill documents as publication evidence."""
+    """True only for an exact signed script path with a known receipt contract."""
 
     return documented_command_kind(command, intended_script_path) is not None
 
@@ -51,6 +62,8 @@ NEXT_ACTION = {
     "git-failed": "repair repository access and re-read the working tree state",
     "worktree-unregistered": "recreate the task worktree from the anchored base and re-verify",
     "worktree-head-mismatch": "re-cut the task commit in the task worktree and re-verify",
+    "transfer-worktree-unpinned": "repeat readback with the requested Lenovo worktree path; trust no unpinned transfer result",
+    "transfer-worktree-mismatch": "reconcile the signed transfer request and returned Lenovo worktree before any retry",
     "bundle-manifest-malformed": "re-stage the bundle and manifest with scripts/dell_lan/stage_bundle.py (docs/dell-lan.md step 4); the external issue-517 stager stays an accepted alternative",
     "bundle-path-refused": "rebuild the manifest with contained relative paths and re-verify",
     "bundle-missing": "re-stage the bundle from the intact origin and re-verify",
@@ -75,6 +88,7 @@ NEXT_ACTION = {
     "outcome-unknown": "keep the slot occupied, re-fetch the same job id, do not start a second writer",
     "artifact-stale": "re-sync and re-read before transfer; offline work stays on the anchored base",
     "published": "published readback recorded; keep the receipt as the publication evidence",
+    "transferred": "verified transfer recorded; publish this exact branch and SHA only when authorized",
     "simulated": "fixture chain recorded; this is never live publication evidence",
     "ready": "transfer for Lenovo publication when authorized",
 }
@@ -255,6 +269,86 @@ def unwrap_driver(document: dict, args, queue: dict) -> tuple[dict | None, dict]
     return identity, document
 
 
+def blank_publication(provenance: str) -> dict:
+    return {
+        "readbackObserved": False, "bound": False,
+        "provenance": provenance, "source": GITLAB_READBACK,
+        "driver": None, "driverStage": None, "driverOutcome": None,
+        "authorized": None, "pushObservedSha": None, "mrCreated": None,
+        "descriptionVerified": False,
+        "descriptionExpectedSha256": None,
+        "descriptionObservedSha256": None,
+        "gitlabHost": None, "projectPath": None, "iid": None,
+        "mrUrl": None, "state": None, "sourceBranch": None,
+        "targetBranch": None, "headSha": None, "targetSha": None,
+        "capturedAt": None, "localChecked": False,
+        "declaredSimulated": None, "simulated": None,
+        "capturedHours": None,
+    }
+
+
+def blank_transfer() -> dict:
+    return {
+        "readbackObserved": False, "bound": False, "driver": None,
+        "driverStage": None, "driverOutcome": None, "authorized": None,
+        "branch": None, "commit": None, "worktree": None,
+        "clean": None, "matches": None,
+    }
+
+
+def unwrap_transfer(document: dict, args, queue: dict) -> dict:
+    """Bind a sealed standalone transfer result to the requested SHA and branch."""
+
+    outcome = document.get("outcome")
+    if outcome == "unknown":
+        raise Stop("outcome-unknown", verdict="unknown", code=3, queue=queue,
+                   detail=json.dumps({
+                       "stage": document.get("stage"),
+                       "reason": (document.get("error") or {}).get("reason"),
+                   })[:DETAIL_MAX])
+    if outcome not in ("ok", "observed"):
+        raise Stop("publication-job-failed", verdict="rejected", queue=queue,
+                   detail=f"transfer driver outcome {outcome}")
+    imported = document.get("import")
+    if not isinstance(imported, dict):
+        raise Stop("publication-readback-malformed", queue=queue,
+                   detail="transfer result has no import observation")
+    branch = str(imported.get("branch") or "")
+    commit = str(imported.get("commit") or "").lower()
+    worktree = str(imported.get("worktree") or "")
+    clean = imported.get("clean") is True
+    matches = imported.get("matches") is True
+    if document.get("push") is not None or document.get("mr") is not None:
+        raise Stop("publication-readback-malformed", queue=queue,
+                   detail="transfer result unexpectedly contains publication state")
+    if not branch or not worktree or not SHA_RE.match(commit):
+        raise Stop("publication-readback-malformed", queue=queue,
+                   detail="transfer branch/commit/worktree fields are missing")
+    if commit != args.task_commit:
+        raise Stop("publication-head-mismatch", queue=queue,
+                   detail=f"{commit} != {args.task_commit}")
+    if args.source_branch and branch != args.source_branch:
+        raise Stop("publication-branch-mismatch", queue=queue, detail=branch[:DETAIL_MAX])
+    expected_worktree = getattr(args, "lenovo_worktree", None)
+    if not expected_worktree:
+        raise Stop("transfer-worktree-unpinned", queue=queue,
+                   detail="standalone transfer readback requires --lenovo-worktree")
+    if normalise_path(worktree) != normalise_path(str(expected_worktree)):
+        raise Stop("transfer-worktree-mismatch", queue=queue, detail=json.dumps({
+            "expected": str(expected_worktree), "observed": worktree,
+        })[:DETAIL_MAX])
+    if not clean or not matches:
+        raise Stop("outcome-unknown", verdict="unknown", code=3, queue=queue,
+                   detail="transfer did not prove a clean matching branch worktree")
+    return {
+        "readbackObserved": True, "bound": True, "driver": TRANSFER_DRIVER,
+        "driverStage": document.get("stage"), "driverOutcome": outcome,
+        "authorized": document.get("authorized"), "branch": branch,
+        "commit": commit, "worktree": worktree, "clean": clean,
+        "matches": matches,
+    }
+
+
 def shared_roots(args) -> list[Path]:
     """Every directory Lenovo can read in this run.
 
@@ -279,6 +373,8 @@ def check_result(args, bridge) -> dict:
     repos = [Path(args.repo)]
     if args.worktree:
         repos.append(Path(args.worktree))
+    if getattr(args, "lenovo_worktree", None):
+        repos.append(Path(args.lenovo_worktree))
     try:
         key = read_queue_key(bridge, queue, key_path, args.key_format,
                              repos=repos, shared=shared)
@@ -346,7 +442,7 @@ def check_result(args, bridge) -> dict:
         except (json.JSONDecodeError, TypeError, ValueError):
             document = None
         driver_unknown = (isinstance(document, dict)
-                          and document.get("schema") == PUBLISH_RESULT_SCHEMA
+                          and document.get("schema") in DRIVER_SCHEMAS
                           and document.get("outcome") == "unknown")
         if driver_unknown or timed_out or truncated or exit_code == 3:
             # The outcome may have completed late: reconcile this job id.
@@ -366,16 +462,29 @@ def check_result(args, bridge) -> dict:
         document = json.loads(str(payload.get("stdout") or ""))
     except json.JSONDecodeError as error:
         raise Stop("publication-readback-malformed", queue=facts, detail=str(error)[:DETAIL_MAX])
-    driver = isinstance(document, dict) and document.get("schema") == PUBLISH_RESULT_SCHEMA
-    if command_kind == "publish-driver":
-        if not driver:
+    schema = document.get("schema") if isinstance(document, dict) else None
+    if schema == TRANSFER_RESULT_SCHEMA:
+        if command_kind != "transfer-driver":
             raise Stop("publication-readback-malformed", queue=facts,
-                       detail="publish driver did not return its structured result envelope")
+                       detail="transfer result did not come from the signed transfer driver")
+        transfer = unwrap_transfer(document, args, queue=facts)
+        return {"queue": facts, "publication": blank_publication(args.provenance),
+                "transfer": transfer}
+    driver = schema in PUBLICATION_DRIVER_SCHEMAS
+    expected_kind = {
+        PUBLISH_RESULT_SCHEMA: "publish-driver",
+        PUBLISH_EXISTING_RESULT_SCHEMA: "publish-existing-driver",
+    }.get(schema)
+    if command_kind in ("publish-driver", "publish-existing-driver"):
+        if not driver or command_kind != expected_kind:
+            raise Stop("publication-readback-malformed", queue=facts,
+                       detail="publication driver did not return its bound structured envelope")
+    if driver:
         identity, envelope = unwrap_driver(document, args, queue=facts)
     else:
-        if driver:
+        if command_kind != "direct-identity":
             raise Stop("publication-readback-malformed", queue=facts,
-                       detail="direct identity job returned a publish driver envelope")
+                       detail="signed driver returned an unrecognized result schema")
         identity, envelope = document, None
     if not isinstance(identity, dict) or identity.get("schema_version") != 1:
         raise Stop("publication-readback-malformed", queue=facts,
@@ -406,7 +515,7 @@ def check_result(args, bridge) -> dict:
         "bound": False,
         "provenance": args.provenance,
         "source": GITLAB_READBACK,
-        "driver": PUBLISH_DRIVER if driver else None,
+        "driver": DRIVER_SCHEMAS.get(schema) if driver else None,
         "driverStage": (envelope or {}).get("stage"),
         "driverOutcome": (envelope or {}).get("outcome"),
         "authorized": (envelope or {}).get("authorized"),
@@ -448,4 +557,4 @@ def check_result(args, bridge) -> dict:
                    detail=str(identity["target_branch"])[:DETAIL_MAX])
 
     publication["bound"] = True
-    return {"queue": facts, "publication": publication}
+    return {"queue": facts, "publication": publication, "transfer": blank_transfer()}

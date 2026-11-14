@@ -20,8 +20,12 @@ SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "dell_lan"
 sys.path.insert(0, str(SCRIPTS))
 
 import lenovo_bundle
+import lenovo_transfer
 from dell_lan_common import Stop as DriverStop
-from dell_readback_checks import Stop, check_result
+from dell_readback_checks import Stop, check_result, documented_command
+from dell_standalone_common import (
+    PUBLISH_EXISTING_RESULT_SCHEMA, TRANSFER_RESULT_SCHEMA,
+)
 
 
 def git(*args: str, cwd: Path) -> str:
@@ -106,6 +110,42 @@ class MiniRepo:
 
 
 class RaceNoLossTests(unittest.TestCase):
+    def test_first_import_refuses_same_sha_worktree_owned_by_another_branch(self):
+        repo = MiniRepo()
+        git("worktree", "remove", "--force", str(repo.worktree), cwd=repo.checkout)
+        git("branch", "-D", MiniRepo.BRANCH, cwd=repo.checkout)
+        git("branch", "foreign/owner", repo.expected, cwd=repo.checkout)
+        git("worktree", "add", "-q", str(repo.worktree), "foreign/owner",
+            cwd=repo.checkout)
+        (repo.worktree / "foreign.txt").write_text("keep me\n", encoding="utf-8")
+        request = repo.request()
+        request["expectedPreviousCommit"] = None
+
+        with self.assertRaises(DriverStop) as caught:
+            lenovo_bundle.import_once(request, repo.bundle, repo.expected, {})
+
+        self.assertEqual(caught.exception.reason, "branch-owned")
+        self.assertEqual(git("rev-parse", "--abbrev-ref", "HEAD", cwd=repo.worktree),
+                         "foreign/owner")
+        self.assertEqual((repo.worktree / "foreign.txt").read_text(encoding="utf-8"),
+                         "keep me\n")
+
+    def test_reconcile_dirty_worktree_never_matches_transfer(self):
+        repo = MiniRepo()
+        repo.apply_move()
+        (repo.worktree / "notes.txt").write_text("foreign edit\n", encoding="utf-8")
+        result: dict = {}
+
+        with self.assertRaises(DriverStop) as caught:
+            lenovo_transfer._observe(repo.request(), result)
+
+        self.assertEqual(caught.exception.reason, "import-unknown")
+        self.assertEqual(caught.exception.verdict, "unknown")
+        self.assertFalse(result["import"]["matches"])
+        self.assertFalse(result["import"]["clean"])
+        self.assertEqual((repo.worktree / "notes.txt").read_text(encoding="utf-8"),
+                         "foreign edit\n")
+
     def test_the_repeat_move_is_a_ref_compare_and_swap_not_a_merge(self):
         import re
         source = (SCRIPTS / "lenovo_bundle.py").read_text(encoding="utf-8")
@@ -334,7 +374,7 @@ def unknown_args(root: Path) -> SimpleNamespace:
         repo=str(repo), worktree=None, shared=str(shared), bundle_dir=None,
         bundle_manifest=None, job_id="b" * 32, fetch_timeout=3.0, poll=0.05,
         task_commit="a" * 40, provenance="fixture", project=None,
-        source_branch=None, target_branch=None,
+        source_branch=None, target_branch=None, lenovo_worktree=None,
     )
 
 
@@ -465,6 +505,110 @@ class UnknownProofTests(unittest.TestCase):
                                   timed_out=True, truncated=False))
         self.assertEqual(stop.verdict, "unknown")
         self.assertEqual(stop.code, 3)
+
+    def test_readback_authenticates_both_standalone_commands(self):
+        self.assertTrue(documented_command(
+            'python lenovo_transfer.py --request x --request-sha256 y'))
+        self.assertTrue(documented_command(
+            'python lenovo_publish_existing.py --request x --request-sha256 y'))
+
+    def test_standalone_unknown_results_keep_the_same_job_slot(self):
+        for schema, command in (
+            (TRANSFER_RESULT_SCHEMA, "python lenovo_transfer.py --request x --request-sha256 y"),
+            (PUBLISH_EXISTING_RESULT_SCHEMA,
+             "python lenovo_publish_existing.py --request x --request-sha256 y"),
+        ):
+            with self.subTest(schema=schema):
+                root = Path(tempfile.mkdtemp(prefix="dell-standalone-unknown-"))
+                (root / "key.bin").write_bytes(b"k" * 32)
+                document = {"schema": schema, "outcome": "unknown", "stage": "reconcile",
+                            "error": {"reason": "state-unreadable"}}
+                bridge = FakeBridge(b"k" * 32, command,
+                                    payload("error", 1, stdout=json.dumps(document)))
+                with self.assertRaises(Stop) as caught:
+                    check_result(unknown_args(root), bridge)
+                self.assertEqual(caught.exception.reason, "outcome-unknown")
+                self.assertEqual(caught.exception.verdict, "unknown")
+                self.assertEqual(caught.exception.code, 3)
+
+    def test_transfer_result_is_bound_to_sha_branch_and_clean_worktree(self):
+        root = Path(tempfile.mkdtemp(prefix="dell-transfer-readback-"))
+        (root / "key.bin").write_bytes(b"k" * 32)
+        args = unknown_args(root)
+        args.source_branch = MiniRepo.BRANCH
+        args.lenovo_worktree = str(root / "task-worktree")
+        document = {
+            "schema": TRANSFER_RESULT_SCHEMA, "outcome": "ok", "stage": "import",
+            "authorized": ["import"], "push": None, "mr": None,
+            "import": {"branch": MiniRepo.BRANCH, "commit": args.task_commit,
+                       "worktree": str(root / "task-worktree"), "matches": True,
+                       "clean": True},
+        }
+        bridge = FakeBridge(
+            b"k" * 32, "python lenovo_transfer.py --request x --request-sha256 y",
+            payload("ok", 0, stdout=json.dumps(document)))
+
+        observed = check_result(args, bridge)
+
+        self.assertTrue(observed["transfer"]["bound"])
+        self.assertEqual(observed["transfer"]["commit"], args.task_commit)
+        self.assertEqual(observed["transfer"]["branch"], MiniRepo.BRANCH)
+        self.assertTrue(observed["transfer"]["clean"])
+        self.assertFalse(observed["publication"]["bound"])
+
+    def test_transfer_result_refuses_a_different_lenovo_worktree(self):
+        root = Path(tempfile.mkdtemp(prefix="dell-transfer-readback-"))
+        (root / "key.bin").write_bytes(b"k" * 32)
+        args = unknown_args(root)
+        args.source_branch = MiniRepo.BRANCH
+        args.lenovo_worktree = str(root / "expected-lenovo-worktree")
+        document = {
+            "schema": TRANSFER_RESULT_SCHEMA, "outcome": "ok", "stage": "import",
+            "authorized": ["import"], "push": None, "mr": None,
+            "import": {"branch": MiniRepo.BRANCH, "commit": args.task_commit,
+                       "worktree": str(root / "other-lenovo-worktree"),
+                       "matches": True, "clean": True},
+        }
+        bridge = FakeBridge(
+            b"k" * 32, "python lenovo_transfer.py --request x --request-sha256 y",
+            payload("ok", 0, stdout=json.dumps(document)))
+
+        with self.assertRaises(Stop) as caught:
+            check_result(args, bridge)
+
+        self.assertEqual(caught.exception.reason, "transfer-worktree-mismatch")
+
+    def test_publish_existing_result_uses_the_publication_consumer(self):
+        root = Path(tempfile.mkdtemp(prefix="dell-existing-readback-"))
+        (root / "key.bin").write_bytes(b"k" * 32)
+        args = unknown_args(root)
+        args.project = "group/project"
+        args.source_branch = MiniRepo.BRANCH
+        args.target_branch = "main"
+        identity = {
+            "schema_version": 1, "gitlab_host": "gitlab.example.invalid",
+            "project_path": args.project, "source_branch": args.source_branch,
+            "target_branch": args.target_branch, "mr_url": "https://example.invalid/mr/1",
+            "state": "opened", "captured_at": "2026-01-01T00:00:00+00:00",
+            "head_sha": args.task_commit, "target_sha": "c" * 40, "iid": 1,
+        }
+        document = {
+            "schema": PUBLISH_EXISTING_RESULT_SCHEMA, "outcome": "ok", "stage": "mr",
+            "authorized": ["push", "mr"],
+            "push": {"observedRemoteSha": args.task_commit},
+            "mr": {"url": identity["mr_url"], "iid": 1, "created": False},
+            "identity": identity,
+        }
+        bridge = FakeBridge(
+            b"k" * 32,
+            "python lenovo_publish_existing.py --request x --request-sha256 y",
+            payload("ok", 0, stdout=json.dumps(document)))
+
+        observed = check_result(args, bridge)
+
+        self.assertTrue(observed["publication"]["bound"])
+        self.assertEqual(observed["publication"]["driver"],
+                         "scripts/dell_lan/lenovo_publish_existing.py")
 
 
 if __name__ == "__main__":
