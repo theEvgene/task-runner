@@ -62,6 +62,8 @@ def api_get(host: str, path: str):
         raise GitlabUnavailable(f"unknown project: {encoded}")
     suffix = head.split("/merge_requests", 1)[1]
     if suffix.startswith("/") and suffix[1:].isdigit():
+        if os.environ.get("DELL_FIXTURE_FAIL_DESCRIPTION_READBACK") == "1":
+            raise GitlabUnavailable("fixture description readback unavailable")
         record = state.get("mrs", {}).get(suffix[1:])
         if not isinstance(record, dict):
             raise GitlabUnavailable(f"unknown fixture MR: {path}")

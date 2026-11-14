@@ -20,8 +20,8 @@ import unittest
 from dell_fixture import TASK_BRANCH, Workspace, run
 
 
-FIRST = "Fixture description one: ASCII plus kirillitsa ABC-1\n"
-SECOND = "Fixture description two: update line\n"
+FIRST = "Описание Draft MR: ASCII ABC-1\r\nВторая строка\n\n"
+SECOND = "Обновление: ASCII update-2\nЕщё одна строка\r\n"
 
 
 def sha(text: str) -> str:
@@ -69,6 +69,79 @@ class DraftDescriptionExactTests(unittest.TestCase):
         state = json.loads(ws.state_path.read_text(encoding="utf-8"))
         self.assertEqual(len(state["mrs"]), 1)
         self.assertEqual(state["mrs"]["1"]["description"], FIRST + "\n" + SECOND)
+
+    def test_missing_description_is_refused_before_remote_write(self):
+        ws = build(FIRST)
+        self.addCleanup(ws.cleanup)
+        request = ws.publish_request(
+            description=FIRST, token="eeeeeeeeeeeeeeee")
+        (ws.shared / "mr-description.md").unlink()
+
+        payload, proc = ws.run_job(ws.submit_publish(request))
+
+        driver = json.loads(proc.stdout)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertEqual(driver["stage"], "request")
+        self.assertEqual(driver["error"]["reason"], "description-missing")
+        self.assertIsNone(driver["push"])
+        self.assertIsNone(driver["mr"])
+        self.assertNotEqual(run([
+            "git", "-C", str(ws.origin), "rev-parse", "--verify",
+            f"refs/heads/{TASK_BRANCH}",
+        ]).returncode, 0)
+        state = json.loads(ws.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(state["mrs"], {})
+
+    def test_invalid_utf8_description_is_refused_before_remote_write(self):
+        ws = build(FIRST)
+        self.addCleanup(ws.cleanup)
+        request = ws.publish_request(
+            description=FIRST, token="ffffffffffffffff")
+        (ws.shared / "mr-description.md").write_bytes(b"valid prefix\n\xff")
+
+        payload, proc = ws.run_job(ws.submit_publish(request))
+
+        driver = json.loads(proc.stdout)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertEqual(driver["stage"], "request")
+        self.assertEqual(driver["error"]["reason"], "description-invalid-utf8")
+        self.assertIsNone(driver["push"])
+        self.assertIsNone(driver["mr"])
+        self.assertNotEqual(run([
+            "git", "-C", str(ws.origin), "rev-parse", "--verify",
+            f"refs/heads/{TASK_BRANCH}",
+        ]).returncode, 0)
+        state = json.loads(ws.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(state["mrs"], {})
+
+    def test_description_readback_unknown_reconciles_without_duplicate(self):
+        ws = build(FIRST)
+        self.addCleanup(ws.cleanup)
+        request = ws.publish_request(
+            authorize="import,push,mr,reconcile", description=FIRST,
+            token="abababababababab")
+        ws.extra_env["DELL_FIXTURE_FAIL_DESCRIPTION_READBACK"] = "1"
+        try:
+            payload, proc = ws.run_job(ws.submit_publish(request))
+        finally:
+            ws.extra_env.pop("DELL_FIXTURE_FAIL_DESCRIPTION_READBACK", None)
+
+        driver = json.loads(proc.stdout)
+        self.assertEqual(proc.returncode, 3, proc.stderr)
+        self.assertEqual(driver["outcome"], "unknown")
+        self.assertEqual(driver["stage"], "mr")
+        self.assertEqual(driver["error"]["reason"], "mr-readback-unavailable")
+        before = ws.state_path.read_bytes()
+        self.assertEqual(len(json.loads(before)["mrs"]), 1)
+
+        payload, proc = ws.run_job(ws.reconcile(request))
+
+        observed = json.loads(proc.stdout)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(observed["outcome"], "observed")
+        self.assertFalse(observed["mr"]["created"])
+        self.assertEqual(ws.state_path.read_bytes(), before)
+        self.assertEqual(len(json.loads(before)["mrs"]), 1)
 
     def test_create_with_prepended_corruption_is_mismatch(self):
         ws = build(FIRST)
