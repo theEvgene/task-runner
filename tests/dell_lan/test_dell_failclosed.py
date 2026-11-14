@@ -394,13 +394,20 @@ class ReadbackCommandSchemaBindingTests(unittest.TestCase):
 
     def test_publish_driver_accepts_gated_structured_stdout(self):
         identity = identity_receipt()
+        description_sha = "d" * 64
         document = {
             "schema": "dell-lan-publish-result/1",
             "outcome": "ok",
             "stage": "readback",
             "identity": identity,
             "push": {"observedRemoteSha": "a" * 40},
-            "mr": {"url": identity["mr_url"], "iid": identity["iid"]},
+            "mr": {
+                "url": identity["mr_url"],
+                "iid": identity["iid"],
+                "descriptionVerified": True,
+                "descriptionExpectedSha256": description_sha,
+                "descriptionObservedSha256": description_sha,
+            },
         }
         result = self.run_check(DRIVER_COMMAND, document)
         self.assertTrue(result["publication"]["bound"])
