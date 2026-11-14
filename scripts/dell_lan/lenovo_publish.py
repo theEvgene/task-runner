@@ -47,6 +47,7 @@ def main(argv=None) -> int:
               "token": None, "authorized": [], "bundle": None, "import": None,
               "preflight": None, "push": None, "mr": None, "identity": None,
               "undraft": None, "pipeline": {"waited": False, "polled": False},
+              "missing": None,
               "error": None, "finishedAt": now_iso()}
     code = 0
     try:
@@ -58,7 +59,8 @@ def main(argv=None) -> int:
         # Reconciliation may report the signed request as observed, and a
         # normal run may push before the MR step. Both paths must therefore
         # bind the same Dell-observed bytes before any result is trusted.
-        request["descriptionText"] = load_description(request, verify_binding=True)
+        if request.get("descriptionFile"):
+            request["descriptionText"] = load_description(request, verify_binding=True)
         result["stage"] = "bundle"
         bundle = verify_bundle(request, result)
         tip = bundle_tip(Path(request["lenovoCheckout"]), bundle)

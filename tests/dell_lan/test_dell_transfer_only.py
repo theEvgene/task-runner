@@ -21,6 +21,11 @@ SCRIPTS = ROOT / "scripts" / "dell_lan"
 REQUEST_CLI = SCRIPTS / "dell_request.py"
 
 
+def submit_request(ws: Workspace, request: dict) -> str:
+    return ws.submit(
+        request["commandFile"], receipt_script_path=request["receiptScriptPath"])
+
+
 def transfer_request(ws: Workspace, token: str, authorize: str = "import",
                      previous: str | None = None, name: str | None = None) -> dict:
     command_file = ws.root / f"transfer-command-{token}.txt"
@@ -74,7 +79,7 @@ class TransferOnlyTests(unittest.TestCase):
         ws = build_staged()
         self.addCleanup(ws.cleanup)
         request = transfer_request(ws, "1111111111111111")
-        job = ws.submit(request["commandFile"])
+        job = submit_request(ws, request)
         _, proc = ws.run_job(job)
         driver = json.loads(proc.stdout)
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -92,7 +97,7 @@ class TransferOnlyTests(unittest.TestCase):
         self.addCleanup(ws.cleanup)
         self.assertNotEqual(ws.worktree.resolve(), ws.lenovo_worktree.resolve())
         request = transfer_request(ws, "abababababababab")
-        job = ws.submit(request["commandFile"])
+        job = submit_request(ws, request)
         _, driver = ws.run_job(job)
         self.assertEqual(driver.returncode, 0, driver.stderr)
 
@@ -113,7 +118,7 @@ class TransferOnlyTests(unittest.TestCase):
         ws = build_staged()
         self.addCleanup(ws.cleanup)
         request = transfer_request(ws, "3333333333333333")
-        job = ws.submit(request["commandFile"])
+        job = submit_request(ws, request)
         _, proc = ws.run_job(job)
         driver = json.loads(proc.stdout)
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -131,13 +136,13 @@ class TransferOnlyTests(unittest.TestCase):
         ws = build_staged()
         self.addCleanup(ws.cleanup)
         first = transfer_request(ws, "4444444444444444")
-        job = ws.submit(first["commandFile"])
+        job = submit_request(ws, first)
         _, proc = ws.run_job(job)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         previous, _ = ws.commit_second_task()
         ws.stage_bundle()
         second = transfer_request(ws, "5555555555555555", previous=previous)
-        job2 = ws.submit(second["commandFile"])
+        job2 = submit_request(ws, second)
         _, proc2 = ws.run_job(job2)
         driver = json.loads(proc2.stdout)
         self.assertEqual(proc2.returncode, 0, proc2.stderr)

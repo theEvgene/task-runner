@@ -292,7 +292,8 @@ class Workspace:
                         request_name: str | None = None,
                         previous: str | None = None,
                         description: str | None = None,
-                        dialect: str = "cmd") -> dict:
+                        dialect: str = "cmd",
+                        include_metadata: bool = True) -> dict:
         text = (description if description is not None
                 else "Fixture change for the LAN local-dev flow.\n")
         description_path = self.shared / "mr-description.md"
@@ -307,16 +308,19 @@ class Workspace:
             "--lenovo-flow-dir", str(FIXTURE_FLOW),
             "--manifest", str(self.manifest_file),
             "--bundle", str(self.bundle_file),
-            "--description-file", str(description_path),
             "--expected-base", self.base, "--expected-commit", self.task,
             "--branch", TASK_BRANCH, "--target-branch", BASE_BRANCH,
-            "--host", GITLAB_HOST, "--project", PROJECT, "--change-type", "feat",
-            "--jira-key", "ABC-1", "--subject", subject, "--state", state,
+            "--host", GITLAB_HOST, "--project", PROJECT, "--state", state,
             "--authorize", authorize, "--lenovo-checkout", str(self.lenovo),
             "--lenovo-worktree", str(self.lenovo_worktree),
             "--request-name", name, "--command-file", str(command_file),
             "--repo", str(self.dell),
         ]
+        if include_metadata:
+            command += [
+                "--change-type", "feat", "--jira-key", "ABC-1",
+                "--subject", subject, "--description-file", str(description_path),
+            ]
         if previous:
             command += ["--expected-previous", previous]
         proc = run(command, env=self.env())

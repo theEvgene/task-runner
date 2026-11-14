@@ -176,12 +176,12 @@ python scripts/dell_lan/dell_request.py publish \
   --python <abs-python-on-lenovo> \
   --manifest <lan-share>\transfer-<16hex>.manifest.json \
   --bundle <lan-share>\transfer-<16hex>.bundle \
-  --description-file <lan-share>\mr-description.md \
   --expected-base <base-sha> --expected-commit <task-commit> \
   [--expected-previous <prior-task-sha>] \
   --branch <task-branch> --target-branch <base-branch> \
   --host <remote-host> --project <group/project> \
-  --change-type <feat|fix> --jira-key <KEY-1> --subject "<one line>" \
+  [--change-type <feat|fix> --jira-key <KEY-1> --subject "<one line>" \
+   --description-file <lan-share>\mr-description.md] \
   --state <draft|ready> \
   --authorize <import,push,mr[,undraft][,reconcile]> \
   [--reconcile] \
@@ -218,6 +218,16 @@ names `--expected-previous` so the branch moves only while it still holds
 the prior SHA. A `ready` request follows the Ready route below instead of
 stopping at Draft.
 
+The four bracketed MR metadata options are required only when no open MR
+exists. The combined driver first completes and records the transfer, pushes
+the exact SHA, then searches by project and source branch. If creation is
+needed and metadata is absent, it returns `missing-data` with `missing` plus
+the completed `import` and `push` facts. Supply the named fields in a new
+signed request for the same branch and commit; the transfer is safely reused,
+and the find-before-create check prevents a duplicate. When an MR already
+exists, omitted metadata is not requested and its Draft/Ready state is not
+changed.
+
 ## 6. Submit and let Lenovo publish; read back the exact SHA and MR
 
 Submit the command file with the standard client, passing the exact
@@ -233,6 +243,12 @@ and reads the identity back. A `ready` request then runs the Ready route
 below: the external `remove_draft.py` marks the same MR Ready, and the
 driver re-captures the identity and proves the title and description still
 match the request input. Completion: submit printed one `JOBID=<32hex>`.
+
+For a metadata stop, do not treat the non-zero result as if transfer failed:
+retain its `import.worktree`, `import.branch`, `import.commit`, and
+`push.observedRemoteSha`, then resume only with the missing fields. For a
+timeout or exit-3 unknown, use the same-id reconciliation below before any
+new writer; never guess whether MR creation landed.
 
 Back on Dell, verify the bound result:
 
@@ -344,11 +360,16 @@ read, when the user explicitly asks for one, stays a separate
 
 ## Standalone transfer and publication
 
-Two narrower runs reuse this loop without changing it: a transfer-only
+Two narrower runs reuse this loop: a transfer-only
 import with no push or MR (#42), and the publication of a branch that
 already exists on Lenovo with no bundle and no second GitLab client
-(#43). Both live in `docs/dell-lan-standalone.md` and keep the combined
-`publish` route above unchanged.
+(#43). The combined `publish` route composes the same import and publication
+helpers and supports the metadata stop/resume described above (#45). All
+three routes live in `docs/dell-lan-standalone.md`.
+
+Preparing an already identified MR for Ready is independent of all three
+publication routes. Use `docs/mr-ready.md`; that signed route accepts the MR
+URL and existing checks, and does not transfer a branch or create an MR.
 
 ## Boundaries
 

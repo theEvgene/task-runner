@@ -158,6 +158,42 @@ class TwoDirectionFlowTests(unittest.TestCase):
         self.assertEqual(len(state["mrs"]), 1, "reconciliation must not open a second MR")
         self.assertFalse(json.loads(proc.stdout)["mr"]["created"])
 
+    def test_combined_flow_preserves_transfer_across_missing_metadata_resume(self):
+        ws = build_to_publish("1212121212121212")
+        self.addCleanup(ws.cleanup)
+        first = ws.publish_request(
+            token="1212121212121212", include_metadata=False)
+        first_job = ws.submit_publish(first)
+        _, first_proc = ws.run_job(first_job)
+        stopped = json.loads(first_proc.stdout)
+
+        self.assertEqual(first_proc.returncode, 1, first_proc.stderr)
+        self.assertEqual(stopped["error"]["reason"], "missing-data")
+        self.assertEqual(stopped["stage"], "mr")
+        self.assertEqual(stopped["import"]["worktree"], str(ws.lenovo_worktree))
+        self.assertEqual(stopped["import"]["branch"], TASK_BRANCH)
+        self.assertEqual(stopped["import"]["commit"], ws.task)
+        self.assertEqual(stopped["push"]["observedRemoteSha"], ws.task)
+        self.assertEqual(
+            stopped["missing"],
+            ["changeType", "jiraKey", "subject", "descriptionFile"],
+        )
+        self.assertEqual(
+            json.loads(ws.state_path.read_text(encoding="utf-8"))["mrs"], {})
+
+        resumed = ws.publish_request(token="1313131313131313")
+        resumed_job = ws.submit_publish(resumed)
+        _, resumed_proc = ws.run_job(resumed_job)
+        completed = json.loads(resumed_proc.stdout)
+
+        self.assertEqual(resumed_proc.returncode, 0, resumed_proc.stderr)
+        self.assertTrue(completed["import"]["reused"])
+        self.assertEqual(completed["import"]["commit"], stopped["import"]["commit"])
+        self.assertEqual(completed["identity"]["head_sha"], ws.task)
+        self.assertTrue(completed["mr"]["created"])
+        state = json.loads(ws.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(state["mrs"]), 1)
+
     def test_reconcile_probe_needs_its_own_consent(self):
         ws = build_to_publish("8888888888888888")
         self.addCleanup(ws.cleanup)

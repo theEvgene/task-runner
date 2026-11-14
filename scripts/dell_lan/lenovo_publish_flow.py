@@ -16,6 +16,7 @@ It performs no push and no Git mutation.
 from __future__ import annotations
 
 import importlib
+import re
 import sys
 from pathlib import Path
 
@@ -23,6 +24,36 @@ from dell_lan_common import DETAIL_MAX, Stop, run, sha256_bytes
 
 PAGE_SIZE = 100
 MAX_PAGES = 50
+
+
+def missing_mr_fields(request: dict) -> list[str]:
+    """Metadata absent from a request that would need to create an MR."""
+
+    missing = []
+    if request.get("changeType") not in ("feat", "fix"):
+        missing.append("changeType")
+    key = str(request.get("jiraKey") or "")
+    if not key or not re.fullmatch(r"[A-Z][A-Z0-9]*-[1-9][0-9]*", key):
+        missing.append("jiraKey")
+    subject = str(request.get("subject") or "")
+    if not subject.strip() or "\n" in subject or "\r" in subject:
+        missing.append("subject")
+    description_file = request.get("descriptionFile")
+    description_text = request.get("descriptionText")
+    if not description_file:
+        missing.append("descriptionFile")
+    elif isinstance(description_text, str):
+        if not description_text.strip():
+            missing.append("descriptionFile")
+    else:
+        try:
+            text = Path(str(description_file)).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            missing.append("descriptionFile")
+        else:
+            if not text.strip():
+                missing.append("descriptionFile")
+    return missing
 
 
 def load_flow(flow_dir: Path):

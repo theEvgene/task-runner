@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from dell_lan_common import Stop, inside, safe_name
+from dell_lan_common import Stop, inside, safe_name, sha256_bytes
 from dell_standalone_common import (
     PUBLISH_EXISTING_REQUEST_SCHEMA, TRANSFER_REQUEST_SCHEMA,
 )
@@ -109,6 +109,20 @@ def publish_existing_request(args) -> dict:
     description = (args.description_file or "").strip() or None
     if description is not None and not inside(Path(description), shared):
         raise Stop("usage", code=2, detail="--description-file must live on the shared LAN path")
+    description_bytes = None
+    description_sha = None
+    if description is not None:
+        try:
+            raw_description = Path(description).read_bytes()
+            raw_description.decode("utf-8")
+        except OSError as error:
+            raise Stop("usage", code=2,
+                       detail=f"--description-file is unreadable: {error}") from error
+        except UnicodeDecodeError as error:
+            raise Stop("usage", code=2,
+                       detail=f"--description-file is not valid UTF-8: {error}") from error
+        description_bytes = len(raw_description)
+        description_sha = sha256_bytes(raw_description)
     require_absolute_lenovo_paths(
         ("--lenovo-checkout", args.lenovo_checkout),
         ("--lenovo-worktree", args.lenovo_worktree),
@@ -130,6 +144,8 @@ def publish_existing_request(args) -> dict:
         "jiraKey": args.jira_key or "",
         "subject": (args.subject or "").strip(),
         "descriptionFile": str(Path(description)) if description else "",
+        "descriptionBytes": description_bytes,
+        "descriptionSha256": description_sha,
         "state": args.state or "draft",
         "lenovoCheckout": str(Path(args.lenovo_checkout)),
         "lenovoWorktree": str(Path(args.lenovo_worktree)),

@@ -1,7 +1,7 @@
 # Dell LAN standalone transfer and publication
 
-Two narrower runs that reuse `docs/dell-lan.md` without changing its
-combined `publish` route (base export, task work, bundle staging, signed
+Two narrower runs that reuse `docs/dell-lan.md` alongside its composed
+`publish` route (base export, task work, bundle staging, signed
 queue, SHA pins, and per-action consent all work exactly as documented
 there). Canonical drivers: `scripts/dell_lan/` (stdlib only). Tests:
 `<python> -m unittest discover -s tests/dell_lan -p "test_dell_transfer_only.py"`
@@ -54,8 +54,11 @@ Dell task worktree as `--worktree` and the requested Lenovo task worktree as
 `--lenovo-worktree`. The former must be registered in the Dell anchored copy
 at the task commit; the transfer result must report the latter exactly. A dirty
 or unreadable reconciliation remains `unknown`;
-keep the same job slot and never submit a blind duplicate. The combined
-`publish` route is unchanged.
+keep the same job slot and never submit a blind duplicate.
+
+Submit the generated command with its returned `receiptScriptPath` as the
+bridge `--receipt-script-path`. Readback authenticates that exact path from
+the signed job envelope; a matching basename elsewhere is not accepted.
 
 ## 2. Standalone publication of an existing Lenovo branch (#43)
 
@@ -110,6 +113,32 @@ is unwrapped through the existing publication identity checks, including the
 task SHA, project, source/target branches, and MR URL. Timeout, truncation, an
 exit-3 result, or a driver `unknown` outcome keeps the same job id for safe
 recovery.
+
+As with transfer, bridge submission must carry the request writer's returned
+`receiptScriptPath`; this binds the sealed result schema to the exact
+standalone publication driver.
+
+## 3. One-command transfer and publication (#45)
+
+The `publish` command documented in `docs/dell-lan.md` is the composed route:
+its driver reuses the same bundle validation/import and find-before-create
+publication helpers as the standalone actions. Its structured result returns
+`import.worktree`, `import.branch`, `import.commit`, the observed pushed SHA,
+and the verified MR identity/URL.
+
+MR metadata is optional when writing the request. After the transfer and push,
+an absent MR plus missing metadata stops with `missing-data`; the result names
+the missing fields and retains the completed transfer facts. Resubmit the
+same branch and commit with those fields. The compare-and-swap import observes
+the already transferred SHA, and the open-MR lookup runs again before any
+create. An existing MR therefore needs no metadata and is not duplicated or
+silently changed from Ready to Draft.
+
+Timeout, truncation, or exit 3 is different from `missing-data`: keep the job
+slot and run the existing read-only reconciliation before any new writer.
+Ready for a specific existing MR remains a separate operation described in
+`docs/mr-ready.md`; it reuses the toolkit Ready checks and performs neither
+transfer nor MR creation.
 
 ## Boundaries
 

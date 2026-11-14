@@ -39,10 +39,9 @@ from dell_standalone_common import (
 from lenovo_remote import observe, preflight, push, require
 from lenovo_publish_flow import (
     capture, expected_ready_title, find_open_mr, load_flow, publish_draft,
-    require_ready_identity, undraft_mr,
+    load_description, missing_mr_fields, require_ready_identity, undraft_mr,
 )
 
-KEY_RE = re.compile(r"^[A-Z][A-Z0-9]*-[1-9][0-9]*$")
 BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 
 
@@ -93,6 +92,16 @@ def validated(request_path: Path, expected_digest: str, reconcile: bool) -> dict
             raise Stop("request-malformed", detail="descriptionFile must live on the shared path")
         if not safe_name(Path(str(desc)).name):
             raise Stop("request-malformed", detail="descriptionFile must be one contained file")
+        description_bytes = request.get("descriptionBytes")
+        if (isinstance(description_bytes, bool) or not isinstance(description_bytes, int)
+                or description_bytes < 0):
+            raise Stop("request-malformed", detail=(
+                "descriptionBytes must be a non-negative integer"))
+        description_sha = request.get("descriptionSha256")
+        if (not isinstance(description_sha, str) or len(description_sha) != 64
+                or any(char not in "0123456789abcdef" for char in description_sha)):
+            raise Stop("request-malformed", detail=(
+                "descriptionSha256 must be 64 lowercase hex"))
     request["reconcileOnly"] = bool(reconcile or request.get("reconcileOnly"))
     return request
 
@@ -115,28 +124,6 @@ def check_existing_branch(request: dict) -> Path:
     if not ok or head.lower() != expected:
         raise Stop("artifact-mismatch", detail="task worktree HEAD is not the task commit")
     return worktree
-
-
-def missing_fields(request: dict) -> list:
-    missing = []
-    if request.get("changeType") not in ("feat", "fix"):
-        missing.append("changeType")
-    if not request.get("jiraKey") or not KEY_RE.match(str(request.get("jiraKey") or "")):
-        missing.append("jiraKey")
-    if not str(request.get("subject") or "").strip() or "\n" in str(request.get("subject")):
-        missing.append("subject")
-    desc = request.get("descriptionFile")
-    if not desc:
-        missing.append("descriptionFile")
-    else:
-        try:
-            text = Path(str(desc)).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            missing.append("descriptionFile")
-        else:
-            if not text.strip():
-                missing.append("descriptionFile")
-    return missing
 
 
 def main(argv=None) -> int:
@@ -183,15 +170,21 @@ def main(argv=None) -> int:
                 result["identity"] = receipt
                 result["undraft"] = None
             else:
-                absent = missing_fields(request)
+                absent = missing_mr_fields(request)
                 if absent:
                     result["missing"] = absent
                     result["stage"] = "mr"
                     raise Stop("missing-data", detail=f"absent MR data: {', '.join(absent)}; "
                                "resubmit the same branch with subject/description")
+                request["descriptionText"] = load_description(
+                    request, verify_binding=True)
                 written = publish_draft(publisher, api, request, None)
+                observed_description_sha = written.pop("_descriptionObservedSha256")
                 result["mr"] = {"url": written["mr_url"], "iid": written["iid"],
-                                "draft": written.get("draft"), "created": True}
+                                "draft": written.get("draft"), "created": True,
+                                "descriptionVerified": True,
+                                "descriptionExpectedSha256": request["descriptionSha256"],
+                                "descriptionObservedSha256": observed_description_sha}
                 receipt = capture(identity, written["mr_url"], worktree)
                 result["identity"] = receipt
                 if request.get("state") == "ready":
@@ -201,7 +194,10 @@ def main(argv=None) -> int:
                     result["identity"] = receipt
                     check = require_ready_identity(api, request, written["iid"])
                     result["mr"] = {"url": written["mr_url"], "iid": written["iid"],
-                                    "draft": False, "created": True}
+                                    "draft": False, "created": True,
+                                    "descriptionVerified": True,
+                                    "descriptionExpectedSha256": request["descriptionSha256"],
+                                    "descriptionObservedSha256": observed_description_sha}
                     result["undraft"] = {
                         "removedDraft": True,
                         "titleChecked": True,
@@ -222,6 +218,7 @@ def main(argv=None) -> int:
             if receipt.get("target_branch") != request["targetBranch"]:
                 raise Stop("publication-target-mismatch", verdict="unknown", code=3,
                            detail=str(receipt.get("target_branch"))[:DETAIL_MAX])
+            result["stage"] = "readback"
             result["outcome"] = "ok"
     except Stop as stop:
         result["outcome"] = stop.verdict if stop.verdict in ("unknown", "refused") else "refused"

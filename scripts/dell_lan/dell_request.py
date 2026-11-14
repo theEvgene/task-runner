@@ -33,6 +33,7 @@ import sys
 from pathlib import Path
 
 from shell_command import ShellDialectError, build_for_transport
+from dell_request_common import SingleDialect, flow_args, require_absolute_lenovo_paths
 
 from dell_lan_common import (
     BASE_REQUEST_SCHEMA, DETAIL_MAX, FIRST_REQUEST_SCHEMA,
@@ -48,15 +49,6 @@ KEY_RE = re.compile(r"^[A-Z][A-Z0-9]*-[1-9][0-9]*$")
 BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 AUTHORIZABLE = ("import", "push", "mr", "undraft", "reconcile")
 PREVIOUS_RE = re.compile(r"^[0-9a-f]{40}$")
-
-
-class SingleDialect(argparse.Action):
-    """Accept exactly one explicit dialect declaration."""
-
-    def __call__(self, parser, namespace, value, option_string=None) -> None:
-        if getattr(namespace, self.dest, None) is not None:
-            parser.error(f"{option_string} must be declared exactly once")
-        setattr(namespace, self.dest, value)
 
 
 def usage(message: str) -> int:
@@ -138,28 +130,6 @@ def write_request(args, request: dict, driver: str, dialect: str) -> int:
     return 0
 
 
-def require_absolute_lenovo_paths(*pairs: tuple[str, str]) -> None:
-    """A path that crosses to Lenovo must be absolute there; a relative one is meaningless."""
-
-    for label, value in pairs:
-        if not value or not Path(value).is_absolute():
-            raise Stop("usage", code=2, detail=(
-                f"{label} must be the absolute path on the Lenovo machine"))
-
-
-def flow_args(args) -> list[str]:
-    """Extra Lenovo command arguments for the publish driver, if any were named."""
-
-    flow_dir = getattr(args, "lenovo_flow_dir", None)
-    result: list[str] = []
-    if flow_dir:
-        require_absolute_lenovo_paths(("--lenovo-flow-dir", flow_dir))
-        result += ["--flow-dir", str(Path(flow_dir))]
-    if getattr(args, "reconcile", False):
-        result.append("--reconcile")
-    return result
-
-
 def base_request(args) -> dict:
     if not TOKEN_RE.match(args.token or ""):
         raise Stop("usage", code=2, detail="--token must be 16 lowercase hex")
@@ -222,12 +192,13 @@ def publish_request(args) -> dict:
     for label, value in (("--branch", args.branch), ("--target-branch", args.target_branch)):
         if not BRANCH_RE.match(value or "") or ".." in (value or "") or value.startswith("-"):
             raise Stop("usage", code=2, detail=f"{label} is not a safe branch name")
-    if args.change_type not in ("feat", "fix"):
+    if args.change_type and args.change_type not in ("feat", "fix"):
         raise Stop("usage", code=2, detail="--change-type must be feat or fix")
-    if not KEY_RE.match(args.jira_key or ""):
+    if args.jira_key and not KEY_RE.match(args.jira_key):
         raise Stop("usage", code=2, detail="--jira-key must look like ABC-123")
-    if not args.subject.strip() or "\n" in args.subject or "\r" in args.subject:
-        raise Stop("usage", code=2, detail="--subject must be one non-empty line")
+    subject = (args.subject or "").strip()
+    if subject and ("\n" in subject or "\r" in subject):
+        raise Stop("usage", code=2, detail="--subject must be one line")
     if args.state not in ("draft", "ready"):
         raise Stop("usage", code=2, detail=(
             "--state must be draft or ready"))
@@ -245,22 +216,30 @@ def publish_request(args) -> dict:
     if unknown:
         raise Stop("usage", code=2, detail=f"unknown authorization: {', '.join(unknown)}")
     shared = Path(args.shared)
-    for label, value in (("--manifest", args.manifest), ("--bundle", args.bundle),
-                         ("--description-file", args.description_file)):
+    for label, value in (("--manifest", args.manifest), ("--bundle", args.bundle)):
         if not inside(Path(value), shared):
             raise Stop("usage", code=2, detail=f"{label} must live on the shared LAN path")
     if not safe_name(Path(args.bundle).name):
         raise Stop("usage", code=2, detail="--bundle must name one contained file")
-    description_path = Path(args.description_file)
-    if not description_path.is_file():
-        raise Stop("usage", code=2, detail="--description-file does not exist")
-    try:
-        description_bytes = description_path.read_bytes()
-        description_bytes.decode("utf-8")
-    except OSError as error:
-        raise Stop("usage", code=2, detail=f"--description-file is unreadable: {error}")
-    except UnicodeDecodeError as error:
-        raise Stop("usage", code=2, detail=f"--description-file is not valid UTF-8: {error}")
+    description_path = Path(args.description_file) if args.description_file else None
+    description_bytes = None
+    description_sha = None
+    if description_path is not None:
+        if not inside(description_path, shared):
+            raise Stop("usage", code=2,
+                       detail="--description-file must live on the shared LAN path")
+        if not description_path.is_file():
+            raise Stop("usage", code=2, detail="--description-file does not exist")
+        try:
+            raw_description = description_path.read_bytes()
+            raw_description.decode("utf-8")
+        except OSError as error:
+            raise Stop("usage", code=2, detail=f"--description-file is unreadable: {error}")
+        except UnicodeDecodeError as error:
+            raise Stop("usage", code=2,
+                       detail=f"--description-file is not valid UTF-8: {error}")
+        description_bytes = len(raw_description)
+        description_sha = sha256_bytes(raw_description)
     require_absolute_lenovo_paths(
         ("--lenovo-checkout", args.lenovo_checkout),
         ("--lenovo-worktree", args.lenovo_worktree),
@@ -283,12 +262,12 @@ def publish_request(args) -> dict:
         "targetBranch": args.target_branch,
         "host": args.host,
         "project": args.project,
-        "changeType": args.change_type,
-        "jiraKey": args.jira_key,
-        "subject": args.subject.strip(),
-        "descriptionFile": str(description_path),
-        "descriptionBytes": len(description_bytes),
-        "descriptionSha256": sha256_bytes(description_bytes),
+        "changeType": args.change_type or "",
+        "jiraKey": args.jira_key or "",
+        "subject": subject,
+        "descriptionFile": str(description_path) if description_path else "",
+        "descriptionBytes": description_bytes,
+        "descriptionSha256": description_sha,
         "state": args.state,
         "lenovoCheckout": str(Path(args.lenovo_checkout)),
         "lenovoWorktree": str(Path(args.lenovo_worktree)),
@@ -336,7 +315,8 @@ def build_parser() -> argparse.ArgumentParser:
                          help="shell that will execute the generated command file; never inferred")
     publish.add_argument("--manifest", required=True)
     publish.add_argument("--bundle", required=True)
-    publish.add_argument("--description-file", required=True)
+    publish.add_argument("--description-file", default="",
+                         help="required only when no open MR exists")
     publish.add_argument("--expected-base", required=True)
     publish.add_argument("--expected-commit", required=True)
     publish.add_argument("--expected-previous", default=None,
@@ -347,9 +327,12 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--target-branch", required=True)
     publish.add_argument("--host", required=True)
     publish.add_argument("--project", required=True)
-    publish.add_argument("--change-type", required=True)
-    publish.add_argument("--jira-key", required=True)
-    publish.add_argument("--subject", required=True)
+    publish.add_argument("--change-type", default="",
+                         help="feat/fix; required only when no open MR exists")
+    publish.add_argument("--jira-key", default="",
+                         help="ABC-123; required only when no open MR exists")
+    publish.add_argument("--subject", default="",
+                         help="one-line title; required only when no open MR exists")
     publish.add_argument("--state", default="draft",
                            help="draft, or ready (Ready needs undraft in --authorize)")
     publish.add_argument("--authorize", required=True,

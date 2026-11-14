@@ -24,6 +24,11 @@ REQUEST_CLI = SCRIPTS / "dell_request.py"
 GITLAB_HOST = "gitlab.fixture.invalid"
 
 
+def submit_request(ws: Workspace, request: dict) -> str:
+    return ws.submit(
+        request["commandFile"], receipt_script_path=request["receiptScriptPath"])
+
+
 def existing_request(ws: Workspace, token: str, authorize: str = "push,mr",
                      subject: str = "", description: str = "", name: str | None = None,
                      state: str = "draft", change_type: str = "",
@@ -91,7 +96,7 @@ def build_with_branch(token: str = "aa00000000000001") -> Workspace:
     if proc.returncode != 0:
         raise AssertionError(f"transfer request failed: {proc.stdout} {proc.stderr}")
     data = _json.loads(proc.stdout)
-    job = ws.submit(command_file)
+    job = submit_request(ws, data)
     _, ran = ws.run_job(job)
     if ran.returncode != 0:
         raise AssertionError(f"transfer failed: {ran.stdout} {ran.stderr}")
@@ -104,7 +109,7 @@ class PublishExistingTests(unittest.TestCase):
         self.addCleanup(ws.cleanup)
         request = existing_request(ws, "bb00000000000005")
         ws.rewrite_request(request, authorized=["push"])
-        job = ws.submit(request["commandFile"])
+        job = submit_request(ws, request)
         _, proc = ws.run_job(job)
         driver = json.loads(proc.stdout)
         self.assertEqual(proc.returncode, 2)
@@ -119,7 +124,7 @@ class PublishExistingTests(unittest.TestCase):
         description.write_text("Fixture change.\n", encoding="utf-8")
         first = existing_request(ws, "bb00000000000011", change_type="feat", jira_key="ABC-1", subject="fixture task",
                                  description=str(description))
-        job = ws.submit(first["commandFile"])
+        job = submit_request(ws, first)
         _, proc = ws.run_job(job)
         driver = json.loads(proc.stdout)
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -127,7 +132,7 @@ class PublishExistingTests(unittest.TestCase):
         url = driver["mr"]["url"]
         # Second run without title/description must reuse the same MR.
         second = existing_request(ws, "cc00000000000011")
-        job2 = ws.submit(second["commandFile"])
+        job2 = submit_request(ws, second)
         _, proc2 = ws.run_job(job2)
         reuse = json.loads(proc2.stdout)
         self.assertEqual(proc2.returncode, 0, proc2.stderr)
@@ -147,7 +152,7 @@ class PublishExistingTests(unittest.TestCase):
         description.write_text("Fixture change.\n", encoding="utf-8")
         first = existing_request(ws, "bb00000000000022", change_type="feat", jira_key="ABC-1", subject="fixture task",
                                  description=str(description))
-        job = ws.submit(first["commandFile"])
+        job = submit_request(ws, first)
         _, proc = ws.run_job(job)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         state = json.loads(ws.state_path.read_text(encoding="utf-8"))
@@ -155,7 +160,7 @@ class PublishExistingTests(unittest.TestCase):
         state["mrs"][iid]["draft"] = False
         ws.state_path.write_text(json.dumps(state), encoding="utf-8")
         second = existing_request(ws, "cc00000000000022")
-        job2 = ws.submit(second["commandFile"])
+        job2 = submit_request(ws, second)
         _, proc2 = ws.run_job(job2)
         reuse = json.loads(proc2.stdout)
         self.assertEqual(proc2.returncode, 0, proc2.stderr)
@@ -169,7 +174,7 @@ class PublishExistingTests(unittest.TestCase):
         ws = build_with_branch("aa00000000000033")
         self.addCleanup(ws.cleanup)
         bare = existing_request(ws, "bb00000000000033")
-        job = ws.submit(bare["commandFile"])
+        job = submit_request(ws, bare)
         _, proc = ws.run_job(job)
         driver = json.loads(proc.stdout)
         self.assertNotEqual(proc.returncode, 0)
@@ -183,7 +188,7 @@ class PublishExistingTests(unittest.TestCase):
         description.write_text("Fixture change.\n", encoding="utf-8")
         full = existing_request(ws, "cc00000000000033", change_type="feat", jira_key="ABC-1", subject="fixture task",
                                 description=str(description))
-        job2 = ws.submit(full["commandFile"])
+        job2 = submit_request(ws, full)
         _, proc2 = ws.run_job(job2)
         created = json.loads(proc2.stdout)
         self.assertEqual(proc2.returncode, 0, proc2.stderr)
@@ -204,7 +209,7 @@ class PublishExistingTests(unittest.TestCase):
             change_type="feat", jira_key="ABC-1", subject="fixture task",
             description=str(description), state="ready",
         )
-        job = ws.submit(request["commandFile"])
+        job = submit_request(ws, request)
         _, proc = ws.run_job(job)
         driver = json.loads(proc.stdout)
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -229,7 +234,7 @@ class PublishExistingTests(unittest.TestCase):
         description.write_text("Fixture change.\n", encoding="utf-8")
         request = existing_request(ws, "bb00000000000044", change_type="feat", jira_key="ABC-1", subject="fixture task",
                                    description=str(description))
-        job = ws.submit(request["commandFile"])
+        job = submit_request(ws, request)
         _, proc = ws.run_job(job)
         driver = json.loads(proc.stdout)
         self.assertNotEqual(proc.returncode, 0)
