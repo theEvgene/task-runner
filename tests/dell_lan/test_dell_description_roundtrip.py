@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import unittest
+from pathlib import Path
 
 from dell_fixture import TASK_BRANCH, Workspace, run
 
@@ -38,8 +39,11 @@ class DraftDescriptionExactTests(unittest.TestCase):
     def test_create_stores_exact_text(self):
         ws = build(FIRST)
         self.addCleanup(ws.cleanup)
-        job = ws.submit_publish(ws.publish_request(
-            description=FIRST, token="fedcba9876543210"))
+        request = ws.publish_request(description=FIRST, token="fedcba9876543210")
+        signed = json.loads(Path(request["requestPath"]).read_text(encoding="utf-8"))
+        self.assertEqual(signed["descriptionBytes"], len(FIRST.encode("utf-8")))
+        self.assertEqual(signed["descriptionSha256"], sha(FIRST))
+        job = ws.submit_publish(request)
         payload, proc = ws.run_job(job)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         driver = json.loads(proc.stdout)
@@ -49,6 +53,28 @@ class DraftDescriptionExactTests(unittest.TestCase):
         self.assertEqual(driver["mr"]["descriptionSha256"], sha(FIRST))
         state = json.loads(ws.state_path.read_text(encoding="utf-8"))
         self.assertEqual(state["mrs"]["1"]["description"], FIRST)
+
+    def test_valid_utf8_replacement_after_signing_is_refused_before_remote_write(self):
+        ws = build(FIRST)
+        self.addCleanup(ws.cleanup)
+        request = ws.publish_request(description=FIRST, token="9090909090909090")
+        (ws.shared / "mr-description.md").write_bytes(SECOND.encode("utf-8"))
+
+        payload, proc = ws.run_job(ws.submit_publish(request))
+
+        driver = json.loads(proc.stdout)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertEqual(driver["stage"], "request")
+        self.assertEqual(driver["error"]["reason"], "description-digest-mismatch")
+        self.assertIsNone(driver["import"])
+        self.assertIsNone(driver["push"])
+        self.assertIsNone(driver["mr"])
+        self.assertNotEqual(run([
+            "git", "-C", str(ws.origin), "rev-parse", "--verify",
+            f"refs/heads/{TASK_BRANCH}",
+        ]).returncode, 0)
+        state = json.loads(ws.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(state["mrs"], {})
 
     def test_update_appends_after_newline_without_second_mr(self):
         ws = build(FIRST)
@@ -97,7 +123,13 @@ class DraftDescriptionExactTests(unittest.TestCase):
         self.addCleanup(ws.cleanup)
         request = ws.publish_request(
             description=FIRST, token="ffffffffffffffff")
-        (ws.shared / "mr-description.md").write_bytes(b"valid prefix\n\xff")
+        invalid = b"valid prefix\n\xff"
+        (ws.shared / "mr-description.md").write_bytes(invalid)
+        ws.rewrite_request(
+            request,
+            descriptionBytes=len(invalid),
+            descriptionSha256=hashlib.sha256(invalid).hexdigest(),
+        )
 
         payload, proc = ws.run_job(ws.submit_publish(request))
 

@@ -48,9 +48,9 @@ def main(argv=None) -> int:
         if request["reconcileOnly"]:
             require(request, "reconcile")
         else:
-            # The push below is already a remote write, so undecodable input
-            # must fail here, before any external write, never at the MR stage.
-            request["descriptionText"] = load_description(request)
+            # The push below is already a remote write, so unbound or
+            # undecodable input must fail here, never at the MR stage.
+            request["descriptionText"] = load_description(request, verify_binding=True)
         result["stage"] = "bundle"
         bundle = verify_bundle(request, result)
         tip = bundle_tip(Path(request["lenovoCheckout"]), bundle)

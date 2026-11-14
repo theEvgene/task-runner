@@ -301,10 +301,13 @@ the task commit), `simulated` (the same chain labelled a fixture), `stale`,
 
 ### Draft MR description: exact full-text round-trip
 
-The driver reads the description file as raw bytes, strict UTF-8, no newline
-translation, before any external write (a missing or undecodable file is
-refused at the request stage). After the MR write it re-reads the single MR
-and requires exact equality with the full expected text: a create, or a
+The Dell writer reads the description file as raw bytes, validates strict
+UTF-8, and binds its byte count and SHA-256 into the MAC-bound request. Lenovo
+re-reads the file with no newline translation and requires both facts to match
+before import, push, or MR work. A missing, replaced, undecodable, or legacy
+request without those integrity fields is refused at the request stage; it is
+never accepted by path alone. After the MR write the driver re-reads the single
+MR and requires exact equality with the full expected text: a create, or a
 `ready` update (`replace_description=True`), stores exactly the sent text; a
 `draft` update appends, so the stored text must equal `previous + newline +
 sent` with `previous` from the pre-write list row. No suffix check is used:

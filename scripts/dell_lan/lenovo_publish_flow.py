@@ -152,14 +152,15 @@ def publish_draft(publisher, api, request: dict, existing: dict | None) -> dict:
     return result
 
 
-def load_description(request: dict) -> str:
-    """Read the Draft description bytes exactly as staged, decoded strictly.
+def load_description(request: dict, *, verify_binding: bool = False) -> str:
+    """Verify and decode the exact Draft description bytes observed on Dell.
 
     Raw bytes are decoded as UTF-8 with no newline translation (``read_text``
-    would map CR LF to LF) and no normalization: the queue carries bytes, and
-    any normalization needs a proven GitLab contract recorded in the check. A
-    missing file or undecodable bytes fails closed as ``refused`` before any
-    external write, never as an unknown outcome.
+    would map CR LF to LF) and no normalization. The CLI driver sets
+    ``verify_binding`` so Lenovo checks the MAC-bound Dell byte count and
+    SHA-256 before decoding, then caches the text for every later write. A
+    missing, replaced, or undecodable file fails closed as ``refused`` before
+    any external write, never as an unknown outcome.
     """
 
     path = Path(str(request.get("descriptionFile") or ""))
@@ -167,6 +168,14 @@ def load_description(request: dict) -> str:
         raw = path.read_bytes()
     except OSError as error:
         raise Stop("description-missing", detail=f"{path}: {error}"[:DETAIL_MAX])
+    if verify_binding:
+        actual_sha = sha256_bytes(raw)
+        expected_bytes = request.get("descriptionBytes")
+        expected_sha = request.get("descriptionSha256")
+        if len(raw) != expected_bytes or actual_sha != expected_sha:
+            raise Stop("description-digest-mismatch", detail=(
+                f"bytes {len(raw)} != {expected_bytes} or sha256 "
+                f"{actual_sha} != {expected_sha}")[:DETAIL_MAX])
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError as error:

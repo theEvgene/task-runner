@@ -221,10 +221,12 @@ def publish_request(args) -> dict:
             raise Stop("usage", code=2, detail=f"{label} must live on the shared LAN path")
     if not safe_name(Path(args.bundle).name):
         raise Stop("usage", code=2, detail="--bundle must name one contained file")
-    if not Path(args.description_file).is_file():
+    description_path = Path(args.description_file)
+    if not description_path.is_file():
         raise Stop("usage", code=2, detail="--description-file does not exist")
     try:
-        Path(args.description_file).read_bytes().decode("utf-8")
+        description_bytes = description_path.read_bytes()
+        description_bytes.decode("utf-8")
     except OSError as error:
         raise Stop("usage", code=2, detail=f"--description-file is unreadable: {error}")
     except UnicodeDecodeError as error:
@@ -254,7 +256,9 @@ def publish_request(args) -> dict:
         "changeType": args.change_type,
         "jiraKey": args.jira_key,
         "subject": args.subject.strip(),
-        "descriptionFile": str(Path(args.description_file)),
+        "descriptionFile": str(description_path),
+        "descriptionBytes": len(description_bytes),
+        "descriptionSha256": sha256_bytes(description_bytes),
         "state": args.state,
         "lenovoCheckout": str(Path(args.lenovo_checkout)),
         "lenovoWorktree": str(Path(args.lenovo_worktree)),

@@ -48,6 +48,14 @@ def validated(request_path: Path, expected_digest: str, reconcile: bool) -> dict
         raise Stop("consent-missing", code=2, detail=(
             "the user has not authorized the Lenovo undraft action for this run; "
             "ask once for that action and submit a new request that lists it"))
+    description_bytes = request.get("descriptionBytes")
+    if (isinstance(description_bytes, bool) or not isinstance(description_bytes, int)
+            or description_bytes < 0):
+        raise Stop("request-malformed", detail="descriptionBytes must be a non-negative integer")
+    description_sha = request.get("descriptionSha256")
+    if (not isinstance(description_sha, str) or len(description_sha) != 64
+            or any(char not in "0123456789abcdef" for char in description_sha)):
+        raise Stop("request-malformed", detail="descriptionSha256 must be 64 lowercase hex")
     previous = request.get("expectedPreviousCommit")
     if previous in (None, ""):
         request["expectedPreviousCommit"] = None
