@@ -17,3 +17,10 @@ def description_proof(mr: dict) -> dict:
         "descriptionExpectedSha256": expected or None,
         "descriptionObservedSha256": observed or None,
     }
+
+
+def direct_unproven(driver: bool, provenance: str, identity: dict) -> bool:
+    """A bare identity receipt proves no exact signed description."""
+
+    return (not driver and provenance == "live"
+            and identity.get("simulated") is not True)

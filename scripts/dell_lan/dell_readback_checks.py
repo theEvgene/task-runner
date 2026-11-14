@@ -22,7 +22,7 @@ from pathlib import Path
 from dell_lan_common import (
     Stop as CommonStop, manifest_digest, read_key as read_queue_key,
 )
-from description_proof import description_proof
+from description_proof import description_proof, direct_unproven
 
 SCHEMA = "dell-lan-readback/2"
 SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -378,6 +378,9 @@ def check_result(args, bridge) -> dict:
     if not isinstance(identity, dict) or identity.get("schema_version") != 1:
         raise Stop("publication-readback-malformed", queue=facts,
                    detail="not an mr_identity capture receipt")
+    if direct_unproven(driver, args.provenance, identity):
+        raise Stop("publication-readback-malformed", queue=facts, detail=(
+            "direct capture has no signed-description proof"))
 
     head = str(identity.get("head_sha") or "").lower()
     local = identity.get("local") if isinstance(identity.get("local"), dict) else None

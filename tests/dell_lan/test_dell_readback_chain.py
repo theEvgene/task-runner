@@ -75,6 +75,18 @@ class SignedChainTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(data["verdict"], "simulated")
 
+    def test_direct_capture_cannot_claim_live_bound_without_description_proof(self):
+        job_id = self.submit()
+        self.publish(job_id, simulated=False)
+
+        proc, data = self.ws.readback(
+            *self.ws.queue_args(job_id), "--provenance", "live")
+
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertEqual(data["reason"], "publication-readback-malformed")
+        self.assertIn("signed-description proof", data["detail"])
+        self.assertFalse(data["publication"]["bound"])
+
     def test_tampered_result_is_unverifiable(self):
         job_id = self.submit()
         self.publish(job_id)

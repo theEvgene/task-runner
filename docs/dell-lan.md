@@ -301,21 +301,12 @@ the task commit), `simulated` (the same chain labelled a fixture), `stale`,
 
 ### Draft MR description: exact full-text round-trip
 
-The Dell writer reads the description file as raw bytes, validates strict
-UTF-8, and binds its byte count and SHA-256 into the MAC-bound request. Lenovo
-re-reads the file with no newline translation and requires both facts to match
-before import, push, or MR work. A missing, replaced, undecodable, or legacy
-request without those integrity fields is refused at the request stage; it is
-never accepted by path alone. After the MR write the driver re-reads the single
-MR and requires exact equality with the full signed text. Both create and
-update converge with `replace_description=True`; an append would make the
-complete expected update depend on unsigned remote state. No suffix check is
-used: a changed prefix is a refused `description-mismatch`. Missing or
-unreadable remote text fails closed as unknown (`mr-readback-unavailable`).
-Reconciliation performs the same single-MR comparison before reporting
-`observed`, and Dell readback requires matching signed-expected and observed
-SHA-256 facts before it can set `publication.bound`. The `mr` receipt records
-those hashes plus `descriptionVerified: true`.
+The request binds the exact UTF-8 description bytes, and live readback binds
+only when the publication driver proves that the complete served description
+matches them. A direct identity capture has no such proof and cannot establish
+live publication. See
+[`scripts/dell_lan/references/description-proof.md`](../scripts/dell_lan/references/description-proof.md)
+for the writer, reconciliation, and failure contracts.
 
 ## 6b. Ready route: consented undraft with readback, no pipeline wait
 
