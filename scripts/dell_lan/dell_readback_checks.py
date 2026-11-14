@@ -22,6 +22,7 @@ from pathlib import Path
 from dell_lan_common import (
     Stop as CommonStop, manifest_digest, read_key as read_queue_key,
 )
+from description_proof import description_proof, direct_unproven
 
 SCHEMA = "dell-lan-readback/2"
 SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -62,14 +63,14 @@ NEXT_ACTION = {
     "queue-result-unverifiable": "keep the slot, ask the Lenovo owner for the sealed result of this job id, never trust a hand-edited file",
     "queue-result-unreadable": "keep the slot, re-fetch the sealed result of this job id with the bridge",
     "publication-job-failed": "read the carried exit code and stderr, fix on the anchored base, then a new job id",
-    "publication-readback-malformed": "ask the Lenovo owner to re-run the mr_identity capture readback for this job id",
+    "publication-readback-malformed": "reconcile the signed request and description proof; do not start a second writer",
     "publication-head-mismatch": "reconcile: the observed MR head is not the task commit; do not claim publication",
     "publication-push-mismatch": "reconcile: the remote branch head is not the task commit; do not claim publication",
     "publication-absent": "nothing is published: with per-action consent submit a publish request, or stop",
     "publication-local-head-mismatch": "reconcile: the Lenovo checkout does not carry the task commit; re-transfer and re-read",
     "publication-project-mismatch": "reconcile: the observed project is not the expected project",
     "publication-branch-mismatch": "reconcile: the observed branch is not the expected branch",
-    "publication-fields-missing": "ask the Lenovo owner to re-run the mr_identity capture readback for this job id",
+    "publication-fields-missing": "reconcile the signed request and description proof; do not start a second writer",
     "outcome-unknown": "keep the slot occupied, re-fetch the same job id, do not start a second writer",
     "artifact-stale": "re-sync and re-read before transfer; offline work stays on the anchored base",
     "published": "published readback recorded; keep the receipt as the publication evidence",
@@ -242,6 +243,9 @@ def unwrap_driver(document: dict, args, queue: dict) -> tuple[dict | None, dict]
     if observed and observed != args.task_commit:
         raise Stop("publication-push-mismatch", queue=queue, detail=f"{observed} != {args.task_commit}")
     mr = document.get("mr") if isinstance(document.get("mr"), dict) else {}
+    if not description_proof(mr)["descriptionVerified"]:
+        raise Stop("publication-readback-malformed", queue=queue, detail=(
+            "driver carries no exact signed-description proof"))
     if isinstance(identity, dict):
         if mr.get("url") and mr["url"] != identity.get("mr_url"):
             raise Stop("publication-readback-malformed", queue=queue,
@@ -374,6 +378,9 @@ def check_result(args, bridge) -> dict:
     if not isinstance(identity, dict) or identity.get("schema_version") != 1:
         raise Stop("publication-readback-malformed", queue=facts,
                    detail="not an mr_identity capture receipt")
+    if direct_unproven(driver, args.provenance, identity):
+        raise Stop("publication-readback-malformed", queue=facts, detail=(
+            "direct capture has no signed-description proof"))
 
     head = str(identity.get("head_sha") or "").lower()
     local = identity.get("local") if isinstance(identity.get("local"), dict) else None
@@ -403,6 +410,7 @@ def check_result(args, bridge) -> dict:
         "authorized": (envelope or {}).get("authorized"),
         "pushObservedSha": ((envelope or {}).get("push") or {}).get("observedRemoteSha"),
         "mrCreated": ((envelope or {}).get("mr") or {}).get("created"),
+        **description_proof(((envelope or {}).get("mr") or {})),
         "gitlabHost": identity["gitlab_host"],
         "projectPath": identity["project_path"],
         "iid": iid,

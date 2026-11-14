@@ -299,6 +299,15 @@ the task commit), `simulated` (the same chain labelled a fixture), `stale`,
 `unknown` (exit 3), `rejected` (exit 1), `mismatch` (exit 1). Only
 `published` asserts remote publication.
 
+### Draft MR description: exact full-text round-trip
+
+The request binds the exact UTF-8 description bytes, and live readback binds
+only when the publication driver proves that the complete served description
+matches them. A direct identity capture has no such proof and cannot establish
+live publication. See
+[`scripts/dell_lan/references/description-proof.md`](../scripts/dell_lan/references/description-proof.md)
+for the writer, reconciliation, and failure contracts.
+
 ## 6b. Ready route: consented undraft with readback, no pipeline wait
 
 A `ready` request is the same publish with one extra consented step. The
@@ -308,10 +317,8 @@ never runs the undraft step, so Draft stays the silent default and is never
 lifted by accident.
 
 With consent, the driver runs, in order: push → Draft MR create/update
-(never a second MR for one branch; `draft` keeps `replace_description=False`
-so an update preserves earlier text, while `ready` passes
-`replace_description=True` so an existing same MR converges to the exact
-request input) →
+(never a second MR for one branch; every update converges to the complete
+signed description with `replace_description=True`) →
 `remove_draft.py --mr-url <url> --host <host> --project <project>` from
 `--lenovo-flow-dir` → identity re-capture. The
 result then proves three things: the re-captured head SHA still equals the
@@ -340,9 +347,11 @@ read, when the user explicitly asks for one, stays a separate
   appended — which observes the remote branch and the MR list and writes
   nothing. The probe needs `reconcile` in the request's `--authorize`.
 - **Unknown MR write** (`stage: mr`, exit 3): the write may have landed. The
-  probe reports the existing MR; a later publish request updates it, so no
-  second MR is opened. Never re-drive blind. While an outcome is unknown, the
-  slot stays occupied and no second writer starts.
+  probe reports the existing MR only after its complete description exactly
+  matches the signed request; mismatch is refused and unavailable evidence is
+  unknown. The probe never writes or creates a second MR. Never re-drive blind.
+  While an outcome is unknown, the slot stays occupied and no second writer
+  starts.
 - **Unknown undraft** (`stage: mr`, exit 3, `undraft-unknown` or
   `readback-mismatch`): the same rule as an unknown MR write — the undraft
   may have landed, so reconcile the same job id and let a later publish

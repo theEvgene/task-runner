@@ -72,8 +72,8 @@ driver even if the request writer was bypassed. It then:
    `git ls-remote --heads origin <task-branch>`;
 7. finds an open MR for that source branch through `gitlab_api.api_get` and
    creates or updates the Draft MR through `publish_mr.publish` — a repeat run
-   updates the existing MR instead of opening a second one (`draft` keeps
-   `replace_description=False`; `ready` converges with `True`);
+   updates the existing MR instead of opening a second one, always replacing
+   it with the complete signed description (`replace_description=True`);
 8. for a `draft` request, reads the MR identity back through
    `mr_identity.capture_identity` and prints one
    `dell-lan-publish-result/1` JSON line whose `identity` field is that
@@ -98,6 +98,8 @@ A Dell-side verdict of `published` requires all of:
 - the sealed result verifies (HMAC over the exact payload bytes, kind/id
   binding), `status` `ok`, `exit_code` `0`, not timed out, not truncated;
 - the driver envelope is `outcome: ok` (or `observed` for the read-only probe);
+- the driver proved the complete remote description exactly equals the signed
+  request text, with matching expected and observed SHA-256 facts;
 - the observed remote head equals the task commit;
 - the nested `mr_identity` receipt is `schema_version` 1, its `head_sha` equals
   the task commit, its `local.source_branch_head` equals the task commit with
@@ -131,12 +133,14 @@ An unknown outcome is a slot that stays occupied, never an empty slot.
   exit 2) before it reads anything. Re-publishing the same id is refused by the
   immutable queue.
 - **MR unknown** (exit 3, `stage: mr`): the write may have landed. The probe
-  reports the existing MR, and a later publish request updates it rather than
-  creating a second one. The Dell readback stays `unknown` (`outcome-unknown`,
-  exit 3): keep the slot, re-fetch the same job id, and never advise a new job
-  id for an unreconciled write. A timed-out or truncated envelope and any
-  exit-3 result are `unknown` for the same reason: a new job id needs proof of
-  failure, and none of these carries it.
+  reports the existing MR only when its complete served description equals
+  the signed request text. A mismatch is refused; missing evidence stays
+  unknown. The probe is read-only and never creates a second MR. The Dell
+  readback stays `unknown` (`outcome-unknown`, exit 3) for the original write:
+  keep the slot, re-fetch the same job id, and never advise a new job id for an
+  unreconciled write. A timed-out or truncated envelope and any exit-3 result
+  are `unknown` for the same reason: a new job id needs proof of failure, and
+  none of these carries it.
 - **Rejected** (exit 1): the carried exit code and stderr name the failing
   stage; fix on the anchored base and submit a new job id.
 

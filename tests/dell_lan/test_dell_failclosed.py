@@ -19,7 +19,7 @@ from types import SimpleNamespace
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "dell_lan"
 sys.path.insert(0, str(SCRIPTS))
 
-import lenovo_publish
+import lenovo_bundle
 from dell_lan_common import Stop as DriverStop
 from dell_readback_checks import Stop, check_result
 
@@ -108,7 +108,7 @@ class MiniRepo:
 class RaceNoLossTests(unittest.TestCase):
     def test_the_repeat_move_is_a_ref_compare_and_swap_not_a_merge(self):
         import re
-        source = (SCRIPTS / "lenovo_publish.py").read_text(encoding="utf-8")
+        source = (SCRIPTS / "lenovo_bundle.py").read_text(encoding="utf-8")
         self.assertEqual(re.findall(r"""['"]--hard['"]""", source), [],
                          "the Lenovo driver must not invoke a discarding reset")
         self.assertEqual(re.findall(r"""['"]reset['"]""", source), [],
@@ -131,7 +131,7 @@ class RaceNoLossTests(unittest.TestCase):
         self.assertTrue(git_ok_bool("merge-base", "--is-ancestor", repo.concurrent,
                                     repo.expected, cwd=repo.checkout))
         planted = {"done": False}
-        real_git_ok = lenovo_publish.git_ok
+        real_git_ok = lenovo_bundle.git_ok
 
         def racing_git_ok(checkout: Path, *args: str):
             ok, output = real_git_ok(checkout, *args)
@@ -146,13 +146,13 @@ class RaceNoLossTests(unittest.TestCase):
                 planted["done"] = True
             return ok, output
 
-        lenovo_publish.git_ok = racing_git_ok
+        lenovo_bundle.git_ok = racing_git_ok
         try:
             result: dict = {}
             with self.assertRaises(DriverStop) as caught:
-                lenovo_publish.import_once(repo.request(), repo.bundle, repo.expected, result)
+                lenovo_bundle.import_once(repo.request(), repo.bundle, repo.expected, result)
         finally:
-            lenovo_publish.git_ok = real_git_ok
+            lenovo_bundle.git_ok = real_git_ok
         self.assertTrue(planted["done"], "the race plant must have fired")
         stop = caught.exception
         self.assertEqual(stop.reason, "branch-owned")
@@ -171,7 +171,7 @@ class RaceNoLossTests(unittest.TestCase):
     def test_concurrent_edit_after_the_clean_check_is_unknown_not_discarded(self):
         repo = MiniRepo()
         planted = {"done": False}
-        real_git_ok = lenovo_publish.git_ok
+        real_git_ok = lenovo_bundle.git_ok
 
         def racing_git_ok(checkout: Path, *args: str):
             ok, output = real_git_ok(checkout, *args)
@@ -183,13 +183,13 @@ class RaceNoLossTests(unittest.TestCase):
                 planted["done"] = True
             return ok, output
 
-        lenovo_publish.git_ok = racing_git_ok
+        lenovo_bundle.git_ok = racing_git_ok
         try:
             result: dict = {}
             with self.assertRaises(DriverStop) as caught:
-                lenovo_publish.import_once(repo.request(), repo.bundle, repo.expected, result)
+                lenovo_bundle.import_once(repo.request(), repo.bundle, repo.expected, result)
         finally:
-            lenovo_publish.git_ok = real_git_ok
+            lenovo_bundle.git_ok = real_git_ok
         self.assertTrue(planted["done"], "the race plant must have fired")
         stop = caught.exception
         self.assertEqual(stop.reason, "import-unknown")
@@ -208,7 +208,7 @@ class RaceNoLossTests(unittest.TestCase):
     def test_unrelated_edit_after_move_reports_unknown_with_edits_intact(self):
         repo = MiniRepo()
         planted = {"done": False}
-        real_git_ok = lenovo_publish.git_ok
+        real_git_ok = lenovo_bundle.git_ok
 
         def racing_git_ok(checkout: Path, *args: str):
             ok, output = real_git_ok(checkout, *args)
@@ -219,13 +219,13 @@ class RaceNoLossTests(unittest.TestCase):
                 planted["done"] = True
             return ok, output
 
-        lenovo_publish.git_ok = racing_git_ok
+        lenovo_bundle.git_ok = racing_git_ok
         try:
             result: dict = {}
             with self.assertRaises(DriverStop) as caught:
-                lenovo_publish.import_once(repo.request(), repo.bundle, repo.expected, result)
+                lenovo_bundle.import_once(repo.request(), repo.bundle, repo.expected, result)
         finally:
-            lenovo_publish.git_ok = real_git_ok
+            lenovo_bundle.git_ok = real_git_ok
         self.assertTrue(planted["done"], "the race plant must have fired")
         stop = caught.exception
         self.assertEqual(stop.reason, "import-unknown")
@@ -241,7 +241,7 @@ class RaceNoLossTests(unittest.TestCase):
         repo.apply_move()
         self.assertEqual(git("status", "--porcelain", cwd=repo.worktree), "")
         result: dict = {}
-        worktree = lenovo_publish.import_once(repo.request(), repo.bundle, repo.expected, result)
+        worktree = lenovo_bundle.import_once(repo.request(), repo.bundle, repo.expected, result)
         self.assertEqual(worktree, Path(repo.request()["lenovoWorktree"]))
         self.assertFalse(result["import"]["updated"])
         self.assertFalse(result["import"]["recovered"])
@@ -255,7 +255,7 @@ class RaceNoLossTests(unittest.TestCase):
             "base\nprevious\nexpected\nunreconciled edit\n", encoding="utf-8")
         result: dict = {}
         with self.assertRaises(DriverStop) as caught:
-            lenovo_publish.import_once(repo.request(), repo.bundle, repo.expected, result)
+            lenovo_bundle.import_once(repo.request(), repo.bundle, repo.expected, result)
         stop = caught.exception
         self.assertEqual(stop.reason, "import-unknown")
         self.assertEqual(stop.verdict, "unknown")
@@ -274,7 +274,7 @@ class RaceNoLossTests(unittest.TestCase):
         self.assertEqual((repo.worktree / "work.txt").read_text(encoding="utf-8"),
                          "base\nprevious\n")
         result: dict = {}
-        lenovo_publish.import_once(repo.request(), repo.bundle, repo.expected, result)
+        lenovo_bundle.import_once(repo.request(), repo.bundle, repo.expected, result)
         self.assertTrue(result["import"]["recovered"])
         self.assertFalse(result["import"]["updated"])
         self.assertEqual((repo.worktree / "work.txt").read_text(encoding="utf-8"),

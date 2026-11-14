@@ -19,7 +19,7 @@ import importlib
 import sys
 from pathlib import Path
 
-from dell_lan_common import DETAIL_MAX, Stop, run
+from dell_lan_common import DETAIL_MAX, Stop, run, sha256_bytes
 
 PAGE_SIZE = 100
 MAX_PAGES = 50
@@ -111,15 +111,16 @@ def find_open_mr(api, host: str, project: str, branch: str) -> dict | None:
 def publish_draft(publisher, api, request: dict, existing: dict | None) -> dict:
     """Create or update the Draft merge request through the existing writer.
 
-    ``draft`` preserves the base append contract (``replace_description=False``).
-    ``ready`` passes ``replace_description=True`` so an existing same MR
-    converges to the exact request input: the explicit Ready request carries
-    the intended description under ``mr``+``undraft`` consent, and the exact
-    readback below would otherwise always fail on an appended update.
+    The signed description is the complete intended MR text on create and
+    update.  Existing MRs therefore converge with ``replace_description=True``;
+    appending would make an update's complete expected text depend on unsigned
+    pre-write state and reconciliation could not prove the result later.
     """
 
-    description = Path(request["descriptionFile"]).read_text(encoding="utf-8")
-    replace = request.get("state") == "ready"
+    description = request.get("descriptionText")
+    if not isinstance(description, str):
+        description = load_description(request)
+        request["descriptionText"] = description
     try:
         result = publisher.publish(
             host=request["host"],
@@ -133,11 +134,78 @@ def publish_draft(publisher, api, request: dict, existing: dict | None) -> dict:
             source_branch=request["branch"],
             target_branch=request["targetBranch"],
             mr_url=(existing or {}).get("web_url"),
-            replace_description=replace,
+            replace_description=True,
         )
     except (publisher.PublicationError, api.GitlabUnavailable, OSError, ValueError) as error:
         raise Stop("mr-write-unknown", verdict="unknown", code=3, detail=str(error)[:DETAIL_MAX])
+    result["_descriptionObservedSha256"] = verify_description(
+        api, request, description, result.get("iid"))
     return result
+
+
+def load_description(request: dict, *, verify_binding: bool = False) -> str:
+    """Verify and decode the exact Draft description bytes observed on Dell.
+
+    Raw bytes are decoded as UTF-8 with no newline translation (``read_text``
+    would map CR LF to LF) and no normalization. The CLI driver sets
+    ``verify_binding`` so Lenovo checks the MAC-bound Dell byte count and
+    SHA-256 before decoding, then caches the text for every later write. A
+    missing, replaced, or undecodable file fails closed as ``refused`` before
+    any external write, never as an unknown outcome.
+    """
+
+    path = Path(str(request.get("descriptionFile") or ""))
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise Stop("description-missing", detail=f"{path}: {error}"[:DETAIL_MAX])
+    if verify_binding:
+        actual_sha = sha256_bytes(raw)
+        expected_bytes = request.get("descriptionBytes")
+        expected_sha = request.get("descriptionSha256")
+        if len(raw) != expected_bytes or actual_sha != expected_sha:
+            raise Stop("description-digest-mismatch", detail=(
+                f"bytes {len(raw)} != {expected_bytes} or sha256 "
+                f"{actual_sha} != {expected_sha}")[:DETAIL_MAX])
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise Stop("description-invalid-utf8",
+                   detail=f"{path}: {error}"[:DETAIL_MAX])
+
+
+def verify_description(api, request: dict, expected: str, iid) -> str:
+    """Prove and return the SHA-256 of the complete served description.
+
+    ``expected`` came from the byte-count/SHA-bound request file.  The single
+    MR read is authoritative for the stored text; list-row text and suffix
+    matches are insufficient.  An unreadable description is unknown, while a
+    complete but different value is a deterministic mismatch.
+    """
+
+    if isinstance(iid, bool) or not isinstance(iid, int):
+        raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
+                   detail="the write returned no integer MR iid")
+    try:
+        record = api.api_get(
+            request["host"],
+            f"{api.project_api_base(request['host'], request['project'])}/merge_requests/{iid}")
+    except api.GitlabUnavailable as error:
+        raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
+                   detail=str(error)[:DETAIL_MAX])
+    if not isinstance(record, dict):
+        raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
+                   detail="the single-MR read did not return a JSON object")
+    stored = record.get("description")
+    if not isinstance(stored, str):
+        raise Stop("mr-readback-unavailable", verdict="unknown", code=3,
+                   detail="the MR carries no description to compare")
+    if not descriptions_match(stored, expected):
+        raise Stop("description-mismatch", detail=(
+            "stored sha256 "
+            f"{sha256_bytes(stored.encode('utf-8'))} != sent sha256 "
+            f"{sha256_bytes(expected.encode('utf-8'))}")[:DETAIL_MAX])
+    return sha256_bytes(stored.encode("utf-8"))
 
 
 def capture(identity, mr_url: str, worktree: Path) -> dict:
@@ -223,11 +291,10 @@ def require_ready_identity(api, request: dict, iid: int) -> str:
         raise Stop("readback-mismatch", verdict="unknown", code=3,
                    detail=(f"undrafted title {record.get('title')!r} "
                            f"!= {expected_ready_title(request)!r}")[:DETAIL_MAX])
-    try:
-        description = Path(request["descriptionFile"]).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as error:
+    description = request.get("descriptionText")
+    if not isinstance(description, str):
         raise Stop("readback-mismatch", verdict="unknown", code=3,
-                   detail=f"cannot re-read the input description: {error}"[:DETAIL_MAX])
+                   detail="the validated input description is unavailable")
     served = record.get("description")
     if not isinstance(served, str):
         raise Stop("readback-mismatch", verdict="unknown", code=3,

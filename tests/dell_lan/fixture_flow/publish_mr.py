@@ -5,6 +5,9 @@ create the MR record for a source branch or update the existing one, recording
 the pushed head SHA observed in the fixture bare origin. Records persist in
 the fixture JSON state file; setting ``DELL_FIXTURE_FAIL_AFTER_WRITE=1``
 persists the write and then raises, proving the driver's unknown-outcome path.
+Setting ``DELL_FIXTURE_PREPEND_CORRUPTION`` to a prefix (or ``1`` for
+``unexpected``) stores ``<prefix> newline sent`` instead of the writer
+contract, proving the driver's exact check refuses a preserved suffix.
 """
 
 from __future__ import annotations
@@ -71,6 +74,9 @@ def publish(*, host: str, project: str, change_type: str, key: str,
     state = _load()
     if host != state.get("host") or project != state.get("project"):
         raise PublicationError(f"unknown fixture target: {host}/{project}")
+    prefix = os.environ.get("DELL_FIXTURE_PREPEND_CORRUPTION", "")
+    if prefix == "1":
+        prefix = "unexpected"
     head_sha = _origin_head(source_branch)
     target_sha = _origin_target(target_branch)
     title = f"Draft: {change_type}({key}): {subject}"
@@ -83,7 +89,9 @@ def publish(*, host: str, project: str, change_type: str, key: str,
         if record is None:
             raise PublicationError(f"unknown fixture MR: {mr_url}")
         record["title"] = title
-        if replace_description:
+        if prefix:
+            record["description"] = prefix + "\n" + description
+        elif replace_description:
             record["description"] = description
         else:
             record["description"] = (record.get("description") or "") + "\n" + description
@@ -92,12 +100,13 @@ def publish(*, host: str, project: str, change_type: str, key: str,
     else:
         iid = int(state.get("nextIid", 1))
         state["nextIid"] = iid + 1
+        stored = (prefix + "\n" + description) if prefix else description
         record = {
             "iid": iid,
             "source_branch": source_branch,
             "target_branch": target_branch,
             "title": title,
-            "description": description,
+            "description": stored,
             "draft": desired_state == "draft",
             "head_sha": head_sha,
             "target_sha": target_sha,
