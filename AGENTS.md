@@ -7,6 +7,7 @@ Empty repository baseline. Agent tooling only; no runtime source yet.
 Externally invoked agents start here explicitly; this repo assumes no global auto-discovery. Use only the script your intent needs:
 
 - Monitor a GitLab MR pipeline via the signed Dell-to-Lenovo queue -> `docs/pipeline-observer.md`.
+- Prepare an existing GitLab MR for Ready on Lenovo -> `docs/mr-ready.md`.
 - Verify the target base and create a task worktree -> `docs/fresh-base.md`.
 - Send one signed command through the LAN queue -> `docs/lan-bridge.md`.
 - Start the Lenovo worker and cleaner with one shortcut after a reboot (existing SMB share, local credentials) -> `docs/lenovo-worker-shortcut.md`.
