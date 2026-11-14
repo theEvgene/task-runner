@@ -320,11 +320,25 @@ def _validate_submitted_checklist(config: dict, key: bytes, job_id: str) -> None
     """Bind same-ID recovery to the exact checklist submitted originally."""
     raw = bridge.read(Path(config["queue"]) / "jobs", job_id)
     payload = bridge.open_envelope(raw, key, "job", job_id)
+    try:
+        canonical_payload = bridge.build_job_payload(
+            payload.get("id"), payload.get("command"),
+            payload.get("working_directory"),
+            timeout_seconds=payload.get("timeout_seconds"),
+            max_output_bytes=payload.get("max_output_bytes"),
+            return_files=payload.get("return_files"),
+            dialect=payload.get("dialect"),
+        )
+    except (TypeError, ValueError) as error:
+        raise Refusal(
+            "existing job is not bound to the exact selected readiness checklist"
+        ) from error
     expected_shape = {
         "kind", "id", "command", "working_directory", "timeout_seconds",
         "max_output_bytes", "return_files", "dialect",
     }
-    if (set(payload) != expected_shape
+    if (payload != canonical_payload
+            or set(payload) != expected_shape
             or payload.get("command") != _remote_command(config)
             or payload.get("working_directory") != config["lenovo"]["cwd"]
             or payload.get("max_output_bytes") != 65536

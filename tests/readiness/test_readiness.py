@@ -108,6 +108,22 @@ class ReadinessTests(unittest.TestCase):
         thread.start()
         return thread
 
+    def _publish_completed_job(self, timeout_seconds: object) -> str:
+        submitted = subprocess.run(
+            self._command("--authorize-lenovo-check"), capture_output=True,
+            text=True, check=False)
+        self.assertEqual(submitted.returncode, 3, submitted.stderr)
+        job_id = json.loads(submitted.stdout)["jobId"]
+        job_path = self.queue / "jobs" / f"{job_id}.json"
+        job = bridge.open_envelope(job_path.read_bytes(), self.key, "job", job_id)
+        job_path.unlink()
+        job["timeout_seconds"] = timeout_seconds
+        bridge.publish(self.queue / "jobs", job_id,
+                       bridge.seal(job, self.key))
+        bridge.publish(self.queue / "results", job_id,
+                       bridge.seal(self._result(job_id), self.key))
+        return job_id
+
     def test_success_is_mac_bound_and_secret_free(self):
         worker = self._worker()
         proc = subprocess.run(self._command("--authorize-lenovo-check"),
@@ -205,6 +221,30 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(resumed.returncode, 0, resumed.stderr)
         self.assertEqual(json.loads(resumed.stdout)["jobId"], job_id)
         self.assertEqual(len(self._wait_job_ids()), 1)
+
+    def test_same_id_recovery_rejects_noncanonical_worker_timeout(self):
+        for timeout_seconds in (True, 300.0, 0, 3601):
+            with self.subTest(timeout_seconds=timeout_seconds):
+                job_id = self._publish_completed_job(timeout_seconds)
+                resumed = subprocess.run(self._command("--job-id", job_id),
+                                         capture_output=True, text=True,
+                                         check=False)
+                self.assertEqual(resumed.returncode, 2,
+                                 resumed.stdout + resumed.stderr)
+                self.assertIn("exact selected readiness checklist",
+                              resumed.stderr)
+
+    def test_same_id_recovery_accepts_canonical_worker_timeout_bounds(self):
+        for timeout_seconds in (1, 3600):
+            with self.subTest(timeout_seconds=timeout_seconds):
+                job_id = self._publish_completed_job(timeout_seconds)
+                resumed = subprocess.run(self._command("--job-id", job_id),
+                                         capture_output=True, text=True,
+                                         check=False)
+                self.assertEqual(resumed.returncode, 0,
+                                 resumed.stdout + resumed.stderr)
+                self.assertEqual(json.loads(resumed.stdout)["outcome"],
+                                 "ready")
 
     def test_same_id_recovery_rejects_changed_submitted_checklist(self):
         digest = hashlib.sha256(self.marker.read_bytes()).hexdigest()
