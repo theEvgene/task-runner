@@ -12,6 +12,7 @@ Externally invoked agents start here explicitly; this repo assumes no global aut
 - Start the Lenovo worker and cleaner with one shortcut after a reboot (existing SMB share, local credentials) -> `docs/lenovo-worker-shortcut.md`.
 - Import the first verified copy of a remote branch with no Lenovo checkout -> `docs/first-import.md`.
 - Run the full Dell-to-Lenovo dev loop (base, local work, publish, readback) -> `docs/dell-lan.md`.
+- Transfer one branch to Lenovo without publication, or publish a branch that already exists there -> `docs/dell-lan-standalone.md` (drivers `lenovo_transfer.py`, `lenovo_publish_existing.py`; combined `publish` route in `docs/dell-lan.md` unchanged).
 - Release on Lenovo through the signed queue (bare preview; versioned tag only with explicit version plus explicit confirmation) -> `docs/release.md` + `scripts/release/request.py` (single canonical release entry; `docs/release-tag-preview.md` stays in the tree as legacy and is not an entry).
 - Install the standalone `release` skill links (managed junctions under `~/.agents/skills`, never overwriting foreign entries) -> `skills/release/SKILL.md` + `skills/release/scripts/install.ps1` (old `lenovo-release` migrates only with explicit opt-in on proven ownership).
 

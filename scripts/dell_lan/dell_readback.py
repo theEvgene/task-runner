@@ -32,7 +32,7 @@ from pathlib import Path
 from dell_readback_checks import (
     BUNDLE_TOOL, GITLAB_READBACK, JOB_RE, NEXT_ACTION, QUEUE_VERIFY, SCHEMA,
     SHA_RE, Stop, age_hours, check_bundle, check_result, git, inside,
-    load_bridge, normalise_path, worktrees,
+    blank_publication, blank_transfer, load_bridge, normalise_path, worktrees,
 )
 from dell_lan_common import default_bridge_dir
 
@@ -43,6 +43,10 @@ def parse(argv):
     parser.add_argument("--expected-base", required=True, help="40-hex base SHA the copy must have")
     parser.add_argument("--task-commit", required=True, help="40-hex task commit the bundle carries")
     parser.add_argument("--worktree", help="task worktree that must be registered at the task commit")
+    parser.add_argument(
+        "--lenovo-worktree",
+        help="Lenovo task worktree path that a standalone transfer result must report",
+    )
     parser.add_argument("--bundle-manifest", type=Path, help="staged git-bundle-manifest/1")
     parser.add_argument("--bundle-dir", type=Path, help="directory holding the staged bundle")
     parser.add_argument("--queue", help="signed queue directory (jobs/ and results/)")
@@ -89,16 +93,8 @@ def blank_receipt(args) -> dict:
                   "jobCommandSha256": None, "resultVerified": False,
                   "status": None, "exitCode": None, "timedOut": None,
                   "outputTruncated": None, "envelopeHours": None, "stderr": None},
-        "publication": {"readbackObserved": False, "bound": False,
-                        "provenance": args.provenance, "source": GITLAB_READBACK,
-                        "driver": None, "driverStage": None, "driverOutcome": None,
-                        "authorized": None, "pushObservedSha": None, "mrCreated": None,
-                        "gitlabHost": None, "projectPath": None, "iid": None,
-                        "mrUrl": None, "state": None, "sourceBranch": None,
-                        "targetBranch": None, "headSha": None, "targetSha": None,
-                        "capturedAt": None, "localChecked": False,
-                        "declaredSimulated": None, "simulated": None,
-                        "capturedHours": None},
+        "publication": blank_publication(args.provenance),
+        "transfer": blank_transfer(),
         "evidence": {"queue": QUEUE_VERIFY, "gitlab": GITLAB_READBACK, "bundle": BUNDLE_TOOL},
         "freshness": {"maxAgeHours": args.max_age_hours, "oldestHours": None, "stale": False},
         "nextAction": None,
@@ -138,6 +134,7 @@ def observe(args, receipt: dict, ages: dict) -> None:
         observed = check_result(args, load_bridge(bridge_dir))
         receipt["queue"] = observed["queue"]
         receipt["publication"] = observed["publication"]
+        receipt["transfer"] = observed["transfer"]
         if observed["queue"]["envelopeHours"] is not None:
             ages["result"] = observed["queue"]["envelopeHours"]
         if observed["publication"]["capturedHours"] is not None:
@@ -170,7 +167,7 @@ def main(argv=None) -> int:
     if args.job_id and not args.shared:
         return usage("--job-id needs --shared: a queue readback must prove the key "
                      "is outside the shared LAN folder")
-    for name in ("repo", "worktree", "queue", "shared", "bundle_dir",
+    for name in ("repo", "worktree", "lenovo_worktree", "queue", "shared", "bundle_dir",
                  "bundle_manifest"):
         value = getattr(args, name)
         if value is not None and not Path(value).is_absolute():
@@ -184,6 +181,8 @@ def main(argv=None) -> int:
         return usage("--receipt must stay outside the checkout")
     if args.worktree and inside(args.receipt, Path(args.worktree)):
         return usage("--receipt must stay outside the task worktree")
+    if args.lenovo_worktree and inside(args.receipt, Path(args.lenovo_worktree)):
+        return usage("--receipt must stay outside the Lenovo task worktree")
 
     receipt = blank_receipt(args)
     ages: dict[str, float] = {}
@@ -210,6 +209,8 @@ def main(argv=None) -> int:
         elif receipt["publication"]["bound"]:
             verdict = "simulated" if receipt["publication"]["simulated"] else "published"
             reason = verdict
+        elif receipt["transfer"]["bound"]:
+            verdict, reason = "transferred", "transferred"
         else:
             verdict, reason = "ready", "ready"
 

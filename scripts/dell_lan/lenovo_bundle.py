@@ -13,6 +13,7 @@ from dell_lan_common import (
     manifest_digest, safe_name, sha256_bytes, sha256_file,
 )
 from lenovo_remote import require
+from dell_standalone_common import TRANSFER_REQUEST_SCHEMA
 
 ZERO_OID = "0" * 40
 ACTIONS = ("import", "push", "mr", "undraft", "reconcile")
@@ -24,15 +25,22 @@ def validated(request_path: Path, expected_digest: str, reconcile: bool) -> dict
     if actual != (expected_digest or "").lower():
         raise Stop("request-digest-mismatch", detail=f"{actual} != {expected_digest}")
     request = load_json(request_path, "request-malformed")
-    if request.get("schema") != PUBLISH_REQUEST_SCHEMA:
-        raise Stop("request-malformed", detail=f"expected {PUBLISH_REQUEST_SCHEMA}")
+    if request.get("schema") not in (PUBLISH_REQUEST_SCHEMA, TRANSFER_REQUEST_SCHEMA):
+        raise Stop("request-malformed",
+                   detail=f"expected {PUBLISH_REQUEST_SCHEMA} or {TRANSFER_REQUEST_SCHEMA}")
     shared = Path(str(request.get("shared") or ""))
-    for name in ("manifest", "bundle", "descriptionFile"):
+    for name in ("manifest", "bundle"):
         if not inside(Path(str(request.get(name) or "")), shared):
             raise Stop("request-malformed", detail=f"{name} must live on the shared path")
+    if request.get("schema") == PUBLISH_REQUEST_SCHEMA:
+        if not inside(Path(str(request.get("descriptionFile") or "")), shared):
+            raise Stop("request-malformed", detail="descriptionFile must live on the shared path")
     if not safe_name(Path(str(request.get("bundle"))).name):
         raise Stop("request-malformed", detail="bundle must be one contained file")
-    for name in ("branch", "targetBranch"):
+    branch_fields = ["branch"]
+    if request.get("schema") == PUBLISH_REQUEST_SCHEMA:
+        branch_fields.append("targetBranch")
+    for name in branch_fields:
         value = str(request.get(name) or "")
         if not value or " " in value or value.startswith("-") or ".." in value:
             raise Stop("request-malformed", detail=f"{name} is not a safe branch name")
@@ -42,12 +50,13 @@ def validated(request_path: Path, expected_digest: str, reconcile: bool) -> dict
     unknown = sorted(set(authorized) - set(ACTIONS))
     if unknown:
         raise Stop("request-malformed", detail=f"unknown authorization: {', '.join(unknown)}")
-    if request.get("state") not in ("draft", "ready"):
-        raise Stop("request-malformed", detail="the request state must be draft or ready")
-    if request.get("state") == "ready" and "undraft" not in (request.get("authorized") or []):
-        raise Stop("consent-missing", code=2, detail=(
-            "the user has not authorized the Lenovo undraft action for this run; "
-            "ask once for that action and submit a new request that lists it"))
+    if request.get("schema") == PUBLISH_REQUEST_SCHEMA:
+        if request.get("state") not in ("draft", "ready"):
+            raise Stop("request-malformed", detail="the request state must be draft or ready")
+        if request.get("state") == "ready" and "undraft" not in (request.get("authorized") or []):
+            raise Stop("consent-missing", code=2, detail=(
+                "the user has not authorized the Lenovo undraft action for this run; "
+                "ask once for that action and submit a new request that lists it"))
     previous = request.get("expectedPreviousCommit")
     if previous in (None, ""):
         request["expectedPreviousCommit"] = None
@@ -107,14 +116,16 @@ def _worktree_heads(checkout: Path) -> dict:
     entries = git(checkout, "worktree", "list", "--porcelain")
     registered = {}
     for block in entries.split("\n\n"):
-        path = head = None
+        path = head = branch = None
         for line in block.splitlines():
             if line.startswith("worktree "):
                 path = line[len("worktree "):].strip()
             elif line.startswith("HEAD "):
                 head = line[len("HEAD "):].strip().lower()
+            elif line.startswith("branch "):
+                branch = line[len("branch "):].strip()
         if path:
-            registered[str(Path(path).resolve())] = head
+            registered[str(Path(path).resolve())] = {"head": head, "branch": branch}
     return registered
 
 
@@ -150,7 +161,7 @@ def import_once(request: dict, bundle: Path, tip: str, result: dict) -> Path:
         previous = None
     if tip != expected:
         raise Stop("artifact-mismatch", detail=f"bundle tip {tip} != {expected}")
-    ok, _ = git_ok(checkout, "rev-parse", "--verify", f"{request['expectedBaseSha']}{{commit}}")
+    ok, _ = git_ok(checkout, "rev-parse", "--verify", f"{request['expectedBaseSha']}^{{commit}}")
     if not ok:
         raise Stop("base-mismatch", detail="Lenovo checkout does not carry the expected base commit")
 
@@ -178,26 +189,28 @@ def import_once(request: dict, bundle: Path, tip: str, result: dict) -> Path:
                 raise Stop("previous-mismatch", detail=(
                     f"refs/heads/{branch} does not exist; the named prior "
                     f"{previous} names nothing to update"))
+            if resolved in registered:
+                state = registered[resolved]
+                raise Stop("branch-owned", detail=(
+                    f"{worktree} is registered to {state.get('branch')} at "
+                    f"{state.get('head')}"))
+            if worktree.exists() and any(worktree.iterdir()):
+                raise Stop("branch-owned", detail=f"{worktree} exists and is not empty")
             old = ZERO_OID
             ok, output = git_ok(checkout, "update-ref", f"refs/heads/{branch}", expected, old)
             if not ok:
                 raise Stop("branch-owned", detail=output[:DETAIL_MAX])
-            if resolved in registered:
-                if registered[resolved] != expected:
-                    raise Stop("branch-owned", detail=f"{worktree} is registered at {registered[resolved]}")
-                reused = True
-            else:
-                if worktree.exists() and any(worktree.iterdir()):
-                    raise Stop("branch-owned", detail=f"{worktree} exists and is not empty")
-                worktree.parent.mkdir(parents=True, exist_ok=True)
-                git(checkout, "worktree", "add", "-q", str(worktree), branch)
-                reused = False
+            worktree.parent.mkdir(parents=True, exist_ok=True)
+            git(checkout, "worktree", "add", "-q", str(worktree), branch)
+            reused = False
         else:
             current = current.lower()
             if current == expected:
-                if resolved not in registered or registered[resolved] != expected:
+                state = registered.get(resolved)
+                if (not state or state.get("head") != expected
+                        or state.get("branch") != f"refs/heads/{branch}"):
                     raise Stop("branch-owned", detail=(
-                        f"{worktree} is not registered at {expected}"))
+                        f"{worktree} is not registered to branch {branch} at {expected}"))
                 porcelain = _worktree_clean(worktree)
                 if porcelain is None:
                     raise Stop("worktree-unreadable", detail=f"cannot read {worktree} status")
@@ -221,7 +234,9 @@ def import_once(request: dict, bundle: Path, tip: str, result: dict) -> Path:
                 if current != previous:
                     raise Stop("previous-mismatch", detail=(
                         f"refs/heads/{branch} is at {current}, not the named prior {previous}"))
-                if resolved not in registered or registered[resolved] != previous:
+                state = registered.get(resolved)
+                if (not state or state.get("head") != previous
+                        or state.get("branch") != f"refs/heads/{branch}"):
                     raise Stop("branch-owned", detail=(
                         f"{worktree} is not the registered owner at {previous}"))
                 ok, symbolic = git_ok(worktree, "rev-parse", "--abbrev-ref", "HEAD")
@@ -257,17 +272,25 @@ def import_once(request: dict, bundle: Path, tip: str, result: dict) -> Path:
     finally:
         git_ok(checkout, "update-ref", "-d", temp_ref)
 
+    final_state = _worktree_heads(checkout).get(resolved)
+    if (not final_state or final_state.get("head") != expected
+            or final_state.get("branch") != f"refs/heads/{branch}"):
+        raise Stop("branch-owned", detail=(
+            f"{worktree} does not own branch {branch} at {expected}"))
+    ok, symbolic = git_ok(worktree, "rev-parse", "--abbrev-ref", "HEAD")
+    if not ok or symbolic.strip() != branch:
+        raise Stop("branch-owned", detail=f"{worktree} does not own branch {branch}")
     if git(worktree, "rev-parse", "--verify", "HEAD").lower() != expected:
         raise Stop("artifact-mismatch", detail="task worktree HEAD is not the task commit")
-    if updated or recovered:
-        porcelain = _worktree_clean(worktree)
-        if porcelain is None:
-            raise Stop("import-unknown", verdict="unknown", code=3,
-                       detail=f"cannot re-read {worktree} status after the move")
-        if porcelain:
-            raise Stop("import-unknown", verdict="unknown", code=3,
-                       detail=f"{worktree} is dirty after the move to {expected}")
+    porcelain = _worktree_clean(worktree)
+    if porcelain is None:
+        raise Stop("import-unknown", verdict="unknown", code=3,
+                   detail=f"cannot re-read {worktree} status before success")
+    if porcelain:
+        raise Stop("import-unknown", verdict="unknown", code=3,
+                   detail=f"{worktree} is dirty before success at {expected}")
     result["import"] = {"branch": branch, "commit": expected, "worktree": str(worktree),
                         "reused": reused, "previous": previous, "updated": updated,
-                        "filesSynced": files_synced, "recovered": recovered}
+                        "filesSynced": files_synced, "recovered": recovered,
+                        "clean": True, "matches": True}
     return worktree
