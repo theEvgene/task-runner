@@ -162,10 +162,7 @@ class TwoDirectionFlowTests(unittest.TestCase):
         ws = build_to_publish("8888888888888888")
         self.addCleanup(ws.cleanup)
         request = ws.publish_request(token="8888888888888888")
-        command = Path(request["commandFile"])
-        command.write_text(
-            command.read_text(encoding="utf-8").strip() + " --reconcile\n", encoding="utf-8")
-        job = ws.submit_publish(request)
+        job = ws.reconcile(request)
         payload, proc = ws.run_job(job)
         driver = json.loads(proc.stdout)
         self.assertEqual(proc.returncode, 2, proc.stderr)
@@ -222,6 +219,7 @@ class TwoDirectionFlowTests(unittest.TestCase):
         self.addCleanup(ws.cleanup)
         proc = run([
             sys.executable, str(REQUEST_CLI), "publish", "--shared", str(ws.shared),
+            "--dialect", "cmd",
             "--token", "7777777777777777", "--lenovo-skill-dir", str(Path(ws.root)),
             "--python", sys.executable,
             "--manifest", str(ws.shared / "transfer.manifest.json"),

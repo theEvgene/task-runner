@@ -112,6 +112,7 @@ class ReadyConsentTests(unittest.TestCase):
         command = self.root / "command.txt"
         return subprocess.run(
             [sys.executable, str(REQUEST_CLI), "publish", "--shared", str(self.shared),
+             "--dialect", "cmd",
              "--token", "0123456789abcdef", "--lenovo-skill-dir", str(self.root),
              "--python", sys.executable,
              "--manifest", str(self.shared / "transfer.manifest.json"),

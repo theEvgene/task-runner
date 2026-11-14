@@ -27,9 +27,11 @@ import re
 import sys
 from pathlib import Path
 
+from shell_command import ShellDialectError, build_for_transport
+
 from dell_lan_common import (
     BASE_REQUEST_SCHEMA, DETAIL_MAX, FIRST_REQUEST_SCHEMA,
-    PUBLISH_REQUEST_SCHEMA, Stop, command_line,
+    PUBLISH_REQUEST_SCHEMA, Stop,
     expected_request_name, inside, remote_has_credentials, request_file_token,
     safe_name, sha256_bytes,
 )
@@ -42,6 +44,15 @@ AUTHORIZABLE = ("import", "push", "mr", "undraft", "reconcile")
 PREVIOUS_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
+class SingleDialect(argparse.Action):
+    """Accept exactly one explicit dialect declaration."""
+
+    def __call__(self, parser, namespace, value, option_string=None) -> None:
+        if getattr(namespace, self.dest, None) is not None:
+            parser.error(f"{option_string} must be declared exactly once")
+        setattr(namespace, self.dest, value)
+
+
 def usage(message: str) -> int:
     print(f"dell request usage: {message}", file=sys.stderr)
     return 2
@@ -52,7 +63,7 @@ def refuse(message: str) -> int:
     return 1
 
 
-def write_request(args, request: dict, driver: str) -> int:
+def write_request(args, request: dict, driver: str, dialect: str) -> int:
     shared = Path(args.shared)
     if not shared.is_dir():
         return refuse(f"shared directory does not exist: {shared}")
@@ -86,18 +97,25 @@ def write_request(args, request: dict, driver: str) -> int:
         driver_path = str(Path(args.lenovo_skill_dir) / "scripts" / driver)
     request_path = out_dir / args.request_name
     text = json.dumps(request, ensure_ascii=False, separators=(",", ":")) + "\n"
-    request_path.parent.mkdir(parents=True, exist_ok=True)
-    request_path.write_bytes(text.encode("utf-8"))
     digest = sha256_bytes(text.encode("utf-8"))
-    command = command_line([
+    command_parts = [
         args.python,
         driver_path,
         "--request", str(request_path),
         "--request-sha256", digest,
-    ] + flow_args(args))
+    ] + flow_args(args)
+    try:
+        command = build_for_transport(command_parts, dialect)
+        reconcile_command = (build_for_transport(
+            command_parts + ["--reconcile"], dialect)
+            if driver == "lenovo_publish.py" and not args.reconcile else None)
+    except ShellDialectError as error:
+        raise Stop("usage", code=2, detail=str(error)) from error
+    request_path.parent.mkdir(parents=True, exist_ok=True)
+    request_path.write_bytes(text.encode("utf-8"))
     command_file = Path(args.command_file)
     command_file.parent.mkdir(parents=True, exist_ok=True)
-    command_file.write_bytes((command + "\n").encode("utf-8"))
+    command_file.write_bytes(command.encode("utf-8"))
     result = {
         "schema": "dell-lan-request/1",
         "kind": request["schema"],
@@ -105,6 +123,8 @@ def write_request(args, request: dict, driver: str) -> int:
         "requestSha256": digest,
         "commandFile": str(command_file),
         "command": command,
+        "reconcileCommand": reconcile_command,
+        "dialect": dialect,
         "receiptScriptPath": driver_path,
         "returnFile": str(out_dir / request["manifestName"]) if "manifestName" in request else None,
     }
@@ -125,10 +145,13 @@ def flow_args(args) -> list[str]:
     """Extra Lenovo command arguments for the publish driver, if any were named."""
 
     flow_dir = getattr(args, "lenovo_flow_dir", None)
-    if not flow_dir:
-        return []
-    require_absolute_lenovo_paths(("--lenovo-flow-dir", flow_dir))
-    return ["--flow-dir", str(Path(flow_dir))]
+    result: list[str] = []
+    if flow_dir:
+        require_absolute_lenovo_paths(("--lenovo-flow-dir", flow_dir))
+        result += ["--flow-dir", str(Path(flow_dir))]
+    if getattr(args, "reconcile", False):
+        result.append("--reconcile")
+    return result
 
 
 def base_request(args) -> dict:
@@ -290,16 +313,21 @@ def build_parser() -> argparse.ArgumentParser:
     common(base)
     base.add_argument("--lenovo-checkout", required=True, help="Lenovo checkout to export from")
     base.add_argument("--ref-full", required=True, help="refs/heads/<published base branch>")
-    base.set_defaults(func=lambda args: write_request(args, base_request(args), "lenovo_base_export.py"))
+    base.set_defaults(func=lambda args: write_request(
+        args, base_request(args), "lenovo_base_export.py", "cmd"))
 
     first = sub.add_parser("first", help="ask Lenovo for the first verified copy of a remote branch")
     common(first)
     first.add_argument("--remote-url", required=True, help="explicit Git remote URL or path on Lenovo")
     first.add_argument("--ref-full", required=True, help="refs/heads/<branch> to import")
-    first.set_defaults(func=lambda args: write_request(args, first_request(args), "lenovo_first_export.py"))
+    first.set_defaults(func=lambda args: write_request(
+        args, first_request(args), "lenovo_first_export.py", "cmd"))
 
     publish = sub.add_parser("publish", help="ask Lenovo to import and publish the task bundle")
     common(publish)
+    publish.add_argument("--dialect", required=True, choices=("cmd", "powershell"),
+                         action=SingleDialect,
+                         help="shell that will execute the generated command file; never inferred")
     publish.add_argument("--manifest", required=True)
     publish.add_argument("--bundle", required=True)
     publish.add_argument("--description-file", required=True)
@@ -326,8 +354,11 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--lenovo-flow-dir", default=None,
                          help="absolute flow scripts dir on Lenovo holding the external "
                               "publication flow (default: the driver's own default)")
+    publish.add_argument("--reconcile", action="store_true",
+                         help="render the consent-gated read-only recovery command")
     publish.set_defaults(
-        func=lambda args: write_request(args, publish_request(args), "lenovo_publish.py"))
+        func=lambda args: write_request(
+            args, publish_request(args), "lenovo_publish.py", args.dialect))
     return parser
 
 

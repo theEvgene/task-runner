@@ -11,13 +11,20 @@ was actually supplied.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from dell_fixture import REQUEST_CLI, run
+from dell_fixture import BRIDGE_CLI, REQUEST_CLI, ROOT, lan_bridge, run
+from publish_receipt_gate import documented_command_kind
+from shell_command import (
+    ShellDialectError, build as build_shell_command, build_for_transport,
+)
+
+WORKER_CLI = ROOT / "scripts" / "lenovo_worker" / "worker.py"
 
 SHA_A = "a" * 40
 SHA_B = "b" * 40
@@ -65,6 +72,7 @@ class RequestPathTests(unittest.TestCase):
             "--token": TOKEN,
             "--lenovo-skill-dir": str(self.skill_dir),
             "--python": self.python,
+            "--dialect": "cmd",
             "--manifest": str(self.shared / "transfer.manifest.json"),
             "--bundle": str(self.shared / "transfer.bundle"),
             "--description-file": str(description),
@@ -137,6 +145,159 @@ class RequestPathTests(unittest.TestCase):
         command = self.command_file.read_text(encoding="utf-8")
         self.assertIn(f'"{self.python}"', command)
         self.assertIn("lenovo_publish.py", command)
+
+    def test_publish_requires_one_declared_dialect_before_writing(self):
+        request = self.shared / "publish-request.json"
+        proc = run(self.publish_args(**{"--dialect": None}))
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("--dialect", proc.stderr)
+        self.assertNotIn("JOBID=", proc.stdout + proc.stderr)
+        self.assertFalse(request.exists())
+        self.assertFalse(self.command_file.exists())
+        self.assertFalse((self.root / "jobs").exists())
+
+        proc = run(self.publish_args(**{"--dialect": "auto"}))
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("dialect", proc.stderr)
+        self.assertNotIn("JOBID=", proc.stdout + proc.stderr)
+        self.assertFalse(request.exists())
+        self.assertFalse(self.command_file.exists())
+        self.assertFalse((self.root / "jobs").exists())
+
+        proc = run(self.publish_args() + ["--dialect", "powershell"])
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("exactly once", proc.stderr)
+        self.assertNotIn("JOBID=", proc.stdout + proc.stderr)
+        self.assertFalse(request.exists())
+        self.assertFalse(self.command_file.exists())
+        self.assertFalse((self.root / "jobs").exists())
+
+    def test_generated_publish_command_executes_in_both_declared_shells(self):
+        driver_dir = self.root / "driver dir's fixture"
+        driver_dir.mkdir()
+        driver = driver_dir / "lenovo_publish.py"
+        driver_source = (
+            "import argparse\n"
+            "from pathlib import Path\n"
+            "p = argparse.ArgumentParser()\n"
+            "p.add_argument('--request', required=True)\n"
+            "p.add_argument('--request-sha256', required=True)\n"
+            "p.add_argument('--reconcile', action='store_true')\n"
+            "a = p.parse_args()\n"
+            "Path(a.request + '.ran').write_text("
+            "('reconciled' if a.reconcile else 'executed') + '\\n', encoding='utf-8')\n")
+        driver.write_text(driver_source, encoding="utf-8")
+        powershell_driver_dir = self.root / "driver %literal! dir's fixture"
+        powershell_driver_dir.mkdir()
+        (powershell_driver_dir / "lenovo_publish.py").write_text(
+            driver_source, encoding="utf-8")
+        self.assertIsNotNone(
+            os.environ.get("ComSpec") or shutil.which("cmd.exe"),
+            "cmd.exe is required by this Windows fixture")
+        self.assertIsNotNone(
+            shutil.which("powershell.exe") or shutil.which("pwsh.exe"),
+            "PowerShell is required by this fixture")
+        queue = self.root / "queue"
+        (queue / "jobs").mkdir(parents=True)
+        (queue / "results").mkdir()
+        key_file = self.root / "queue-key.bin"
+        key = os.urandom(32)
+        key_file.write_bytes(key)
+
+        for dialect in ("cmd", "powershell"):
+            for reconcile in (False, True):
+                with self.subTest(dialect=dialect, reconcile=reconcile):
+                    request_name = f"publish-{dialect}-{reconcile}.json"
+                    command_file = self.root / f"command-{dialect}-{reconcile}.txt"
+                    proc = run(self.publish_args(**{
+                        "--dialect": dialect,
+                        "--lenovo-driver-dir": str(
+                            powershell_driver_dir if dialect == "powershell"
+                            else driver_dir),
+                        "--request-name": request_name,
+                        "--command-file": str(command_file),
+                    }))
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    result = json.loads(proc.stdout)
+                    self.assertEqual(result["dialect"], dialect)
+                    if reconcile:
+                        command_file.write_text(
+                            result["reconcileCommand"], encoding="utf-8")
+                    command = command_file.read_text(encoding="utf-8").strip()
+                    if dialect == "powershell":
+                        self.assertTrue(command.startswith("powershell.exe "), command)
+                        self.assertIn('-Command "& \'', command)
+                    else:
+                        self.assertTrue(command.startswith('"'), command)
+                        self.assertFalse(command.startswith("&"), command)
+                    self.assertEqual(documented_command_kind(
+                        command, result["receiptScriptPath"]), "publish-driver")
+                    submitted = run([
+                        sys.executable, str(BRIDGE_CLI), "submit",
+                        "--queue", str(queue), "--key-file", str(key_file),
+                        "--command-file", str(command_file), "--cwd", str(self.root),
+                        "--dialect", dialect, "--receipt-script-path",
+                        result["receiptScriptPath"],
+                    ])
+                    self.assertEqual(submitted.returncode, 0, submitted.stderr)
+                    self.assertIn("JOBID=", submitted.stdout)
+                    job_id = submitted.stdout.strip().split("JOBID=", 1)[1]
+                    job = lan_bridge.open_envelope(
+                        (queue / "jobs" / f"{job_id}.json").read_bytes(),
+                        key, "job", job_id)
+                    self.assertEqual(job["command"], command)
+                    self.assertEqual(job["dialect"], dialect)
+                    worker = run([
+                        sys.executable, str(WORKER_CLI), "--queue", str(queue),
+                        "--key-file", str(key_file), "--shared", str(self.shared),
+                        "--once",
+                    ])
+                    self.assertEqual(worker.returncode, 0, worker.stderr)
+                    sealed = (queue / "results" / f"{job_id}.json").read_bytes()
+                    outcome = lan_bridge.open_envelope(sealed, key, "result", job_id)
+                    self.assertEqual(outcome["status"], "ok", (command, outcome))
+                    self.assertEqual(outcome["exit_code"], 0, (command, outcome))
+                    marker = self.shared / f"{request_name}.ran"
+                    expected = "reconciled\n" if reconcile else "executed\n"
+                    self.assertEqual(marker.read_text(encoding="utf-8"), expected)
+
+    def test_powershell_builder_is_literal_before_transport_adaptation(self):
+        parts = [self.python, r"C:\100%!\driver's fixture.py", 'literal"quote']
+        program = build_shell_command(parts, "powershell")
+        self.assertTrue(program.startswith("& "), program)
+        self.assertIn("100%!", program)
+        self.assertIn("driver''s fixture.py", program)
+        self.assertIn('literal"quote', program)
+
+        safe_transport = build_for_transport(parts[:-1], "powershell")
+        self.assertTrue(safe_transport.startswith("powershell.exe "), safe_transport)
+        self.assertIn('-Command "& \'', safe_transport)
+        with self.assertRaisesRegex(ShellDialectError, "transport-unsafe"):
+            build_for_transport(parts, "powershell")
+
+    def test_cmd_expansion_markers_refuse_before_any_write(self):
+        request = self.shared / "publish-request.json"
+        injected = self.root / "injected.txt"
+        env = dict(os.environ)
+        env["T3_QUOTE_SENTINEL"] = (
+            f'literal" & echo INJECTED>"{injected}" & rem "')
+        proc = run(self.publish_args(**{
+            "--dialect": "cmd",
+            "--lenovo-driver-dir": str(self.root / "%T3_QUOTE_SENTINEL%"),
+        }), env=env)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("cmd", proc.stderr)
+        self.assertIn("environment expansion", proc.stderr)
+        self.assertNotIn("T3_QUOTE_SENTINEL", proc.stderr)
+        self.assertNotIn("JOBID=", proc.stdout + proc.stderr)
+        self.assertFalse(request.exists())
+        self.assertFalse(self.command_file.exists())
+        self.assertFalse(injected.exists())
+        self.assertFalse((self.root / "jobs").exists())
+
+        for unsafe in ("%NAME%", "!NAME!", 'literal" & echo injected'):
+            with self.subTest(unsafe=unsafe), self.assertRaises(ShellDialectError):
+                build_shell_command([self.python, unsafe], "cmd")
 
 
 if __name__ == "__main__":

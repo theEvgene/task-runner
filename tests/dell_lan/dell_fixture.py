@@ -291,7 +291,8 @@ class Workspace:
                         subject: str = "fixture task", state: str = "draft",
                         request_name: str | None = None,
                         previous: str | None = None,
-                        description: str | None = None) -> dict:
+                        description: str | None = None,
+                        dialect: str = "cmd") -> dict:
         text = (description if description is not None
                 else "Fixture change for the LAN local-dev flow.\n")
         description_path = self.shared / "mr-description.md"
@@ -300,6 +301,7 @@ class Workspace:
         name = request_name or f"publish-request-{token}.json"
         command = [
             sys.executable, str(REQUEST_CLI), "publish", "--shared", str(self.shared),
+            "--dialect", dialect,
             "--token", token, "--lenovo-skill-dir", str(ROOT),
             "--lenovo-driver-dir", str(SCRIPTS), "--python", sys.executable,
             "--lenovo-flow-dir", str(FIXTURE_FLOW),
@@ -326,7 +328,7 @@ class Workspace:
 
     def submit_publish(self, request: dict) -> str:
         return self.submit(
-            request["commandFile"], dialect="cmd",
+            request["commandFile"], dialect=request["dialect"],
             receipt_script_path=request["receiptScriptPath"])
 
     def rewrite_request(self, request: dict, **fields) -> Path:
@@ -353,10 +355,9 @@ class Workspace:
 
     def reconcile(self, request: dict) -> str:
         command_file = Path(request["commandFile"])
-        text = command_file.read_text(encoding="utf-8").strip()
-        command_file.write_text(text + ' --reconcile\n', encoding="utf-8")
+        command_file.write_text(request["reconcileCommand"], encoding="utf-8")
         return self.submit(
-            command_file, dialect="cmd",
+            command_file, dialect=request["dialect"],
             receipt_script_path=request["receiptScriptPath"])
 
     def readback(self, *extra: str, receipt: Path | None = None) -> tuple[subprocess.CompletedProcess, dict | None]:
