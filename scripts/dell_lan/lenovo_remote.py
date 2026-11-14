@@ -103,8 +103,9 @@ def publish(request: dict, worktree: Path, flow_dir: Path, result: dict) -> dict
         result["missing"] = missing
         raise Stop("missing-data", detail=(
             f"absent MR data: {', '.join(missing)}; resubmit the same branch and commit"))
-    if (existing is not None and missing
-            and (request.get("state") != "ready" or existing.get("draft") is False)):
+    if (existing is not None
+            and (existing.get("draft") is False
+                 or (missing and request.get("state") != "ready"))):
         url = existing.get("web_url") or api.merge_request_url(
             request["host"], request["project"], existing.get("iid"))
         receipt = capture(identity, url, worktree)

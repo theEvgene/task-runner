@@ -231,6 +231,45 @@ class TwoDirectionFlowTests(unittest.TestCase):
         self.assertEqual(list(final_state["mrs"]), ["1"])
         self.assertEqual(final_state["mrs"]["1"]["target_branch"], "wrong-target")
 
+    def test_combined_flow_preserves_ready_mr_with_complete_metadata(self):
+        ws = build_to_publish("1717171717171717")
+        self.addCleanup(ws.cleanup)
+        ready_url = f"https://gitlab.fixture.invalid/{PROJECT}/-/merge_requests/1"
+        ready_mr = {
+            "iid": 1,
+            "source_branch": TASK_BRANCH,
+            "target_branch": BASE_BRANCH,
+            "title": "feat(ABC-1): already ready",
+            "description": "Existing reviewed description.\n",
+            "draft": False,
+            "head_sha": ws.task,
+            "target_sha": ws.base,
+            "web_url": ready_url,
+        }
+        state = json.loads(ws.state_path.read_text(encoding="utf-8"))
+        state["mrs"]["1"] = ready_mr
+        state["nextIid"] = 2
+        ws.state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        request = ws.publish_request(token="1818181818181818")
+        job = ws.submit_publish(request)
+        _, proc = ws.run_job(job)
+        driver = json.loads(proc.stdout)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(driver["outcome"], "ok")
+        self.assertEqual(
+            driver["mr"],
+            {"url": ready_url, "iid": 1, "draft": False, "created": False},
+        )
+        self.assertEqual(driver["identity"]["head_sha"], ws.task)
+        self.assertEqual(driver["identity"]["project_path"], PROJECT)
+        self.assertEqual(driver["identity"]["source_branch"], TASK_BRANCH)
+        self.assertEqual(driver["identity"]["target_branch"], BASE_BRANCH)
+        final_state = json.loads(ws.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(final_state["mrs"], {"1": ready_mr})
+        self.assertEqual(final_state["nextIid"], 2)
+
     def test_reconcile_probe_needs_its_own_consent(self):
         ws = build_to_publish("8888888888888888")
         self.addCleanup(ws.cleanup)
