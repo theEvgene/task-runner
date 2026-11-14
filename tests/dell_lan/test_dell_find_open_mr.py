@@ -15,6 +15,7 @@ import os
 import sys
 import tempfile
 import unittest
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from urllib.parse import parse_qsl
 
@@ -24,11 +25,16 @@ SCRIPTS = ROOT / "scripts" / "dell_lan"
 FLOW = TESTS_DIR / "fixture_flow"
 
 sys.path.insert(0, str(SCRIPTS))
-sys.path.insert(0, str(FLOW))
 
 import lenovo_publish_flow  # noqa: E402  (module under test)
-import gitlab_api  # noqa: E402  (fixture reader)
 from dell_lan_common import Stop  # noqa: E402  (module under test)
+
+_GITLAB_API_SPEC = spec_from_file_location(
+    "test_dell_find_open_mr_gitlab_api", FLOW / "gitlab_api.py")
+if _GITLAB_API_SPEC is None or _GITLAB_API_SPEC.loader is None:
+    raise RuntimeError("cannot load the test GitLab API fixture")
+gitlab_api = module_from_spec(_GITLAB_API_SPEC)
+_GITLAB_API_SPEC.loader.exec_module(gitlab_api)
 
 HOST = "remote.fixture.invalid"
 PROJECT = "group/project"
