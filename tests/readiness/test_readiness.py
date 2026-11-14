@@ -179,6 +179,22 @@ class ReadinessTests(unittest.TestCase):
                 self.assertEqual(proc.returncode, 1, proc.stderr)
                 self.assertEqual(json.loads(proc.stdout)["outcome"], "not-ready")
 
+    def test_worker_exit_code_requires_exact_integer(self):
+        for exit_code, expected_returncode, expected_outcome in (
+                (0.0, 1, "not-ready"),
+                (0, 0, "ready")):
+            with self.subTest(exit_code=exit_code):
+                shutil.rmtree(self.queue / "jobs", ignore_errors=True)
+                shutil.rmtree(self.queue / "results", ignore_errors=True)
+                worker = self._worker(result_changes={"exit_code": exit_code})
+                proc = subprocess.run(self._command("--authorize-lenovo-check"),
+                                      capture_output=True, text=True, check=False)
+                worker.join(2)
+                self.assertEqual(proc.returncode, expected_returncode,
+                                 proc.stdout + proc.stderr)
+                self.assertEqual(json.loads(proc.stdout)["outcome"],
+                                 expected_outcome)
+
     def test_worker_boolean_fields_are_required_and_exact(self):
         cases = (
             ({}, ("timed_out",)),

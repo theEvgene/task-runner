@@ -269,7 +269,7 @@ def _validate_worker(payload: dict, config: dict) -> list[dict]:
                            "increase the output bound and start a new readiness check")]
     exit_code = payload.get("exit_code")
     if (payload.get("status") not in ("ok", "completed")
-            or isinstance(exit_code, bool) or exit_code != 0):
+            or type(exit_code) is not int or exit_code != 0):
         return [_component("lenovo-probe", "lenovo", "unconfirmed",
                            "worker did not complete successfully",
                            "repair the worker-side probe and start a new readiness check")]
