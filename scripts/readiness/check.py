@@ -256,11 +256,14 @@ def _report(config: dict, job_id: str, components: list[dict],
 
 
 def _validate_worker(payload: dict, config: dict) -> list[dict]:
-    if payload.get("timed_out"):
+    for field in ("timed_out", "output_truncated"):
+        if field not in payload or type(payload[field]) is not bool:
+            raise Refusal(f"verified worker result field {field!r} must be a boolean")
+    if payload["timed_out"]:
         return [_component("lenovo-probe", "lenovo", "unconfirmed",
                            "worker reported a terminal timeout",
                            "fix the worker limit and start a new readiness check")]
-    if payload.get("output_truncated"):
+    if payload["output_truncated"]:
         return [_component("lenovo-probe", "lenovo", "unconfirmed",
                            "worker output was truncated",
                            "increase the output bound and start a new readiness check")]
@@ -313,6 +316,24 @@ def _validate_worker(payload: dict, config: dict) -> list[dict]:
                        "MAC-bound worker result verified", "none"), *components]
 
 
+def _validate_submitted_checklist(config: dict, key: bytes, job_id: str) -> None:
+    """Bind same-ID recovery to the exact checklist submitted originally."""
+    raw = bridge.read(Path(config["queue"]) / "jobs", job_id)
+    payload = bridge.open_envelope(raw, key, "job", job_id)
+    expected_shape = {
+        "kind", "id", "command", "working_directory", "timeout_seconds",
+        "max_output_bytes", "return_files", "dialect",
+    }
+    if (set(payload) != expected_shape
+            or payload.get("command") != _remote_command(config)
+            or payload.get("working_directory") != config["lenovo"]["cwd"]
+            or payload.get("max_output_bytes") != 65536
+            or payload.get("return_files") != []
+            or payload.get("dialect") != "cmd"):
+        raise Refusal(
+            "existing job is not bound to the exact selected readiness checklist")
+
+
 def run(args: argparse.Namespace) -> int:
     config_path = Path(args.config).resolve()
     repo_root = bridge.find_repo_root()
@@ -331,13 +352,14 @@ def run(args: argparse.Namespace) -> int:
     key = bridge.load_key(config["keyFile"], config["keyFormat"], config["queue"])
     if args.job_id:
         job_id = args.job_id
+        _validate_submitted_checklist(config, key, job_id)
     else:
         if not args.authorize_lenovo_check:
             raise Refusal("submission needs --authorize-lenovo-check for this read-only run")
         job_id = bridge.submit_job(
             config["queue"], key, _remote_command(config),
             config["lenovo"]["cwd"], timeout_seconds=int(args.worker_timeout),
-            max_output_bytes=65536)
+            max_output_bytes=65536, dialect="cmd")
     try:
         payload = bridge.fetch_result(config["queue"], key, job_id,
                                       timeout_seconds=float(args.wait),
