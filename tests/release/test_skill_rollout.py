@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SKILL_DIR = ROOT / "skills" / "release"
 SKILL_MD = SKILL_DIR / "SKILL.md"
 INSTALL_PS1 = SKILL_DIR / "scripts" / "install.ps1"
+MIGRATION_PS1 = SKILL_DIR / "scripts" / "migration.ps1"
 VERIFY_PS1 = SKILL_DIR / "scripts" / "verify-install.ps1"
 MANIFEST = SKILL_DIR / "migrations.json"
 UPDATE_MD = SKILL_DIR / "UPDATE.md"
@@ -46,6 +47,17 @@ class SkillIdentityTests(unittest.TestCase):
         agents = read_text(ROOT / "AGENTS.md")
         self.assertIn("skills/release/SKILL.md", agents)
 
+    def test_moved_skills_route_to_canonical_operations(self) -> None:
+        dell = read_text(ROOT / "skills" / "dell-lan-local-dev" / "SKILL.md")
+        for token in ("docs/readiness.md", "docs/dell-lan.md",
+                      "docs/dell-lan-standalone.md", "transfer",
+                      "publish-existing", "docs/mr-ready.md"):
+            self.assertIn(token, dell)
+        bridge = read_text(ROOT / "skills" / "lan-task-bridge" / "SKILL.md")
+        self.assertIn("scripts/lan_bridge/lan_bridge.py", bridge)
+        self.assertIn("jira_task.py read --issue <KEY> --full", bridge)
+        self.assertIn("parent.presence", bridge)
+
 
 class InstallerSafetyTests(unittest.TestCase):
     def test_installer_emits_versioned_receipt(self) -> None:
@@ -61,12 +73,13 @@ class InstallerSafetyTests(unittest.TestCase):
         self.assertIn("Foreign entries left unchanged", body)
 
     def test_old_link_migration_is_opt_in_and_content_proven(self) -> None:
-        body = read_text(INSTALL_PS1)
+        body = read_text(INSTALL_PS1) + read_text(MIGRATION_PS1)
         self.assertIn("AllowOldLinkMigration", body)
         self.assertIn("lenovo-release", body)
         self.assertIn("migrations.json", body)
         self.assertIn("frontmatterName", body)
         self.assertIn("bodyMustContain", body)
+        self.assertIn("targetRelativePath", body)
 
     def test_verifier_changes_nothing(self) -> None:
         body = read_text(VERIFY_PS1)
@@ -80,14 +93,23 @@ class MigrationManifestTests(unittest.TestCase):
     def test_manifest_schema_and_proof(self) -> None:
         manifest = json.loads(read_text(MANIFEST))
         self.assertEqual(manifest["schema"], "task-runner/skill-migrations@1")
-        self.assertEqual(len(manifest["migrations"]), 1)
-        migration = manifest["migrations"][0]
+        self.assertEqual(len(manifest["migrations"]), 3)
+        by_skill = {item["skill"]: item for item in manifest["migrations"]}
+        migration = by_skill["release"]
         self.assertEqual(migration["skill"], "release")
         self.assertEqual(migration["fromSkill"], "lenovo-release")
         self.assertEqual(migration["ownershipProof"]["frontmatterName"],
                          "lenovo-release")
         self.assertIn("scripts/release/request.py",
                       migration["ownershipProof"]["bodyMustContain"])
+        self.assertEqual(by_skill["dell-lan-local-dev"]["fromSkill"],
+                         "dell-lan-local-dev")
+        self.assertEqual(by_skill["lan-task-bridge"]["fromSkill"],
+                         "lan-task-bridge")
+        self.assertEqual(
+            by_skill["lan-task-bridge"]["ownershipProof"]["targetRelativePath"],
+            "skills/t-bank/lan-task-bridge",
+        )
 
 
 class MigrationProofTests(unittest.TestCase):
@@ -95,28 +117,34 @@ class MigrationProofTests(unittest.TestCase):
     # checkout happens to exist alongside; never modifies it. The proof
     # fields in migrations.json must match that file, otherwise the
     # opt-in migration could never fire (or could fire on a stranger).
-    PAT_POINTERS = (
-        Path("C:/Users/rb199787/Documents/repositories/personal-agent-toolkit")
-        / "skills" / "t-bank" / "lenovo-release" / "SKILL.md",
+    PAT_ROOTS = (
+        Path("C:/Users/rb199787/Documents/worktrees/pat-lenovo-release-clean"),
+        Path("C:/Users/rb199787/Documents/repositories/personal-agent-toolkit"),
     )
 
     def test_manifest_proof_matches_old_pointer_when_present(self) -> None:
-        present = [p for p in self.PAT_POINTERS if p.is_file()]
-        if not present:
+        manifest = json.loads(read_text(MANIFEST))
+        checked = 0
+        for root in self.PAT_ROOTS:
+            for migration in manifest["migrations"]:
+                proof = migration["ownershipProof"]
+                pointer = root / proof["targetRelativePath"] / "SKILL.md"
+                if not pointer.is_file():
+                    continue
+                checked += 1
+                text = pointer.read_text(encoding="utf-8").replace("\r\n", "\n")
+                lines = text.splitlines()
+                end = lines.index("---", 1)
+                frontmatter = "\n".join(lines[1:end])
+                self.assertIn(f"name: {proof['frontmatterName']}", frontmatter)
+                self.assertIn(proof["bodyMustContain"], text)
+        if not checked:
             self.skipTest("no personal-agent-toolkit checkout alongside")
-        proof = json.loads(read_text(MANIFEST))["migrations"][0]["ownershipProof"]
-        for pointer in present:
-            text = pointer.read_text(encoding="utf-8").replace("\r\n", "\n")
-            lines = text.splitlines()
-            end = lines.index("---", 1)
-            frontmatter = "\n".join(lines[1:end])
-            self.assertIn(f"name: {proof['frontmatterName']}", frontmatter)
-            self.assertIn(proof["bodyMustContain"], text)
 
 
 class RemoteNormalizationTests(unittest.TestCase):
     def test_installer_accepts_ssh_and_https_task_runner(self) -> None:
-        body = read_text(INSTALL_PS1)
+        body = read_text(INSTALL_PS1) + read_text(MIGRATION_PS1)
         self.assertIn("git@", body)
         self.assertIn("ssh://", body)
         self.assertIn("Get-GitHubSlug", body)
@@ -147,12 +175,14 @@ class CheckoutSafetyTests(unittest.TestCase):
 
 class PatOwnershipTests(unittest.TestCase):
     def test_migration_requires_pat_remote_not_only_text(self) -> None:
-        body = read_text(INSTALL_PS1)
+        body = read_text(INSTALL_PS1) + read_text(MIGRATION_PS1)
         self.assertIn("ExpectedPatRemoteUrl", body)
         self.assertIn("personal-agent-toolkit", body)
         self.assertIn("Test-PatOwnership", body)
-        self.assertIn("'rev-parse' '--show-toplevel'", body)
-        self.assertIn("'remote' 'get-url' 'origin'", body)
+        for token in ("'rev-parse'", "'--show-toplevel'", "'remote'",
+                      "'get-url'", "'origin'"):
+            self.assertIn(token, body)
+        self.assertIn("targetRelativePath", body)
         # Strangers stay for the PAT owner; content alone never deletes.
         self.assertIn("leftUnchanged", body)
 
@@ -256,12 +286,16 @@ class DiscoveryTests(unittest.TestCase):
                              f"duplicate leaf name '{leaf}': {leaves.get(leaf)} vs {skill_md}")
             leaves[leaf] = skill_md
         self.assertIn("release", leaves)
+        self.assertIn("dell-lan-local-dev", leaves)
+        self.assertIn("lan-task-bridge", leaves)
 
 
 class TokenBudgetTests(unittest.TestCase):
     def test_new_files_fit_single_file_budget(self) -> None:
-        for path in (SKILL_MD, INSTALL_PS1, VERIFY_PS1, MANIFEST, UPDATE_MD,
-                     Path(__file__)):
+        for path in (SKILL_MD, INSTALL_PS1, MIGRATION_PS1, VERIFY_PS1,
+                     MANIFEST, UPDATE_MD, Path(__file__),
+                     ROOT / "skills" / "dell-lan-local-dev" / "SKILL.md",
+                     ROOT / "skills" / "lan-task-bridge" / "SKILL.md"):
             size = path.stat().st_size
             self.assertLessEqual(size, MAX_BYTES, f"{path.name}: {size} bytes")
 

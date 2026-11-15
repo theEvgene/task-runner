@@ -16,13 +16,12 @@ junction that points into another checkout of THIS repo (origin remote
 proof plus exact `skills/<name>` shape with `SKILL.md`) is a managed
 link: the installer retargets it to this checkout after re-checking it
 just before the swap, and reports it in `retargetedManagedLinks`. That
-old `lenovo-release` name is never touched automatically:
-`scripts/install.ps1` migrates the old `lenovo-release` junction only
-with `-AllowOldLinkMigration` and only when the junction target provably
-holds the old pointer content AND lives in a personal-agent-toolkit
-checkout (origin remote proof, see `migrations.json`).
-File text alone never deletes; anything else stays in `leftUnchanged` for
-the PAT owner to remove manually.
+old name and the same-named PAT links for `dell-lan-local-dev` and
+`lan-task-bridge` are migrated only with `-AllowOldLinkMigration`. Each
+target must match its recorded PAT origin, exact repository-relative path,
+frontmatter, and body marker (see `migrations.json`). The guarded swap removes
+only the junction and retains the PAT source checkout. Anything unproven stays
+unchanged.
 
 ## Route: preview first, version only after the user chooses
 

@@ -120,32 +120,6 @@ function Get-ExpectedSkillPath {
     return Get-NormalizedPath -Path (Join-Path $checkout ($Relative -replace '/', [System.IO.Path]::DirectorySeparatorChar))
 }
 
-function Test-OldPointerContent {
-    param([Parameter(Mandatory)][string]$TargetDir, [Parameter(Mandatory)][object]$Proof)
-
-    $candidate = Join-Path $TargetDir 'SKILL.md'
-    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $false }
-    $text = (Get-Content -LiteralPath $candidate -Raw -Encoding UTF8) -replace "`r`n", "`n"
-    if ($text -notmatch '(?s)\A---\n(.*?)\n---(\n|\Z)') { return $false }
-    if ($Matches[1] -notmatch "(?m)^name:\s*$([regex]::Escape([string]$Proof.frontmatterName))\s*$") { return $false }
-    return $text.Contains([string]$Proof.bodyMustContain)
-}
-
-function Get-CheckoutProof {
-    param([Parameter(Mandatory)][string]$TargetDir)
-    # $null means "not proven".
-    $ErrorActionPreference = 'Continue'
-    $top = @(git '-C' $TargetDir 'rev-parse' '--show-toplevel' 2>&1)
-    if ($LASTEXITCODE -ne 0 -or @($top).Count -eq 0) { return $null }
-    $root = "$($top[0])".Trim()
-    if ([string]::IsNullOrWhiteSpace($root)) { return $null }
-    $url = @(git '-C' $root 'remote' 'get-url' 'origin' 2>&1)
-    if ($LASTEXITCODE -ne 0 -or @($url).Count -eq 0) { return $null }
-    $remote = "$($url[0])".Trim()
-    if ([string]::IsNullOrWhiteSpace($remote)) { return $null }
-    return [pscustomobject]@{ root = $root; remote = $remote }
-}
-
 function Get-DestinationEntry {
     param([Parameter(Mandatory)][string]$Directory, [Parameter(Mandatory)][string]$Name)
     return Get-ChildItem -Force -LiteralPath $Directory -ErrorAction SilentlyContinue |
@@ -153,14 +127,7 @@ function Get-DestinationEntry {
         Select-Object -First 1
 }
 
-function Test-PatOwnership {
-    param([Parameter(Mandatory)][string]$TargetDir, [Parameter(Mandatory)][object]$Proof)
-    # Pointer text AND a personal-agent-toolkit origin are required.
-    if (-not (Test-OldPointerContent -TargetDir $TargetDir -Proof $Proof)) { return $false }
-    $proof = Get-CheckoutProof -TargetDir $TargetDir
-    if ($null -eq $proof) { return $false }
-    return (Test-EquivalentRemote -Actual $proof.remote -Expected $ExpectedPatRemoteUrl)
-}
+. (Join-Path $PSScriptRoot 'migration.ps1')
 
 function Test-ManagedJunctionFromSameRepository {
     param([Parameter(Mandatory)][string]$ExistingTarget, [Parameter(Mandatory)][string]$SkillName)
@@ -241,6 +208,7 @@ $conflicts = [System.Collections.Generic.List[string]]::new()
 $retargeted = [System.Collections.Generic.List[string]]::new()
 $migrated = [System.Collections.Generic.List[string]]::new()
 $leftUnchanged = [System.Collections.Generic.List[string]]::new()
+$migrations = @()
 
 try {
     if ([string]::IsNullOrWhiteSpace($Revision)) {
@@ -280,6 +248,7 @@ try {
     }
     $pinned = $resolved.lines[0].Trim()
     $skills = Get-PinnedSkills -Commit $pinned
+    $migrations = Get-PinnedMigrations -Commit $pinned
     $stages.Add([pscustomobject]@{ name = 'preflight'; status = 'passed' })
 
     # Doomed installs fail before the checkout moves; install re-checks.
@@ -292,7 +261,10 @@ try {
             if ($existing) {
                 $t = Get-JunctionTarget -Item $existing
                 $same = $t -and [string]::Equals($t, $sourcePath, [System.StringComparison]::OrdinalIgnoreCase)
-                if (-not $same -and -not ($t -and (Test-ManagedJunctionFromSameRepository -ExistingTarget $t -SkillName $skill.name))) {
+                $patRule = Get-SameNamePatMigration -Name $skill.name -Migrations $migrations
+                $patOwned = $AllowOldLinkMigration -and $t -and $patRule -and
+                    (Test-PatOwnership -TargetDir $t -Proof $patRule.ownershipProof)
+                if (-not $same -and -not $patOwned -and -not ($t -and (Test-ManagedJunctionFromSameRepository -ExistingTarget $t -SkillName $skill.name))) {
                     $preflightConflicts.Add($skill.name)
                 }
             }
@@ -335,6 +307,14 @@ try {
                 $retargeted.Add($skill.name)
                 continue
             }
+            $patRule = Get-SameNamePatMigration -Name $skill.name -Migrations $migrations
+            if ($AllowOldLinkMigration -and $existingTarget -and $patRule -and
+                (Test-PatOwnership -TargetDir $existingTarget -Proof $patRule.ownershipProof)) {
+                Remove-ManagedJunctionSafely -Path (Join-Path $SkillsDirectory $existing.Name) -ExpectedTarget $existingTarget
+                New-Item -ItemType Junction -Path (Join-Path $SkillsDirectory $skill.name) -Target $sourcePath | Out-Null
+                $connected.Add($skill.name); $migrated.Add($existing.Name)
+                continue
+            }
             $conflicts.Add($skill.name)
             Write-Warning "Conflict for '$($skill.name)': not our junction; Left unchanged."
             continue
@@ -344,19 +324,13 @@ try {
     }
 
     # Old-name migration: opt-in + proven PAT ownership.
-    $manifestPath = Join-Path $checkout 'skills\release\migrations.json'
-    try {
-        $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $migrations = @($manifest.migrations)
-    } catch {
-        $migrations = @()
-        Write-Warning 'Migrations manifest unreadable: old links left unchanged.'
-    }
     foreach ($migration in $migrations) {
         $newSource = Join-Path $checkout (Join-Path 'skills' (([string]$migration.skill) -replace '/', '\'))
         if (-not (Test-Path -LiteralPath (Join-Path $newSource 'SKILL.md') -PathType Leaf)) { continue }
         $oldName = [string]$migration.fromSkill
         if ([string]::IsNullOrWhiteSpace($oldName)) { continue }
+        $newName = @(([string]$migration.skill) -split '/')[-1]
+        if ([string]::Equals($oldName, $newName, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
         $oldEntry = Get-DestinationEntry -Directory $SkillsDirectory -Name $oldName
         if (-not $oldEntry) { continue }
         $oldTarget = Get-JunctionTarget -Item $oldEntry

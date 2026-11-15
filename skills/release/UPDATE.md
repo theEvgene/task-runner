@@ -34,11 +34,11 @@ Rules that are never relaxed:
   re-checks the link immediately before the swap and records the name
   in `retargetedManagedLinks`. A changed link refuses instead of
   swapping.
-- The old `lenovo-release` pointer link is migrated only with
-  `-AllowOldLinkMigration` and only when its target provably holds the
-  old pointer content (frontmatter `name: lenovo-release` plus a body
-  reference to `scripts/release/request.py`, see `migrations.json`).
-  Without the switch, or on any doubt, the old link stays untouched.
+- Recorded PAT links migrate only with `-AllowOldLinkMigration`. The target
+  must be a junction into the exact recorded path of a checkout whose origin is
+  `personal-agent-toolkit`, and its frontmatter and body marker must match
+  `migrations.json`. The guarded swap removes only the junction; the old source
+  is retained. Without the switch, or on any doubt, the entry stays untouched.
 - No global guidance files are written. This repo assumes no global
   auto-discovery; global files may belong to another checkout.
 
@@ -91,10 +91,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 ```
 
 Only the explicit `git fetch` touches the network; both scripts resolve
-locally and refuse on unknown revisions. A PAT-owned `lenovo-release`
-link is never removed here without `-AllowOldLinkMigration` and proven
-PAT origin remote: otherwise it stays in `leftUnchanged` for the PAT
-owner to delete manually.
+locally and refuse on unknown revisions. PAT-owned links are never replaced
+without `-AllowOldLinkMigration` and every recorded proof; otherwise they stay
+unchanged for the PAT owner.
 
 ## Verify only (changes nothing)
 
