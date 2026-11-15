@@ -1,13 +1,32 @@
 {
   "schema": "task-runner/skill-migrations@1",
-  "comment": "Recorded ownership for renamed skill links. The old 'lenovo-release' junction (personal-agent-toolkit pointer skill) is removed only when every proof holds: -AllowOldLinkMigration was passed, the recorded new skill ships in this pinned checkout, the old entry is a junction whose target directory holds a SKILL.md with the recorded frontmatter name and the recorded body marker, AND that target lives in a checkout whose origin remote is personal-agent-toolkit (SSH/HTTPS slug match). File text alone never deletes. A foreign junction, a plain directory or file, an unresolvable remote, or an unreadable manifest leaves the old entry unchanged for the PAT owner to delete manually.",
+  "comment": "Opt-in PAT link migrations require the expected frontmatter and body marker, exact repository-relative target path, PAT origin remote, and an unchanged junction at swap time. Only the junction is removed; its source checkout is retained. Anything unproven stays unchanged.",
   "migrations": [
     {
       "skill": "release",
       "fromSkill": "lenovo-release",
       "ownershipProof": {
         "frontmatterName": "lenovo-release",
-        "bodyMustContain": "scripts/release/request.py"
+        "bodyMustContain": "scripts/release/request.py",
+        "targetRelativePath": "skills/t-bank/lenovo-release"
+      }
+    },
+    {
+      "skill": "dell-lan-local-dev",
+      "fromSkill": "dell-lan-local-dev",
+      "ownershipProof": {
+        "frontmatterName": "dell-lan-local-dev",
+        "bodyMustContain": "scripts/dell_lan/",
+        "targetRelativePath": "skills/dell-lan-local-dev"
+      }
+    },
+    {
+      "skill": "lan-task-bridge",
+      "fromSkill": "lan-task-bridge",
+      "ownershipProof": {
+        "frontmatterName": "lan-task-bridge",
+        "bodyMustContain": "scripts/lan_bridge/lan_bridge.py",
+        "targetRelativePath": "skills/t-bank/lan-task-bridge"
       }
     }
   ]

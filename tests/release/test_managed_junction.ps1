@@ -10,6 +10,8 @@ $ErrorActionPreference = 'Stop'
 
 $installPs1 = Join-Path $PSScriptRoot '..\..\skills\release\scripts\install.ps1'
 $text = Get-Content -LiteralPath $installPs1 -Raw -Encoding UTF8
+$migrationText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\skills\release\scripts\migration.ps1') -Raw -Encoding UTF8
+$transactionText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\skills\release\scripts\junction-transaction.ps1') -Raw -Encoding UTF8
 
 function Get-InstallerFunctionText {
     param([Parameter(Mandatory)][string]$Name)
@@ -20,12 +22,13 @@ function Get-InstallerFunctionText {
 
 $definitions = @(
     'Get-NormalizedPath', 'Get-JunctionTarget', 'Get-GitHubSlug',
-    'Test-EquivalentRemote', 'Get-CheckoutProof', 'Get-DestinationEntry',
-    'Test-OldPointerContent', 'Test-PatOwnership',
-    'Test-ManagedJunctionFromSameRepository', 'Remove-ManagedJunctionSafely',
+    'Test-EquivalentRemote', 'Get-DestinationEntry',
+    'Test-ManagedJunctionFromSameRepository',
     'Stop-Install'
 ) | ForEach-Object { Get-InstallerFunctionText -Name $_ }
 Invoke-Expression ($definitions -join "`n")
+Invoke-Expression $migrationText
+Invoke-Expression $transactionText
 
 $ExpectedRemoteUrl = 'https://github.com/theEvgene/task-runner.git'
 $ExpectedPatRemoteUrl = 'https://github.com/theEvgene/personal-agent-toolkit.git'
@@ -144,9 +147,26 @@ try {
     $pat = New-FixtureCheckout (Join-Path $scratch 'pat') $ExpectedPatRemoteUrl
     Add-FixtureSkill $pat 'skills/t-bank/lenovo-release' 'lenovo-release' 'see scripts/release/request.py'
     $patTarget = Join-Path $pat 'skills\t-bank\lenovo-release'
-    $patProof = [pscustomobject]@{ frontmatterName = 'lenovo-release'; bodyMustContain = 'scripts/release/request.py' }
+    $patProof = [pscustomobject]@{
+        frontmatterName = 'lenovo-release'
+        bodyMustContain = 'scripts/release/request.py'
+        targetRelativePath = 'skills/t-bank/lenovo-release'
+    }
     Assert-True (Test-PatOwnership -TargetDir $patTarget -Proof $patProof) 'PAT ownership still proven by text+remote'
     Assert-True (-not (Test-ManagedJunctionFromSameRepository -ExistingTarget $patTarget -SkillName 'lenovo-release')) 'PAT checkout is not same-repo'
+
+    # 11. Exact PAT path is required; swapping its junction retains source content.
+    $wrongPatProof = [pscustomobject]@{
+        frontmatterName = 'lenovo-release'
+        bodyMustContain = 'scripts/release/request.py'
+        targetRelativePath = 'skills/elsewhere/lenovo-release'
+    }
+    Assert-True (-not (Test-PatOwnership -TargetDir $patTarget -Proof $wrongPatProof)) 'PAT target path mismatch rejected'
+    $patLink = Join-Path $dest 'lenovo-release'
+    New-Item -ItemType Junction -Path $patLink -Target $patTarget | Out-Null
+    Remove-ManagedJunctionSafely -Path $patLink -ExpectedTarget ([System.IO.Path]::GetFullPath($patTarget))
+    Assert-True (-not (Test-Path -LiteralPath $patLink)) 'PAT junction removed for migration'
+    Assert-True (Test-Path -LiteralPath (Join-Path $patTarget 'SKILL.md') -PathType Leaf) 'PAT source retained after junction removal'
 }
 finally {
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue

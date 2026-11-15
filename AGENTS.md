@@ -16,7 +16,7 @@ Externally invoked agents start here explicitly; this repo assumes no global aut
 - Run the full Dell-to-Lenovo dev loop (base, local work, publish, readback) -> `docs/dell-lan.md`.
 - Transfer one branch to Lenovo without publication, or publish a branch that already exists there -> `docs/dell-lan-standalone.md` (drivers `lenovo_transfer.py`, `lenovo_publish_existing.py`; combined `publish` route in `docs/dell-lan.md` unchanged).
 - Release on Lenovo through the signed queue (bare preview; versioned tag only with explicit version plus explicit confirmation) -> `docs/release.md` + `scripts/release/request.py` (single canonical release entry; `docs/release-tag-preview.md` stays in the tree as legacy and is not an entry).
-- Install the standalone `release` skill links (managed junctions under `~/.agents/skills`, never overwriting foreign entries) -> `skills/release/SKILL.md` + `skills/release/scripts/install.ps1` (old `lenovo-release` migrates only with explicit opt-in on proven ownership).
+- Install this repository's skill links (managed junctions under `~/.agents/skills`, never overwriting foreign entries) -> `skills/release/SKILL.md` + `skills/release/scripts/install.ps1` (PAT-owned links migrate only with explicit opt-in and exact ownership proof).
 
 Corporate routing and the signed queue apply where those docs state them. Do not pass secrets through task scripts, and rely only on guarantees those docs state.
 
@@ -45,3 +45,9 @@ One file must not exceed ~5,500 tokens (staged guard in pre-commit). See `docs/a
 ### Release
 
 Standalone-installable `release` skill (preview-first Lenovo release pointer, managed junctions, opt-in old-link migration). See `skills/release/SKILL.md`.
+
+### LAN operations
+
+Repository-owned pointers for the canonical Dell development and signed bridge
+flows live in `skills/dell-lan-local-dev/SKILL.md` and
+`skills/lan-task-bridge/SKILL.md`.

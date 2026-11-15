@@ -1,16 +1,14 @@
-<#
-Pinned skill installer: refuses on dirty checkout, resolves locally, no
-fetch. Foreign entries fail before the checkout moves; HEAD/branch
-restored on later failure. Same-repo junctions retarget (proof +
-re-check); old 'lenovo-release' only with -AllowOldLinkMigration AND
-proven PAT ownership. Receipt: task-runner/skill-rollout@1.
-#>
+<# Pinned local-only installer. Foreign entries refuse; owned junction and
+checkout mutations roll back. Receipt: task-runner/skill-rollout@1. #>
 [CmdletBinding()]
 param(
     [string]$Revision = 'origin/main',
     [string]$SkillsDirectory = (Join-Path $HOME '.agents\skills'),
     [string]$ReceiptPath = '',
-    [switch]$AllowOldLinkMigration
+    [switch]$AllowOldLinkMigration,
+    [string]$CheckoutPath = '',
+    [ValidateSet('', 'after-junction-removal', 'before-readback')]
+    [string]$TestFailureStage = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -120,32 +118,6 @@ function Get-ExpectedSkillPath {
     return Get-NormalizedPath -Path (Join-Path $checkout ($Relative -replace '/', [System.IO.Path]::DirectorySeparatorChar))
 }
 
-function Test-OldPointerContent {
-    param([Parameter(Mandatory)][string]$TargetDir, [Parameter(Mandatory)][object]$Proof)
-
-    $candidate = Join-Path $TargetDir 'SKILL.md'
-    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $false }
-    $text = (Get-Content -LiteralPath $candidate -Raw -Encoding UTF8) -replace "`r`n", "`n"
-    if ($text -notmatch '(?s)\A---\n(.*?)\n---(\n|\Z)') { return $false }
-    if ($Matches[1] -notmatch "(?m)^name:\s*$([regex]::Escape([string]$Proof.frontmatterName))\s*$") { return $false }
-    return $text.Contains([string]$Proof.bodyMustContain)
-}
-
-function Get-CheckoutProof {
-    param([Parameter(Mandatory)][string]$TargetDir)
-    # $null means "not proven".
-    $ErrorActionPreference = 'Continue'
-    $top = @(git '-C' $TargetDir 'rev-parse' '--show-toplevel' 2>&1)
-    if ($LASTEXITCODE -ne 0 -or @($top).Count -eq 0) { return $null }
-    $root = "$($top[0])".Trim()
-    if ([string]::IsNullOrWhiteSpace($root)) { return $null }
-    $url = @(git '-C' $root 'remote' 'get-url' 'origin' 2>&1)
-    if ($LASTEXITCODE -ne 0 -or @($url).Count -eq 0) { return $null }
-    $remote = "$($url[0])".Trim()
-    if ([string]::IsNullOrWhiteSpace($remote)) { return $null }
-    return [pscustomobject]@{ root = $root; remote = $remote }
-}
-
 function Get-DestinationEntry {
     param([Parameter(Mandatory)][string]$Directory, [Parameter(Mandatory)][string]$Name)
     return Get-ChildItem -Force -LiteralPath $Directory -ErrorAction SilentlyContinue |
@@ -153,14 +125,8 @@ function Get-DestinationEntry {
         Select-Object -First 1
 }
 
-function Test-PatOwnership {
-    param([Parameter(Mandatory)][string]$TargetDir, [Parameter(Mandatory)][object]$Proof)
-    # Pointer text AND a personal-agent-toolkit origin are required.
-    if (-not (Test-OldPointerContent -TargetDir $TargetDir -Proof $Proof)) { return $false }
-    $proof = Get-CheckoutProof -TargetDir $TargetDir
-    if ($null -eq $proof) { return $false }
-    return (Test-EquivalentRemote -Actual $proof.remote -Expected $ExpectedPatRemoteUrl)
-}
+. (Join-Path $PSScriptRoot 'migration.ps1')
+. (Join-Path $PSScriptRoot 'junction-transaction.ps1')
 
 function Test-ManagedJunctionFromSameRepository {
     param([Parameter(Mandatory)][string]$ExistingTarget, [Parameter(Mandatory)][string]$SkillName)
@@ -175,18 +141,6 @@ function Test-ManagedJunctionFromSameRepository {
     if ($parts.Count -lt 1 -or $parts.Count -gt 2) { return $false }
     if (-not [string]::Equals($parts[-1], $SkillName, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
     return (Test-Path -LiteralPath (Join-Path $skillPath 'SKILL.md') -PathType Leaf)
-}
-
-function Remove-ManagedJunctionSafely {
-    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$ExpectedTarget)
-
-    $current = Get-Item -Force -LiteralPath $Path
-    $currentTarget = Get-JunctionTarget -Item $current
-    if (-not $currentTarget -or -not [string]::Equals($currentTarget, $ExpectedTarget,
-        [System.StringComparison]::OrdinalIgnoreCase)) {
-        Stop-Install 'migration-unsafe' 'target-changed' "Managed junction '$Path' changed; left unchanged."
-    }
-    [System.IO.Directory]::Delete($current.FullName, $false)
 }
 
 function Read-Readback {
@@ -241,13 +195,21 @@ $conflicts = [System.Collections.Generic.List[string]]::new()
 $retargeted = [System.Collections.Generic.List[string]]::new()
 $migrated = [System.Collections.Generic.List[string]]::new()
 $leftUnchanged = [System.Collections.Generic.List[string]]::new()
+$migrations = @()
+$junctionInventory = New-JunctionInventory
+$junctionRollback = 'none'
+$junctionRollbackReadback = $null
 
 try {
     if ([string]::IsNullOrWhiteSpace($Revision)) {
         Stop-Install 'revision-missing' 'revision-required' 'A -Revision is required.'
     }
 
-    $checkout = Get-NormalizedPath -Path (Join-Path $PSScriptRoot '..\..\..')
+    $checkout = if ([string]::IsNullOrWhiteSpace($CheckoutPath)) {
+        Get-NormalizedPath -Path (Join-Path $PSScriptRoot '..\..\..')
+    } else {
+        Get-NormalizedPath -Path $CheckoutPath
+    }
     $inside = Invoke-RepoGit @('rev-parse', '--is-inside-work-tree')
     if ($inside.code -ne 0 -or @($inside.lines).Count -eq 0 -or $inside.lines[0].Trim() -ne 'true') {
         Stop-Install 'checkout-invalid' 'not-a-git-checkout' "Not a Git working tree: $checkout"
@@ -280,6 +242,7 @@ try {
     }
     $pinned = $resolved.lines[0].Trim()
     $skills = Get-PinnedSkills -Commit $pinned
+    $migrations = Get-PinnedMigrations -Commit $pinned
     $stages.Add([pscustomobject]@{ name = 'preflight'; status = 'passed' })
 
     # Doomed installs fail before the checkout moves; install re-checks.
@@ -292,7 +255,10 @@ try {
             if ($existing) {
                 $t = Get-JunctionTarget -Item $existing
                 $same = $t -and [string]::Equals($t, $sourcePath, [System.StringComparison]::OrdinalIgnoreCase)
-                if (-not $same -and -not ($t -and (Test-ManagedJunctionFromSameRepository -ExistingTarget $t -SkillName $skill.name))) {
+                $patRule = Get-SameNamePatMigration -Name $skill.name -Migrations $migrations
+                $patOwned = $AllowOldLinkMigration -and $t -and $patRule -and
+                    (Test-PatOwnership -TargetDir $t -Proof $patRule.ownershipProof)
+                if (-not $same -and -not $patOwned -and -not ($t -and (Test-ManagedJunctionFromSameRepository -ExistingTarget $t -SkillName $skill.name))) {
                     $preflightConflicts.Add($skill.name)
                 }
             }
@@ -329,34 +295,34 @@ try {
             }
             if ($existingTarget -and (Test-ManagedJunctionFromSameRepository -ExistingTarget $existingTarget -SkillName $skill.name)) {
                 # Guard re-reads before deleting; a changed link refuses.
-                Remove-ManagedJunctionSafely -Path (Join-Path $SkillsDirectory $existing.Name) -ExpectedTarget $existingTarget
-                New-Item -ItemType Junction -Path (Join-Path $SkillsDirectory $skill.name) -Target $sourcePath | Out-Null
+                Set-ManagedJunction -Inventory $junctionInventory -Path (Join-Path $SkillsDirectory $existing.Name) -ExpectedTarget $existingTarget -NewTarget $sourcePath -FailureStage $TestFailureStage
                 $connected.Add($skill.name)
                 $retargeted.Add($skill.name)
+                continue
+            }
+            $patRule = Get-SameNamePatMigration -Name $skill.name -Migrations $migrations
+            if ($AllowOldLinkMigration -and $existingTarget -and $patRule -and
+                (Test-PatOwnership -TargetDir $existingTarget -Proof $patRule.ownershipProof)) {
+                Set-ManagedJunction -Inventory $junctionInventory -Path (Join-Path $SkillsDirectory $existing.Name) -ExpectedTarget $existingTarget -NewTarget $sourcePath -FailureStage $TestFailureStage
+                $connected.Add($skill.name); $migrated.Add($existing.Name)
                 continue
             }
             $conflicts.Add($skill.name)
             Write-Warning "Conflict for '$($skill.name)': not our junction; Left unchanged."
             continue
         }
-        New-Item -ItemType Junction -Path (Join-Path $SkillsDirectory $skill.name) -Target $sourcePath | Out-Null
+        Set-ManagedJunction -Inventory $junctionInventory -Path (Join-Path $SkillsDirectory $skill.name) -NewTarget $sourcePath -FailureStage $TestFailureStage
         $connected.Add($skill.name)
     }
 
     # Old-name migration: opt-in + proven PAT ownership.
-    $manifestPath = Join-Path $checkout 'skills\release\migrations.json'
-    try {
-        $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $migrations = @($manifest.migrations)
-    } catch {
-        $migrations = @()
-        Write-Warning 'Migrations manifest unreadable: old links left unchanged.'
-    }
     foreach ($migration in $migrations) {
         $newSource = Join-Path $checkout (Join-Path 'skills' (([string]$migration.skill) -replace '/', '\'))
         if (-not (Test-Path -LiteralPath (Join-Path $newSource 'SKILL.md') -PathType Leaf)) { continue }
         $oldName = [string]$migration.fromSkill
         if ([string]::IsNullOrWhiteSpace($oldName)) { continue }
+        $newName = @(([string]$migration.skill) -split '/')[-1]
+        if ([string]::Equals($oldName, $newName, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
         $oldEntry = Get-DestinationEntry -Directory $SkillsDirectory -Name $oldName
         if (-not $oldEntry) { continue }
         $oldTarget = Get-JunctionTarget -Item $oldEntry
@@ -366,7 +332,7 @@ try {
             continue
         }
         if (-not $AllowOldLinkMigration) { $leftUnchanged.Add($oldName); continue }
-        Remove-ManagedJunctionSafely -Path (Join-Path $SkillsDirectory $oldEntry.Name) -ExpectedTarget $oldTarget
+        Remove-ManagedJunctionTransactionally -Inventory $junctionInventory -Path (Join-Path $SkillsDirectory $oldEntry.Name) -ExpectedTarget $oldTarget -FailureStage $TestFailureStage
         $migrated.Add($oldEntry.Name)
     }
     if ($conflicts.Count -gt 0) {
@@ -375,6 +341,9 @@ try {
     $stages.Add([pscustomobject]@{ name = 'install'; status = 'passed' })
 
     $currentStage = 'readback'
+    if ($TestFailureStage -eq 'before-readback') {
+        Stop-Install 'injected-failure' 'before-readback' 'Injected failure before readback.'
+    }
     $verification = Read-Readback
     if (-not $verification.verified) {
         $problems = @()
@@ -410,6 +379,16 @@ try {
             if ($now -ne $headBefore -and $now -ne '') { $mutation = 'installed-checkout-unexpected-head' }
         } catch { }
     }
+    if ($junctionInventory.Count -gt 0) {
+        try {
+            Restore-JunctionInventory -Inventory $junctionInventory -GetTarget ${function:Get-JunctionTarget}
+            $junctionRollback = 'restored'
+            $junctionRollbackReadback = [pscustomobject]@{ restored = $true; entries = $junctionInventory.Count }
+        } catch {
+            $junctionRollback = 'restore-failed'
+            $junctionRollbackReadback = [pscustomobject]@{ restored = $false; entries = $junctionInventory.Count; message = $_.Exception.Message }
+        }
+    }
     if ($mutation -ne 'none' -and $headBefore.Trim()) {
         # Clean start: restoring HEAD/branch is safe.
         try {
@@ -423,7 +402,7 @@ try {
             }
         } catch { $rollback = 'restore-failed' }
     }
-    $failureAction = if ($rollback -eq 'restore-failed') { 'manual-repair' } elseif ($mutation -ne 'none' -and $rollback -eq 'none') { 'manual-repair' } elseif ($reason -eq 'readback-mismatch') { 'rerun-install' } else { 'none' }
+    $failureAction = if ($rollback -eq 'restore-failed' -or $junctionRollback -eq 'restore-failed') { 'manual-repair' } elseif ($mutation -ne 'none' -and $rollback -eq 'none') { 'manual-repair' } elseif ($reason -eq 'readback-mismatch') { 'rerun-install' } else { 'none' }
     $failure = [pscustomobject]@{ reason = $reason; code = $code; message = $_.Exception.Message }
 }
 
@@ -445,6 +424,8 @@ $receipt = [ordered]@{
     verification = $verification
     mutation = $mutation
     rollback = $rollback
+    junctionRollback = $junctionRollback
+    junctionRollbackReadback = $junctionRollbackReadback
     failureAction = $failureAction
     failure = $failure
 }
