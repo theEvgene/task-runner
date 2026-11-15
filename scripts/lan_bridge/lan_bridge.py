@@ -354,8 +354,15 @@ def submit_job(queue_dir: str, key: bytes, command: str,
                working_directory: str, timeout_seconds: int = 300,
                max_output_bytes: int = 65536,
                return_files: list | None = None, dialect=None,
-               receipt_script_path: str | None = None) -> str:
-    """Seal the command payload and publish it immutably; return the job id."""
+               receipt_script_path: str | None = None,
+               resource_claims: list | None = None) -> str:
+    """Seal the command payload and publish it immutably; return the job id.
+
+    ``resource_claims`` publishes the signed reservation together with the
+    job under the queue-local referee; conflicts refuse before publication.
+    Without claims the legacy path is unchanged.
+    """
+
     _syn.enforce(command, dialect, BridgeError)
     job_id = generate_job_id()
     payload = build_job_payload(job_id=job_id, command=command,
@@ -364,7 +371,12 @@ def submit_job(queue_dir: str, key: bytes, command: str,
                                 max_output_bytes=max_output_bytes,
                                 return_files=return_files, dialect=dialect,
                                 receipt_script_path=receipt_script_path)
-    publish(str(Path(queue_dir) / "jobs"), job_id, seal(payload, key))
+    if resource_claims is None:
+        publish(str(Path(queue_dir) / "jobs"), job_id, seal(payload, key))
+        return job_id
+    from managed_write import publish_reserved
+    publish_reserved(Path(queue_dir), key, sys.modules[__name__], payload,
+                     resource_claims)
     return job_id
 
 
@@ -438,7 +450,8 @@ def cmd_submit(args: argparse.Namespace) -> int:
         job_id = submit_job(args.queue, key, command, args.cwd,
                             int(args.timeout), int(args.max_output),
                             return_files, args.dialect,
-                            args.receipt_script_path)
+                            args.receipt_script_path,
+                            resource_claims=args.claim)
     except (BridgeError, ValueError, TypeError,
             FileQueueError, ProtocolError) as e:
         print(f"submit refused: {e}", file=sys.stderr)
@@ -511,6 +524,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--receipt-script-path", default=None,
         help="absolute intended receipt-producing script path, sealed into the job",
     )
+    p_submit.add_argument("--claim", action="append",
+                          help="managed-write footprint (repeatable)")
     _syn.add_cli(p_submit)
     p_submit.set_defaults(func=cmd_submit)
 

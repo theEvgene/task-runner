@@ -8,25 +8,26 @@ results. Missing queue infrastructure and unsealed results fail closed.
 from __future__ import annotations
 
 import argparse
-import base64
+import hashlib
 import importlib.util
 import json
 import os
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import job_lifecycle
+import job_ownership
+import job_reconciliation
+import job_reservations
+import job_resources
+import job_results
+
 WORKER_SCHEMA = "lenovo-worker/1"
-ID_SUFFIX = ".json"
-# Return-file bounds: the job contract allows any declared path (same as the
-# signed bridge's --return-file), but each file and their total are capped so
-# the sealed envelope stays within protocol limits. Truncation is reported in
-# output_truncated; sealing failures are reported, never claimed as sealed.
-RETURN_FILES_MAX_COUNT = 8
-RETURN_FILE_MAX_BYTES = 262144
-RETURN_FILES_MAX_TOTAL_BYTES = 1048576
+_SYSTEM_SUBPROCESS_RUN = subprocess.run
 
 
 def _load_bridge() -> object:
@@ -170,46 +171,6 @@ def _load_key(key_file: Path, key_format: str, queue: Path) -> bytes | None:
         return None
 
 
-# Envelope budget: the signed bridge refuses envelopes over 2 MiB. The
-# sealed payload is base64-expanded (~4/3) inside the envelope, so the payload
-# JSON must stay well under ~1.5 MiB. Fit outputs + encoded files to this
-# safe payload ceiling before sealing; on a size refusal seal a minimal
-# fallback so the job ends terminal instead of re-executing every poll.
-PAYLOAD_SAFE_MAX_BYTES = 1400000
-MIN_FALLBACK_STDERR = "result too large; outputs dropped to fit the signed envelope"
-
-
-def _payload_size(payload: dict) -> int:
-    try:
-        return len(json.dumps(payload, ensure_ascii=False,
-                              separators=(",", ":")).encode("utf-8"))
-    except (TypeError, ValueError):
-        return PAYLOAD_SAFE_MAX_BYTES + 1
-
-
-def _fit_payload(payload: dict) -> dict:
-    """Trim payload in place so its JSON stays under the safe ceiling."""
-    if _payload_size(payload) <= PAYLOAD_SAFE_MAX_BYTES:
-        return payload
-    if payload.get("files"):
-        payload["files"] = {}
-        payload["output_truncated"] = True
-    if _payload_size(payload) <= PAYLOAD_SAFE_MAX_BYTES:
-        return payload
-    for budget in (65536, 16384, 4096, 0):
-        if budget == 0:
-            payload["stdout"] = ""
-            payload["stderr"] = MIN_FALLBACK_STDERR[:4096]
-            payload["output_truncated"] = True
-            break
-        payload["stdout"] = str(payload.get("stdout") or "")[:budget]
-        payload["stderr"] = str(payload.get("stderr") or "")[:budget]
-        payload["output_truncated"] = True
-        if _payload_size(payload) <= PAYLOAD_SAFE_MAX_BYTES:
-            break
-    return payload
-
-
 def _seal_result(queue: Path, key: bytes, job_id: str, **fields) -> str:
     """Seal a result. Returns "sealed", "skipped", or "failed"."""
 
@@ -225,7 +186,12 @@ def _seal_result(queue: Path, key: bytes, job_id: str, **fields) -> str:
         "output_truncated": bool(fields.get("output_truncated", False)),
         "files": fields.get("files", {}) or {},
     }
-    _fit_payload(payload)
+    for name in ("termination", "signal", "process_exit_code"):
+        if fields.get(name) is not None:
+            payload[name] = fields[name]
+    if fields.get("reconciliation") is not None:
+        payload["reconciliation"] = fields["reconciliation"]
+    job_results.fit_payload(payload)
     try:
         bridge.publish(str(queue / "results"), job_id, bridge.seal(payload, key))
         return "sealed"
@@ -239,7 +205,7 @@ def _seal_result(queue: Path, key: bytes, job_id: str, **fields) -> str:
             fallback = {
                 "kind": "result", "id": job_id, "status": "error",
                 "exit_code": 2, "stdout": "",
-                "stderr": MIN_FALLBACK_STDERR,
+                "stderr": job_results.MIN_FALLBACK_STDERR,
                 "started_at": payload.get("started_at", "") or "",
                 "finished_at": _now(), "timed_out": False,
                 "output_truncated": True, "files": {},
@@ -259,7 +225,7 @@ def _seal_result(queue: Path, key: bytes, job_id: str, **fields) -> str:
 
 
 def _execute(command: str, workdir: str, timeout_s: int, limit: int,
-             dialect: str | None = None) -> dict:
+             dialect: str | None = None, on_start=None) -> dict:
     started = _now()
     try:
         effective = _effective_command(command, dialect)
@@ -270,16 +236,26 @@ def _execute(command: str, workdir: str, timeout_s: int, limit: int,
                 "started_at": started, "timed_out": False,
                 "output_truncated": len(detail) > limit}
     try:
-        proc = subprocess.run(
-            effective, shell=True, cwd=workdir, capture_output=True,
-            text=True, encoding="utf-8", errors="replace", timeout=timeout_s, check=False,
-        )
-    except subprocess.TimeoutExpired as error:
-        out = (error.stdout or "") if isinstance(error.stdout, str) else ""
-        err = (error.stderr or "") if isinstance(error.stderr, str) else ""
-        return {"status": "error", "exit_code": 124,
-                "stdout": out[:limit], "stderr": (f"timed out on the worker after {timeout_s}s\n" + err)[:limit],
-                "started_at": started, "timed_out": True, "output_truncated": len(out) > limit}
+        if subprocess.run is _SYSTEM_SUBPROCESS_RUN:
+            outcome = job_lifecycle.execute(
+                effective, workdir, timeout_s, limit, on_start=on_start)
+        else:
+            proc = subprocess.run(
+                effective, shell=True, cwd=workdir, capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=timeout_s, check=False)
+            stdout, stderr = proc.stdout or "", proc.stderr or ""
+            outcome = {
+                "status": "ok" if proc.returncode == 0 else "error",
+                "exit_code": proc.returncode, "process_exit_code": proc.returncode,
+                "termination": "exit", "signal": None,
+                "stdout": stdout[:limit], "stderr": stderr[:limit],
+                "timed_out": False,
+                "output_truncated": (len(stdout) > limit
+                                     or len(stderr) > limit),
+            }
+    except job_lifecycle.TreeTerminationUnknown:
+        raise
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         # Invalid cwd, spawn failure, or OS refusal: a bounded terminal
         # error, never a crash and never a silent re-execution.
@@ -294,54 +270,14 @@ def _execute(command: str, workdir: str, timeout_s: int, limit: int,
                 "stdout": "", "stderr": detail[:limit],
                 "started_at": started, "timed_out": False,
                 "output_truncated": len(detail) > limit}
-    stdout, stderr = proc.stdout or "", proc.stderr or ""
-    return {"status": "ok" if proc.returncode == 0 else "error",
-            "exit_code": proc.returncode,
-            "stdout": stdout[:limit], "stderr": stderr[:limit],
-            "started_at": started, "timed_out": False,
-            "output_truncated": len(stdout) > limit or len(stderr) > limit}
+    outcome["started_at"] = started
+    outcome.pop("elapsed_seconds", None)
+    return outcome
 
 
-def _collect_return_files(declared: list, limit_files: int = RETURN_FILES_MAX_COUNT,
-                          limit_each: int = RETURN_FILE_MAX_BYTES,
-                          limit_total: int = RETURN_FILES_MAX_TOTAL_BYTES,
-                          ) -> tuple[dict, bool]:
-    """Collect declared return files with byte bounds. Returns (files, truncated).
-
-    Any declared path is honored (the bridge contract puts no path
-    restriction on --return-file); only size is bounded.
-    """
-
-    files: dict[str, str] = {}
-    total = 0
-    truncated = False
-    for raw in (declared or [])[:limit_files]:
-        try:
-            path = Path(str(raw))
-        except (ValueError, TypeError):
-            continue
-        try:
-            if not path.is_file():
-                continue
-            with path.open("rb") as handle:
-                data = handle.read(limit_each + 1)
-        except OSError:
-            continue
-        if len(data) > limit_each:
-            data = data[:limit_each]
-            truncated = True
-        if total + len(data) > limit_total:
-            truncated = True
-            break
-        total += len(data)
-        files[str(path)] = base64.b64encode(data).decode("ascii")
-    if isinstance(declared, list) and len(declared) > limit_files:
-        truncated = True
-    return files, truncated
-
-
-def _run_one(queue: Path, key: bytes, job_id: str) -> str:
-    """Process one job id. Returns: sealed | skipped | refused | failed."""
+def _prepare_job(queue: Path, key: bytes,
+                 job_id: str) -> job_ownership.PreparedJob | str:
+    """Verify one envelope without claiming or starting its side effect."""
 
     try:
         raw = bridge.read(str(queue / "jobs"), job_id)
@@ -371,63 +307,144 @@ def _run_one(queue: Path, key: bytes, job_id: str) -> str:
     if not (1 <= timeout_s <= 3600 and 1 <= limit <= 262144):
         return _seal_result(queue, key, job_id, status="error", exit_code=2,
                             stderr="job-unverifiable: timeout/max_output out of range")
+    declared = job.get("return_files")
+    return_files_invalid = not isinstance(declared, list)
+    if not isinstance(declared, list):
+        declared = []
     try:
-        outcome = _execute(command, workdir, timeout_s, limit, dialect)
-    except Exception:  # _execute is total, but stay terminal anyway
+        workdir_resource = job_lifecycle.resource_identity(workdir)
+    except (OSError, ValueError, RuntimeError):
+        workdir_resource = f"working-directory:invalid:{job_id}"
+    try:
+        fallback = job_resources.build_resources(job, workdir_resource)
+    except job_resources.ResourceRefused as error:
+        return _seal_result(
+            queue, key, job_id, status="error", exit_code=2,
+            stderr=f"job-unverifiable: {error}")
+    envelope_sha256 = hashlib.sha256(raw).hexdigest()
+    try:
+        reservation = job_reservations.read(
+            queue, key, bridge, job_id, envelope_sha256)
+        resources = (
+            fallback if reservation is None
+            else job_reservations.authoritative_resources(
+                reservation, workdir_resource))
+    except job_reservations.ReservationRefused as error:
+        # A present-but-unprovable reservation is not a fallback: the
+        # producer asked for parallel admission and the proof failed.
+        return _seal_result(
+            queue, key, job_id, status="error", exit_code=2,
+            stderr=f"job-unverifiable: {error}")
+    return job_ownership.PreparedJob(
+        job_id=job_id, command=command, workdir=workdir,
+        timeout_seconds=timeout_s, output_limit=limit, dialect=dialect,
+        return_files=declared, return_files_invalid=return_files_invalid,
+        resources=resources, envelope_sha256=envelope_sha256)
+
+
+def _claim_job(queue: Path, prepared: job_ownership.PreparedJob,
+               key: bytes, owner_id: str,
+               generation: str | None = None) -> str:
+    return job_ownership.claim_job(
+        queue, prepared, owner_id, bridge, key, _now, generation)
+
+
+def _run_prepared(queue: Path, key: bytes,
+                  prepared: job_ownership.PreparedJob,
+                  generation: str) -> str:
+    """Execute an already claimed job and settle it with one signed result."""
+
+    def _record_start(child_pid: int) -> None:
+        claim = job_ownership.read_claim(queue, prepared, bridge, key)
+        if claim.get("generation") != generation:
+            raise job_lifecycle.TreeTerminationUnknown(
+                "claim generation changed before spawn; "
+                "child tree unproven")
+        job_ownership.publish_start(
+            queue, prepared, claim["owner"], generation, int(child_pid),
+            bridge, key, _now)
+
+    try:
+        outcome = _execute(
+            prepared.command, prepared.workdir, prepared.timeout_seconds,
+            prepared.output_limit, prepared.dialect, on_start=_record_start)
+    except job_lifecycle.TreeTerminationUnknown as error:
+        print(f"worker: job {prepared.job_id} remains owned/unknown "
+              f"({error})", file=sys.stderr)
+        return "unknown"
+    except Exception:  # _execute is otherwise total, but stay terminal anyway
         outcome = {"status": "error", "exit_code": 2, "stdout": "",
-                   "stderr": "execution failed on the worker"[:limit],
+                   "stderr": "execution failed on the worker"[
+                       :prepared.output_limit],
                    "started_at": _now(), "timed_out": False,
                    "output_truncated": False}
     try:
-        declared = job.get("return_files")
-        if not isinstance(declared, list):
-            declared = []
-            files_truncated = bool(job.get("return_files"))
-        else:
-            returned, files_truncated = _collect_return_files(declared)
-            outcome["files"] = returned
-            outcome["output_truncated"] = outcome["output_truncated"] or files_truncated
-            return _seal_result(queue, key, job_id, **outcome)
-        returned, _ = _collect_return_files(declared)
+        returned, files_truncated = job_results.collect_return_files(
+            prepared.return_files)
         outcome["files"] = returned
-        outcome["output_truncated"] = outcome.get("output_truncated", False) or files_truncated
+        outcome["output_truncated"] = (
+            outcome.get("output_truncated", False) or files_truncated
+            or prepared.return_files_invalid)
     except Exception:  # return-file walk must never crash/re-execute
         outcome["files"] = {}
         outcome["output_truncated"] = True
         outcome["stderr"] = (str(outcome.get("stderr") or "")
-                             + "\nreturn-files skipped")[:limit]
-    return _seal_result(queue, key, job_id, **outcome)
+                             + "\nreturn-files skipped")[
+                                 :prepared.output_limit]
+    sealed = _seal_result(queue, key, prepared.job_id, **outcome)
+    if sealed not in ("sealed", "skipped"):
+        return sealed
+    return job_reconciliation.publish_release(
+        queue, key, prepared, generation, bridge, _now)
 
 
-def _pending(queue: Path, key: bytes) -> list[str]:
-    jobs_dir, results_dir = queue / "jobs", queue / "results"
-    try:
-        names = sorted(p.name for p in jobs_dir.iterdir() if p.is_file() and p.name.endswith(ID_SUFFIX))
-    except OSError as error:
-        print(f"worker: cannot list jobs ({error})", file=sys.stderr)
-        return []
-    pending: list[str] = []
-    for name in names:
-        job_id = name[: -len(ID_SUFFIX)]
-        if len(job_id) != 32 or any(c not in "0123456789abcdef" for c in job_id):
-            continue
-        if (results_dir / name).exists():
-            continue  # sealed already: never touch foreign results
-        pending.append(job_id)
-    return pending
+def _run_one(queue: Path, key: bytes, job_id: str) -> str:
+    """Claim and process one job id without any automatic claim recovery."""
+
+    prepared = _prepare_job(queue, key, job_id)
+    if isinstance(prepared, str):
+        return prepared
+    generation = uuid.uuid4().hex
+    claimed = _claim_job(
+        queue, prepared, key, uuid.uuid4().hex, generation)
+    if claimed != "claimed":
+        return claimed
+    return _run_prepared(queue, key, prepared, generation)
 
 
-def run_once(queue: Path, key: bytes) -> dict:
+def run_once(queue: Path, key: bytes, max_active: int = 1) -> dict:
+    """Run one bounded batch."""
+
+    if isinstance(max_active, bool) or not 1 <= int(max_active) <= 2:
+        raise ValueError("max_active must be 1 or 2")
     counts = {"sealed": 0, "skipped": 0, "refused": 0, "failed": 0}
-    for job_id in _pending(queue, key):
-        counts[_run_one(queue, key, job_id)] += 1
+    waiting: list[job_ownership.PreparedJob] = []
+    for job_id in job_ownership.pending(queue):
+        prepared = _prepare_job(queue, key, job_id)
+        if isinstance(prepared, str):
+            counts[prepared] += 1
+        else:
+            waiting.append(prepared)
+
+    owner_id = uuid.uuid4().hex
+    generations: dict[str, str] = {}
+
+    def claim(prepared: job_ownership.PreparedJob) -> str:
+        generation = uuid.uuid4().hex
+        outcome = _claim_job(
+            queue, prepared, key, owner_id, generation)
+        if outcome == "claimed":
+            generations[prepared.job_id] = generation
+        return outcome
+
+    outcomes = job_ownership.run_bounded(
+        waiting, int(max_active),
+        claim,
+        lambda prepared: _run_prepared(
+            queue, key, prepared, generations[prepared.job_id]))
+    for outcome, count in outcomes.items():
+        counts[outcome] = counts.get(outcome, 0) + count
     return counts
-
-
-def _batch_exit(counts: dict) -> int:
-    """A finished batch fails when any job was refused or never sealed."""
-
-    return 2 if (counts.get("refused") or counts.get("failed")) else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -439,6 +456,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poll", type=float, default=5.0)
     parser.add_argument("--once", action="store_true", help="single scan, then exit 0")
     parser.add_argument("--max-jobs", type=int, default=0, help="0 means no bound")
+    parser.add_argument(
+        "--max-active", type=int, default=1, choices=(1, 2),
+        help="2 requires isolation proof")
+    parser.add_argument("--reconcile-id", default=None)
+    parser.add_argument("--reconcile-proof", default=None)
     return parser
 
 
@@ -457,21 +479,33 @@ def main(argv: list[str] | None = None) -> int:
     key = _load_key(key_file, args.key_format, queue)
     if key is None:
         return 2
+    if bool(args.reconcile_id) != bool(args.reconcile_proof):
+        return _fail("reconcile-id and reconcile-proof are required together")
+    if args.reconcile_id:
+        return job_reconciliation.reconcile(
+            queue, key, args.reconcile_id, Path(args.reconcile_proof),
+            bridge, _prepare_job, _seal_result, _now, WORKER_SCHEMA)
     if not isinstance(args.poll, (int, float)) or not 0 < float(args.poll) <= 300:
         return _fail("poll must be within (0, 300] seconds")
     if args.once:
-        counts = run_once(queue, key)
+        counts = run_once(queue, key, args.max_active)
         print(json.dumps({"schema": WORKER_SCHEMA, "mode": "once", **counts}))
-        return _batch_exit(counts)
+        return job_ownership.batch_exit(counts)
     done = 0
     while True:
-        counts = run_once(queue, key)
+        counts = run_once(queue, key, args.max_active)
         done += counts["sealed"]
+        if counts.get("unknown"):
+            return 3
+        if args.max_jobs and (
+                counts.get("owned") or counts.get("unknown")
+                or counts.get("refused") or counts.get("failed")):
+            return job_ownership.batch_exit(counts)
         if args.max_jobs and done >= args.max_jobs:
             break
         time.sleep(float(args.poll))
     if args.max_jobs:
-        return _batch_exit(counts)
+        return job_ownership.batch_exit(counts)
     return 0
 
 
