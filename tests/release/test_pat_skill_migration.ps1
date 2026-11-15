@@ -31,6 +31,7 @@ try {
         'skills\release\migrations.json',
         'skills\release\scripts\install.ps1',
         'skills\release\scripts\migration.ps1',
+        'skills\release\scripts\junction-transaction.ps1',
         'skills\release\scripts\verify-install.ps1',
         'skills\dell-lan-local-dev\SKILL.md',
         'skills\lan-task-bridge\SKILL.md'
@@ -62,6 +63,7 @@ try {
     $output = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass `
         -File (Join-Path $taskRunner 'skills\release\scripts\install.ps1') `
         -Revision $revision -SkillsDirectory $destination -AllowOldLinkMigration 2>&1)
+    if ($LASTEXITCODE -ne 0) { Write-Host ($output -join "`n") }
     Assert-True ($LASTEXITCODE -eq 0) 'installer accepts the proven PAT junctions'
     $receipt = $output[-1] | ConvertFrom-Json
     Assert-True ([bool]$receipt.ok) 'installer receipt is successful'

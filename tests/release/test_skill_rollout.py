@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SKILL_DIR = ROOT / "skills" / "release"
 SKILL_MD = SKILL_DIR / "SKILL.md"
 INSTALL_PS1 = SKILL_DIR / "scripts" / "install.ps1"
+BOOTSTRAP_PS1 = SKILL_DIR / "scripts" / "bootstrap.ps1"
+TRANSACTION_PS1 = SKILL_DIR / "scripts" / "junction-transaction.ps1"
 MIGRATION_PS1 = SKILL_DIR / "scripts" / "migration.ps1"
 VERIFY_PS1 = SKILL_DIR / "scripts" / "verify-install.ps1"
 MANIFEST = SKILL_DIR / "migrations.json"
@@ -73,7 +75,7 @@ class InstallerSafetyTests(unittest.TestCase):
         self.assertIn("Foreign entries left unchanged", body)
 
     def test_old_link_migration_is_opt_in_and_content_proven(self) -> None:
-        body = read_text(INSTALL_PS1) + read_text(MIGRATION_PS1)
+        body = read_text(INSTALL_PS1) + read_text(MIGRATION_PS1) + read_text(MANIFEST)
         self.assertIn("AllowOldLinkMigration", body)
         self.assertIn("lenovo-release", body)
         self.assertIn("migrations.json", body)
@@ -157,6 +159,12 @@ class RemoteNormalizationTests(unittest.TestCase):
 
 
 class CheckoutSafetyTests(unittest.TestCase):
+    def test_old_revision_bootstrap_extracts_pinned_installer(self) -> None:
+        body = read_text(BOOTSTRAP_PS1)
+        self.assertIn("git -C $checkout", body)
+        self.assertIn("show', \"${resolved}:skills/release/scripts/$name\"", body)
+        self.assertIn("-CheckoutPath", body)
+
     def test_conflicts_fail_before_checkout_advance(self) -> None:
         body = read_text(INSTALL_PS1)
         preflight = body.lower().index("before the checkout moves")
@@ -171,6 +179,15 @@ class CheckoutSafetyTests(unittest.TestCase):
         self.assertIn("'restored'", body)
         self.assertIn("'restore-failed'", body)
         self.assertIn("rollback = $rollback", body)
+
+    def test_junction_inventory_is_restored_before_checkout(self) -> None:
+        body = read_text(INSTALL_PS1)
+        restore = body.index("Restore-JunctionInventory")
+        checkout_restore = body.index("$backTo = if ($branchBefore.Trim())")
+        self.assertLess(restore, checkout_restore)
+        transaction = read_text(TRANSACTION_PS1)
+        self.assertIn("Validate the whole owned post-state", transaction)
+        self.assertIn("Junction rollback readback failed", transaction)
 
 
 class PatOwnershipTests(unittest.TestCase):
@@ -214,7 +231,8 @@ class SameRepoRetargetTests(unittest.TestCase):
         # The swap reuses the guard that re-reads the link first.
         install_stage = body.split("$currentStage = 'install'")[1]
         self.assertIn("Test-ManagedJunctionFromSameRepository", install_stage)
-        self.assertIn("Remove-ManagedJunctionSafely", install_stage)
+        self.assertIn("Set-ManagedJunction", install_stage)
+        self.assertIn("Remove-ManagedJunctionSafely", read_text(TRANSACTION_PS1))
 
     def test_preflight_lets_same_repo_through(self) -> None:
         body = read_text(INSTALL_PS1)
@@ -234,7 +252,7 @@ class SameRepoRetargetTests(unittest.TestCase):
         update_lower = update.lower()
         for token in ("preflight", "advance", "install", "readback",
                       "retargetedmanagedlinks", "migration-unsafe",
-                      "rerun", "converges"):
+                      "junctionrollback", "reverse order"):
             self.assertIn(token, update_lower)
         self.assertIn("retargetedManagedLinks", update)
 
@@ -292,7 +310,8 @@ class DiscoveryTests(unittest.TestCase):
 
 class TokenBudgetTests(unittest.TestCase):
     def test_new_files_fit_single_file_budget(self) -> None:
-        for path in (SKILL_MD, INSTALL_PS1, MIGRATION_PS1, VERIFY_PS1,
+        for path in (SKILL_MD, INSTALL_PS1, BOOTSTRAP_PS1, TRANSACTION_PS1,
+                     MIGRATION_PS1, VERIFY_PS1,
                      MANIFEST, UPDATE_MD, Path(__file__),
                      ROOT / "skills" / "dell-lan-local-dev" / "SKILL.md",
                      ROOT / "skills" / "lan-task-bridge" / "SKILL.md"):

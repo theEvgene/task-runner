@@ -1,16 +1,14 @@
-<#
-Pinned skill installer: refuses on dirty checkout, resolves locally, no
-fetch. Foreign entries fail before the checkout moves; HEAD/branch
-restored on later failure. Same-repo junctions retarget (proof +
-re-check); old 'lenovo-release' only with -AllowOldLinkMigration AND
-proven PAT ownership. Receipt: task-runner/skill-rollout@1.
-#>
+<# Pinned local-only installer. Foreign entries refuse; owned junction and
+checkout mutations roll back. Receipt: task-runner/skill-rollout@1. #>
 [CmdletBinding()]
 param(
     [string]$Revision = 'origin/main',
     [string]$SkillsDirectory = (Join-Path $HOME '.agents\skills'),
     [string]$ReceiptPath = '',
-    [switch]$AllowOldLinkMigration
+    [switch]$AllowOldLinkMigration,
+    [string]$CheckoutPath = '',
+    [ValidateSet('', 'after-junction-removal', 'before-readback')]
+    [string]$TestFailureStage = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -128,6 +126,7 @@ function Get-DestinationEntry {
 }
 
 . (Join-Path $PSScriptRoot 'migration.ps1')
+. (Join-Path $PSScriptRoot 'junction-transaction.ps1')
 
 function Test-ManagedJunctionFromSameRepository {
     param([Parameter(Mandatory)][string]$ExistingTarget, [Parameter(Mandatory)][string]$SkillName)
@@ -142,18 +141,6 @@ function Test-ManagedJunctionFromSameRepository {
     if ($parts.Count -lt 1 -or $parts.Count -gt 2) { return $false }
     if (-not [string]::Equals($parts[-1], $SkillName, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
     return (Test-Path -LiteralPath (Join-Path $skillPath 'SKILL.md') -PathType Leaf)
-}
-
-function Remove-ManagedJunctionSafely {
-    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$ExpectedTarget)
-
-    $current = Get-Item -Force -LiteralPath $Path
-    $currentTarget = Get-JunctionTarget -Item $current
-    if (-not $currentTarget -or -not [string]::Equals($currentTarget, $ExpectedTarget,
-        [System.StringComparison]::OrdinalIgnoreCase)) {
-        Stop-Install 'migration-unsafe' 'target-changed' "Managed junction '$Path' changed; left unchanged."
-    }
-    [System.IO.Directory]::Delete($current.FullName, $false)
 }
 
 function Read-Readback {
@@ -209,13 +196,20 @@ $retargeted = [System.Collections.Generic.List[string]]::new()
 $migrated = [System.Collections.Generic.List[string]]::new()
 $leftUnchanged = [System.Collections.Generic.List[string]]::new()
 $migrations = @()
+$junctionInventory = New-JunctionInventory
+$junctionRollback = 'none'
+$junctionRollbackReadback = $null
 
 try {
     if ([string]::IsNullOrWhiteSpace($Revision)) {
         Stop-Install 'revision-missing' 'revision-required' 'A -Revision is required.'
     }
 
-    $checkout = Get-NormalizedPath -Path (Join-Path $PSScriptRoot '..\..\..')
+    $checkout = if ([string]::IsNullOrWhiteSpace($CheckoutPath)) {
+        Get-NormalizedPath -Path (Join-Path $PSScriptRoot '..\..\..')
+    } else {
+        Get-NormalizedPath -Path $CheckoutPath
+    }
     $inside = Invoke-RepoGit @('rev-parse', '--is-inside-work-tree')
     if ($inside.code -ne 0 -or @($inside.lines).Count -eq 0 -or $inside.lines[0].Trim() -ne 'true') {
         Stop-Install 'checkout-invalid' 'not-a-git-checkout' "Not a Git working tree: $checkout"
@@ -301,8 +295,7 @@ try {
             }
             if ($existingTarget -and (Test-ManagedJunctionFromSameRepository -ExistingTarget $existingTarget -SkillName $skill.name)) {
                 # Guard re-reads before deleting; a changed link refuses.
-                Remove-ManagedJunctionSafely -Path (Join-Path $SkillsDirectory $existing.Name) -ExpectedTarget $existingTarget
-                New-Item -ItemType Junction -Path (Join-Path $SkillsDirectory $skill.name) -Target $sourcePath | Out-Null
+                Set-ManagedJunction -Inventory $junctionInventory -Path (Join-Path $SkillsDirectory $existing.Name) -ExpectedTarget $existingTarget -NewTarget $sourcePath -FailureStage $TestFailureStage
                 $connected.Add($skill.name)
                 $retargeted.Add($skill.name)
                 continue
@@ -310,8 +303,7 @@ try {
             $patRule = Get-SameNamePatMigration -Name $skill.name -Migrations $migrations
             if ($AllowOldLinkMigration -and $existingTarget -and $patRule -and
                 (Test-PatOwnership -TargetDir $existingTarget -Proof $patRule.ownershipProof)) {
-                Remove-ManagedJunctionSafely -Path (Join-Path $SkillsDirectory $existing.Name) -ExpectedTarget $existingTarget
-                New-Item -ItemType Junction -Path (Join-Path $SkillsDirectory $skill.name) -Target $sourcePath | Out-Null
+                Set-ManagedJunction -Inventory $junctionInventory -Path (Join-Path $SkillsDirectory $existing.Name) -ExpectedTarget $existingTarget -NewTarget $sourcePath -FailureStage $TestFailureStage
                 $connected.Add($skill.name); $migrated.Add($existing.Name)
                 continue
             }
@@ -319,7 +311,7 @@ try {
             Write-Warning "Conflict for '$($skill.name)': not our junction; Left unchanged."
             continue
         }
-        New-Item -ItemType Junction -Path (Join-Path $SkillsDirectory $skill.name) -Target $sourcePath | Out-Null
+        Set-ManagedJunction -Inventory $junctionInventory -Path (Join-Path $SkillsDirectory $skill.name) -NewTarget $sourcePath -FailureStage $TestFailureStage
         $connected.Add($skill.name)
     }
 
@@ -340,7 +332,7 @@ try {
             continue
         }
         if (-not $AllowOldLinkMigration) { $leftUnchanged.Add($oldName); continue }
-        Remove-ManagedJunctionSafely -Path (Join-Path $SkillsDirectory $oldEntry.Name) -ExpectedTarget $oldTarget
+        Remove-ManagedJunctionTransactionally -Inventory $junctionInventory -Path (Join-Path $SkillsDirectory $oldEntry.Name) -ExpectedTarget $oldTarget -FailureStage $TestFailureStage
         $migrated.Add($oldEntry.Name)
     }
     if ($conflicts.Count -gt 0) {
@@ -349,6 +341,9 @@ try {
     $stages.Add([pscustomobject]@{ name = 'install'; status = 'passed' })
 
     $currentStage = 'readback'
+    if ($TestFailureStage -eq 'before-readback') {
+        Stop-Install 'injected-failure' 'before-readback' 'Injected failure before readback.'
+    }
     $verification = Read-Readback
     if (-not $verification.verified) {
         $problems = @()
@@ -384,6 +379,16 @@ try {
             if ($now -ne $headBefore -and $now -ne '') { $mutation = 'installed-checkout-unexpected-head' }
         } catch { }
     }
+    if ($junctionInventory.Count -gt 0) {
+        try {
+            Restore-JunctionInventory -Inventory $junctionInventory -GetTarget ${function:Get-JunctionTarget}
+            $junctionRollback = 'restored'
+            $junctionRollbackReadback = [pscustomobject]@{ restored = $true; entries = $junctionInventory.Count }
+        } catch {
+            $junctionRollback = 'restore-failed'
+            $junctionRollbackReadback = [pscustomobject]@{ restored = $false; entries = $junctionInventory.Count; message = $_.Exception.Message }
+        }
+    }
     if ($mutation -ne 'none' -and $headBefore.Trim()) {
         # Clean start: restoring HEAD/branch is safe.
         try {
@@ -397,7 +402,7 @@ try {
             }
         } catch { $rollback = 'restore-failed' }
     }
-    $failureAction = if ($rollback -eq 'restore-failed') { 'manual-repair' } elseif ($mutation -ne 'none' -and $rollback -eq 'none') { 'manual-repair' } elseif ($reason -eq 'readback-mismatch') { 'rerun-install' } else { 'none' }
+    $failureAction = if ($rollback -eq 'restore-failed' -or $junctionRollback -eq 'restore-failed') { 'manual-repair' } elseif ($mutation -ne 'none' -and $rollback -eq 'none') { 'manual-repair' } elseif ($reason -eq 'readback-mismatch') { 'rerun-install' } else { 'none' }
     $failure = [pscustomobject]@{ reason = $reason; code = $code; message = $_.Exception.Message }
 }
 
@@ -419,6 +424,8 @@ $receipt = [ordered]@{
     verification = $verification
     mutation = $mutation
     rollback = $rollback
+    junctionRollback = $junctionRollback
+    junctionRollbackReadback = $junctionRollbackReadback
     failureAction = $failureAction
     failure = $failure
 }

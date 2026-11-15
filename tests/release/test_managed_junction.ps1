@@ -11,6 +11,7 @@ $ErrorActionPreference = 'Stop'
 $installPs1 = Join-Path $PSScriptRoot '..\..\skills\release\scripts\install.ps1'
 $text = Get-Content -LiteralPath $installPs1 -Raw -Encoding UTF8
 $migrationText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\skills\release\scripts\migration.ps1') -Raw -Encoding UTF8
+$transactionText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\skills\release\scripts\junction-transaction.ps1') -Raw -Encoding UTF8
 
 function Get-InstallerFunctionText {
     param([Parameter(Mandatory)][string]$Name)
@@ -22,11 +23,12 @@ function Get-InstallerFunctionText {
 $definitions = @(
     'Get-NormalizedPath', 'Get-JunctionTarget', 'Get-GitHubSlug',
     'Test-EquivalentRemote', 'Get-DestinationEntry',
-    'Test-ManagedJunctionFromSameRepository', 'Remove-ManagedJunctionSafely',
+    'Test-ManagedJunctionFromSameRepository',
     'Stop-Install'
 ) | ForEach-Object { Get-InstallerFunctionText -Name $_ }
 Invoke-Expression ($definitions -join "`n")
 Invoke-Expression $migrationText
+Invoke-Expression $transactionText
 
 $ExpectedRemoteUrl = 'https://github.com/theEvgene/task-runner.git'
 $ExpectedPatRemoteUrl = 'https://github.com/theEvgene/personal-agent-toolkit.git'

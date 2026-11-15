@@ -20,8 +20,10 @@ old name and the same-named PAT links for `dell-lan-local-dev` and
 `lan-task-bridge` are migrated only with `-AllowOldLinkMigration`. Each
 target must match its recorded PAT origin, exact repository-relative path,
 frontmatter, and body marker (see `migrations.json`). The guarded swap removes
-only the junction and retains the PAT source checkout. Anything unproven stays
-unchanged.
+only the junction and retains the PAT source checkout. Every changed junction
+is inventoried and restored with readback if any later stage fails. Anything
+unproven stays unchanged. `UPDATE.md` documents the pinned bootstrap required
+when the installed checkout still runs the pre-migration installer.
 
 ## Route: preview first, version only after the user chooses
 
