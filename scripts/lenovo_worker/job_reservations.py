@@ -135,8 +135,6 @@ def normalize_resources(claims: object,
 
     if not isinstance(claims, (list, tuple)) or not claims:
         raise ReservationRefused("reservation resources are empty")
-    if len(claims) > MAX_RESOURCES:
-        raise ReservationRefused("too many reservation resources")
     normalized = [normalize_claim(claim) for claim in claims]
     if len(set(normalized)) != len(normalized):
         raise ReservationRefused("duplicate reservation resource")
@@ -145,6 +143,8 @@ def normalize_resources(claims: object,
         raise ReservationRefused("workdir resource has the wrong type")
     if workdir not in normalized:
         normalized.append(workdir)
+    if len(normalized) > MAX_RESOURCES:
+        raise ReservationRefused("too many reservation resources")
     return tuple(sorted(normalized))
 
 
@@ -511,8 +511,15 @@ def reserve_and_submit(queue: Path, key: bytes, bridge: object,
     record = build(
         job_id, hashlib.sha256(job_bytes).hexdigest(), claims, workdir,
         owner_instance, owner_pid, generation, now)
-    referee_publish(
+    outcome = referee_publish(
         queue, key, bridge, record,
         lambda: bridge.publish(str(Path(queue) / "jobs"), job_id, job_bytes),
         wait_seconds)
+    if outcome == "owned":
+        stored = read(queue, key, bridge, job_id,
+                      record["job_envelope_sha256"])
+        if stored is None:
+            raise ReservationRefused(
+                "owned reservation disappeared after referee decision")
+        return stored
     return record

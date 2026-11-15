@@ -142,6 +142,18 @@ def _validate_evidence(evidence: object, claim: dict,
     )
 
 
+def _existing_result_matches(queue: Path, key: bytes, job_id: str,
+                             bridge: object, expected: dict) -> bool:
+    """Authenticate and compare an immutable reconciliation result exactly."""
+
+    try:
+        raw = bridge.read(str(queue / "results"), job_id)
+        existing = bridge.open_envelope(raw, key, "result", job_id)
+    except Exception:
+        return False
+    return existing == expected
+
+
 def reconcile(queue: Path, key: bytes, job_id: str, proof_path: Path,
               bridge: object, prepare, seal_result, now,
               worker_schema: str) -> int:
@@ -227,6 +239,7 @@ def reconcile(queue: Path, key: bytes, job_id: str, proof_path: Path,
                    "and output were not observed; ownership released by "
                    "proof, outcome is not success"),
         "started_at": str(start.get("started_at") or ""),
+        "finished_at": evidence["observed_at"],
         "timed_out": False,
         "output_truncated": False,
         "reconciliation": {
@@ -237,6 +250,22 @@ def reconcile(queue: Path, key: bytes, job_id: str, proof_path: Path,
         },
     }
     sealed = seal_result(queue, key, job_id, **fields)
+    expected_result = {
+        "kind": "result", "id": job_id,
+        "status": fields["status"], "exit_code": fields["exit_code"],
+        "stdout": fields["stdout"], "stderr": fields["stderr"],
+        "started_at": fields["started_at"],
+        "finished_at": fields["finished_at"],
+        "timed_out": fields["timed_out"],
+        "output_truncated": fields["output_truncated"], "files": {},
+        "termination": fields["termination"],
+        "reconciliation": fields["reconciliation"],
+    }
+    if sealed == "skipped" and not _existing_result_matches(
+            queue, key, job_id, bridge, expected_result):
+        print(f"worker: existing result conflicts with reconciliation for "
+              f"{job_id}", file=sys.stderr)
+        return 2
     if sealed not in ("sealed", "skipped"):
         return 2
     released = publish_release(

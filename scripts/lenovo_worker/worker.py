@@ -181,7 +181,7 @@ def _seal_result(queue: Path, key: bytes, job_id: str, **fields) -> str:
         "stdout": fields.get("stdout", "") or "",
         "stderr": fields.get("stderr", "") or "",
         "started_at": fields.get("started_at", "") or "",
-        "finished_at": _now(),
+        "finished_at": fields.get("finished_at") or _now(),
         "timed_out": bool(fields.get("timed_out", False)),
         "output_truncated": bool(fields.get("output_truncated", False)),
         "files": fields.get("files", {}) or {},
@@ -454,7 +454,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--key-format", default="raw", choices=("raw", "base64"))
     parser.add_argument("--shared", default=None, help="shared LAN folder (key-custody check)")
     parser.add_argument("--poll", type=float, default=5.0)
-    parser.add_argument("--once", action="store_true", help="single scan, then exit 0")
+    parser.add_argument("--once", action="store_true", help="0=settled; 2=failed; 3=retained")
     parser.add_argument("--max-jobs", type=int, default=0, help="0 means no bound")
     parser.add_argument(
         "--max-active", type=int, default=1, choices=(1, 2),

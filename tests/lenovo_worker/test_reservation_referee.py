@@ -234,7 +234,12 @@ class ReservationRefereeTests(unittest.TestCase):
         claims = [f"file:{self.root / 'idempotent.out'}"]
         first = self.reserve(job_id, claims, "idempotent")
         second = self.reserve(job_id, claims, "idempotent")
-        self.assertEqual(first["resources"], second["resources"])
+        stored = job_reservations.read(
+            self.queue, self.key, lan_bridge, job_id,
+            self.job_digest(job_id))
+        self.assertEqual(first, second)
+        self.assertEqual(second, stored)
+        self.assertEqual(first["generation"], second["generation"])
         self.assertEqual(
             [path.name for path in
              (self.queue / "reservations").glob("*.json")],
@@ -243,6 +248,36 @@ class ReservationRefereeTests(unittest.TestCase):
         with self.assertRaises(job_reservations.ReservationRefused):
             self.reserve(job_id, [f"file:{self.root / 'other.out'}"],
                          "idempotent")
+
+    def test_final_canonical_resource_limit_refuses_before_publish(self) -> None:
+        accepted = "18" * 16
+        accepted_claims = [
+            f"file:{self.root / 'accepted' / f'{index}.out'}"
+            for index in range(job_reservations.MAX_RESOURCES - 1)
+        ]
+        record = self.reserve(accepted, accepted_claims, "accepted-workdir")
+        self.assertEqual(len(record["resources"]),
+                         job_reservations.MAX_RESOURCES)
+        self.assertIn(accepted, self.live())
+
+        refused = "19" * 16
+        refused_claims = [
+            f"file:{self.root / 'refused' / f'{index}.out'}"
+            for index in range(job_reservations.MAX_RESOURCES)
+        ]
+        with self.assertRaisesRegex(
+                job_reservations.ReservationRefused,
+                "too many reservation resources"):
+            self.reserve(refused, refused_claims, "refused-workdir")
+        self.assertFalse(
+            (self.queue / "reservations" / f"{refused}.json").exists())
+        self.assertFalse((self.queue / "jobs" / f"{refused}.json").exists())
+
+        independent = "20" * 16
+        self.reserve(
+            independent, [f"file:{self.root / 'independent.out'}"],
+            "independent-workdir")
+        self.assertIn(independent, self.live())
 
 
 if __name__ == "__main__":

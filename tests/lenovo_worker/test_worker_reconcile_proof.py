@@ -87,6 +87,14 @@ class ReconcileProofTests(unittest.TestCase):
                 "--key-file", os.fspath(self.key_file),
                 "--max-active", "2", "--once"]
 
+    def test_once_help_describes_all_batch_exit_codes(self) -> None:
+        shown = subprocess.run(
+            [sys.executable, os.fspath(WORKER), "--help"],
+            capture_output=True, text=True, timeout=10, check=False)
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        help_text = " ".join(shown.stdout.split())
+        self.assertIn("0=settled; 2=failed; 3=retained", help_text)
+
     def wait_until(self, predicate, timeout: float = 5.0) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -136,6 +144,86 @@ class ReconcileProofTests(unittest.TestCase):
             + ["--reconcile-id", job_id,
                "--reconcile-proof", os.fspath(proof)],
             capture_output=True, text=True, timeout=10, check=False)
+
+    def dead_owned_job(self, job_id: str, name: str) -> tuple[dict, Path]:
+        self.submit(job_id, name, 0.1)
+        raw_job = (self.queue / "jobs" / f"{job_id}.json").read_bytes()
+        workdir = self.root / name
+        resources = [
+            "exclusive:global",
+            job_lifecycle.resource_identity(os.fspath(workdir)),
+        ]
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait(timeout=10)
+        self.assertFalse(proc.is_alive(dead.pid))
+        generation = hashlib.sha256(job_id.encode("ascii")).hexdigest()[:32]
+        owner = {"instance": "dead-test-owner", "pid": dead.pid}
+        claim = {
+            "schema": job_ownership.CLAIM_SCHEMA, "kind": "claim",
+            "id": job_id, "owner": owner, "generation": generation,
+            "claimed_at": "2026-01-01T00:00:00+00:00",
+            "resources": resources,
+            "job_envelope_sha256": hashlib.sha256(raw_job).hexdigest(),
+            "state": "owned-unknown-until-signed-result",
+        }
+        lan_bridge.publish(str(self.queue / "claims"), job_id,
+                           lan_bridge.seal(claim, self.key))
+        start = {
+            "schema": job_ownership.START_SCHEMA, "kind": "start",
+            "id": job_id, "owner": owner, "generation": generation,
+            "child_pid": dead.pid,
+            "started_at": "2026-01-01T00:00:01+00:00",
+            "resources": resources,
+            "job_envelope_sha256": claim["job_envelope_sha256"],
+        }
+        lan_bridge.publish(str(self.queue / "starts"), job_id,
+                           lan_bridge.seal(start, self.key))
+        return claim, self.reconcile_proof(job_id, claim, dead.pid)
+
+    def publish_existing_result(self, job_id: str, status: str,
+                                exit_code: int) -> bytes:
+        payload = lan_bridge.build_result_payload(job_id, status, exit_code)
+        raw = lan_bridge.seal(payload, self.key)
+        lan_bridge.publish(str(self.queue / "results"), job_id, raw)
+        return raw
+
+    def test_reconcile_existing_result_must_be_exact_non_success(self) -> None:
+        for suffix, status, exit_code in (
+                ("success", "ok", 0),
+                ("other-error", "error", 2)):
+            with self.subTest(suffix=suffix):
+                job_id = hashlib.sha256(
+                    suffix.encode("ascii")).hexdigest()[:32]
+                claim, proof = self.dead_owned_job(job_id, suffix)
+                original = self.publish_existing_result(
+                    job_id, status, exit_code)
+                refused = self.reconcile(job_id, proof)
+                self.assertEqual(refused.returncode, 2, refused.stderr)
+                self.assertIn("existing result conflicts", refused.stderr)
+                self.assertEqual(
+                    (self.queue / "results" / f"{job_id}.json").read_bytes(),
+                    original)
+                self.assertFalse(
+                    (self.queue / "releases" / f"{job_id}.json").exists())
+                self.assertEqual(self.claim(job_id), claim)
+
+    def test_reconcile_exact_existing_non_success_is_idempotent(self) -> None:
+        job_id = "e7" * 16
+        _, proof = self.dead_owned_job(job_id, "exact-reconcile")
+        first = self.reconcile(job_id, proof)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        result_raw = (
+            self.queue / "results" / f"{job_id}.json").read_bytes()
+        release_raw = (
+            self.queue / "releases" / f"{job_id}.json").read_bytes()
+        second = self.reconcile(job_id, proof)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(
+            (self.queue / "results" / f"{job_id}.json").read_bytes(),
+            result_raw)
+        self.assertEqual(
+            (self.queue / "releases" / f"{job_id}.json").read_bytes(),
+            release_raw)
 
     def test_reconcile_refuses_while_claimed_tree_alive(self) -> None:
         # Kill-on-close means a crash kills the tree; the tree gate is
