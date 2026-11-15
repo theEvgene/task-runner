@@ -12,6 +12,8 @@ import { execute } from "./dco_feature_flags/workflow.mjs";
 const EXIT_BY_STATE = {
   Completed: 0,
   AwaitingConfirmation: 3,
+  ReadyToCreate: 3,
+  TestVerified: 3,
   Duplicate: 4,
   UnknownOutcome: 5,
   AwaitingRenewedConfirmation: 5,

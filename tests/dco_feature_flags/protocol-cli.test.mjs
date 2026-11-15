@@ -306,6 +306,33 @@ test("ambiguous post-create readback stays recoverable and never retries create"
   assert.equal(transport.createCount, 1);
 });
 
+test("CLI reports resumable states with the confirmation exit code", async () => {
+  const { plan, state, directory } = await fixture();
+  const transport = new FakeTransport();
+  await execute(plan, state, transport);
+  const stored = JSON.parse(await readFile(state, "utf8"));
+  stored.state = "ReadyToCreate";
+  stored.confirmedDigest = plan.planDigest;
+  await writeFile(state, JSON.stringify(stored));
+  const planFile = join(directory, "plan.json");
+  await writeFile(planFile, JSON.stringify(plan));
+  const cli = join(process.cwd(), "scripts", "dco-feature-flags.mjs");
+  const check = (expected) => {
+    const result = spawnSync(
+      process.execPath,
+      [cli, "apply", "--plan", planFile, "--state", state],
+      { encoding: "utf8" }
+    );
+    assert.equal(result.status, 3, result.stdout);
+    assert.equal(JSON.parse(result.stdout).state, expected);
+  };
+  check("ReadyToCreate");
+  transport.readbackFailures.test = 1;
+  await execute(plan, state, transport, { confirmation: plan.planDigest });
+  assert.equal((await execute(plan, state, transport)).state, "TestVerified");
+  check("TestVerified");
+});
+
 test("public CLI has no artifact, review, or trust-store inputs", () => {
   const cli = join(process.cwd(), "scripts", "dco-feature-flags.mjs");
   for (const option of [
