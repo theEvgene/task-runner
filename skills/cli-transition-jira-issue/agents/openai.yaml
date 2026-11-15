@@ -1,0 +1,4 @@
+interface:
+  display_name: "Transition Jira Issue (CLI)"
+  short_description: "Apply one LEL workflow transition through the CLI"
+  default_prompt: "Use $cli-transition-jira-issue to discover, plan, and safely apply one available LEL Jira transition."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Extract Jira Content (CLI)"
+  short_description: "Read a Jira issue and its parent through the REST CLI"
+  default_prompt: "Use $cli-extract-jira-content to read a Jira issue and its parent, reporting missing or inaccessible content."

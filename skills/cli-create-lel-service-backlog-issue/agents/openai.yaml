@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create LEL Backlog Epic (CLI)"
+  short_description: "Create one LEL backlog Epic through the protocol CLI"
+  default_prompt: "Use $cli-create-lel-service-backlog-issue to plan and safely create one LEL backlog Epic."

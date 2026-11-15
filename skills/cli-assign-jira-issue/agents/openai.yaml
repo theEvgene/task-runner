@@ -1,0 +1,4 @@
+interface:
+  display_name: "Assign Jira Issue (CLI)"
+  short_description: "Assign one LEL issue through the protocol CLI"
+  default_prompt: "Use $cli-assign-jira-issue to plan and safely assign one LEL Jira issue to an exact login."

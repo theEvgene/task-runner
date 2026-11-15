@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Task runner agent setup: minimal agent tooling baseline (empty repo, no runtime source yet).",
   "scripts": {
-    "prepare": "husky"
+    "prepare": "husky",
+    "test": "node --test"
   },
   "devDependencies": {
     "husky": "9.1.7",
