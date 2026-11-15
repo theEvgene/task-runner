@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create DCO Feature Flags (Protocol)"
+  short_description: "Create paired DCO toggles through the protocol CLI"
+  default_prompt: "Use $create-dco-feature-flags-protocol to plan and safely create test and production feature flags without UI automation."
