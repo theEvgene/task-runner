@@ -1,0 +1,1 @@
+{"schema":"task-runner/lan-bridge-config/1","task_runner_checkout":"<absolute Dell checkout path>","task_runner_revision":"<full pinned commit SHA>","queue_dir":"<absolute queue path>","key_file":"<absolute private key file path>","key_format":"raw","lenovo_jira_working_dir":"<absolute Lenovo skill directory>","jira_instance":"<explicit Jira instance>"}

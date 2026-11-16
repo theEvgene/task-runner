@@ -57,8 +57,8 @@ class SkillIdentityTests(unittest.TestCase):
             self.assertIn(token, dell)
         bridge = read_text(ROOT / "skills" / "lan-task-bridge" / "SKILL.md")
         self.assertIn("scripts/lan_bridge/lan_bridge.py", bridge)
-        self.assertIn("jira_task.py read --issue <KEY> --full", bridge)
-        self.assertIn("parent.presence", bridge)
+        self.assertIn("docs/lan-bridge-config.md", bridge)
+        self.assertIn("parent.presence", read_text(ROOT / "docs" / "lan-bridge-config.md"))
 
 
 class InstallerSafetyTests(unittest.TestCase):
