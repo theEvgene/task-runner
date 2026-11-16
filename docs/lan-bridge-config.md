@@ -2,6 +2,12 @@
 
 Both LAN skills read `%USERPROFILE%\.config\task-runner\lan-bridge.json` before a live operation. Its versioned template is `config/lan-bridge.example.json` in the task-runner checkout. This local file is operator configuration, not a secret store; running a skill does not create or change it.
 
+`dell_python` is the absolute interpreter path on Dell for local client and
+driver commands. `lenovo_python` is a separate absolute interpreter path on
+Lenovo for commands executed there. Discover each on its own host; do not use
+one as a substitute for the other. Require the relevant path when the selected
+route needs it, and report an unknown or invalid path as a blocker.
+
 1. Resolve the installed skill junction under `%USERPROFILE%\.agents\skills` to its actual target. The release installer links skill directories into a pinned task-runner checkout. Locate this instruction and template from that checkout. Read the settings file and discover existing values before requesting missing information. Do not invent paths, revisions, or Jira instances.
 2. Require schema `task-runner/lan-bridge-config/1`, nonempty absolute paths for the task-runner checkout, queue, and key file, key format `raw` or `base64`, and a full pinned commit SHA. For managed Jira reads additionally require nonempty absolute paths for `lenovo_python` and `lenovo_jira_working_dir`, plus an explicit `jira_instance`; do not require these Jira-only fields for an independent GitLab MR scenario. Name each absent or invalid component in the blocker. The key file is a path only: never read or print its contents during discovery, put key bytes in JSON, or place it in a repository, queue, or shared LAN folder.
 3. Validate freshness before use: the resolved installed skill target must be in the configured checkout; Git HEAD must equal the configured full commit, and the checkout must have no changes to the selected skill, this instruction, template, or scripts and docs used by the selected route. Verify the selected route's required files exist. Name each missing file or mismatched/dirty component; stop rather than calling an older or unverified installation current. The configured commit is an operator pin, not proof of the newest remote revision; compare against the intended locally available revision when an update is requested. Do not fetch or update another checkout implicitly.
