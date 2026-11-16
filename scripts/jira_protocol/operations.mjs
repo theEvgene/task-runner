@@ -3,7 +3,7 @@ import {
   JiraProtocolError,
   confirmationDigest,
 } from "./protocol.mjs";
-import { createFormFromModel } from "./html-form.mjs";
+import { createFormFromModel, defaultsFromEditHtml } from "./html-form.mjs";
 
 export const CONTRACT = Object.freeze({
   origin: "https://jira3.tcsbank.ru",
@@ -422,4 +422,125 @@ function persistedValueMatches(actual, expected) {
     );
   }
   return false;
+}
+
+async function comments(transport, key) {
+  const all = [];
+  const ids = new Set();
+  let total;
+  for (let page = 0; page < 100; page++) {
+    const startAt = all.length;
+    const { payload } = await transport.request({
+      path: `/rest/api/2/issue/${key}/comment`,
+      query: { startAt, maxResults: 100 },
+    });
+    if (
+      !Array.isArray(payload?.comments) ||
+      !Number.isSafeInteger(payload.total) ||
+      payload.total < 0 ||
+      payload.startAt !== startAt ||
+      (total !== undefined && total !== payload.total) ||
+      startAt + payload.comments.length > payload.total ||
+      payload.comments.some((c) => !/^\d+$/.test(String(c?.id ?? "")))
+    )
+      throw new JiraProtocolError("unsupported comment readback");
+    total = payload.total;
+    for (const comment of payload.comments) {
+      const id = String(comment.id);
+      if (ids.has(id))
+        throw new JiraProtocolError("duplicate comment readback");
+      ids.add(id);
+      all.push(comment);
+    }
+    if (all.length >= payload.total) return all;
+    if (!payload.comments.length) break;
+  }
+  throw new JiraProtocolError("incomplete comment readback");
+}
+
+export async function flagIssue(
+  transport,
+  { issueKey, action, comment, confirm }
+) {
+  const key = assertIssueKey(issueKey);
+  if (!["add", "remove"].includes(action))
+    throw new JiraProtocolError("action must be add or remove");
+  const text = String(comment ?? "").trim();
+  if (!text) throw new JiraProtocolError("comment is required");
+  const flag = action === "add";
+  const operation = { kind: "flag", issueKey: key, action, comment: text };
+  const confirmation = confirmationDigest(operation);
+  const plan = { operation, confirmation };
+  if (confirm !== confirmation)
+    return { state: "AwaitingConfirmation", ...plan };
+  const state = (value) => {
+    if (!(value === null || Array.isArray(value)))
+      throw new JiraProtocolError("unsupported flag readback");
+    return Array.isArray(value) && value.length > 0;
+  };
+  const before = await getIssueState(transport, key, ["customfield_10641"]);
+  if (state(before.fields.customfield_10641) === flag)
+    throw new JiraProtocolError(
+      "issue already has requested flag state; no comment posted"
+    );
+  const oldIds = new Set(
+    (await comments(transport, key)).map((c) => String(c.id))
+  );
+  const { payload: html } = await transport.request({
+    path: "/secure/GHBulkCommentDialog.jspa",
+    query: { issueKeys: key },
+    expect: "text",
+  });
+  if (typeof html !== "string")
+    throw new JiraProtocolError("unsupported flag dialog");
+  const tokens = defaultsFromEditHtml(html).get("formToken") ?? [];
+  if (tokens.length !== 1 || !tokens[0])
+    throw new JiraProtocolError("flag dialog has no unique formToken");
+  const escaped = text.replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        c
+      ]
+  );
+  const prefix = flag ? "(flag) Flag added" : "(flagoff) Flag removed";
+  const body = `${prefix}\n\n${escaped}`;
+  const { payload } = await transport.request({
+    method: "POST",
+    path: "/rest/greenhopper/1.0/xboard/issue/flag/flag.json",
+    json: {
+      issueKeys: [key],
+      flag,
+      comment: body,
+      commentVisibility: "",
+      formToken: tokens[0],
+      temporaryAttachments: [],
+    },
+    mutation: true,
+  });
+  if (Array.isArray(payload?.errorMessages) && payload.errorMessages.length)
+    throw new JiraAmbiguousOutcome(
+      "flag response reported errors; verify before retrying"
+    );
+  try {
+    const issue = await getIssueState(transport, key, ["customfield_10641"]);
+    const after = await comments(transport, key);
+    const found = after.find(
+      (c) =>
+        !oldIds.has(String(c.id)) &&
+        (c.body === body || c.body === `${prefix}\n\n${text}`)
+    );
+    if (state(issue.fields.customfield_10641) !== flag || !found)
+      throw new Error("readback mismatch");
+    return {
+      state: "Completed",
+      ...plan,
+      readback: { flag, commentId: String(found.id) },
+    };
+  } catch (error) {
+    throw new JiraAmbiguousOutcome(
+      "flag and new comment could not both be confirmed; verify before retrying",
+      { cause: error }
+    );
+  }
 }

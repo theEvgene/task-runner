@@ -223,3 +223,7 @@ and does not invent a separate rank write.
 
 The CLI performs no live write unless an exact live-model-bound confirmation
 digest is supplied. Tests use injected transports and local data only.
+
+### Flag with a required comment
+
+Run `node scripts/jira-protocol.mjs flag --issue LEL-1234 --action add --comment "Reason"` (use `remove` to clear). Repeat with the returned `--confirm` digest to submit. The confirmed operation refuses an already matching flag state to avoid replaying a comment. After a write, both the flag and a new comment ID must be observed; an unknown outcome requires manual readback before retry. The GreenHopper route and payload derive from browser evidence; the live CLI route and authentication remain unverified. No live write was performed.
