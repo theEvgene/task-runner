@@ -34,3 +34,24 @@ the same job id; it is never permission to submit a replacement.
 
 Run only the fixture suite relevant to a change. The documented tests do not
 contact Lenovo, Jira, GitLab, or another network service.
+
+## Lenovo paths for this skill (verified, username-free)
+
+The verified Lenovo task-runner clone is `Documents\repositories\task-runner`
+under the Lenovo user profile; no username appears in this repo. Resolve it
+on Lenovo with
+`Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Documents\repositories\task-runner'`
+and pass the expanded absolute path per run through the existing flags of
+the selected route (held machine-local by the operator; no new config
+field). `first` names no checkout; `base`/`publish`/`transfer`/
+`publish-existing` take `--lenovo-checkout` plus `--lenovo-worktree`
+(where the driver writes), `--lenovo-skill-dir` (plus optional
+`--lenovo-driver-dir`, default `<skill-dir>/scripts`) and `--python`,
+with `--lenovo-flow-dir` (or `DELL_LAN_FLOW_DIR`) only on
+`publish`/`publish-existing`. There is no `--lenovo-client-dir` on any
+`dell_request.py` subcommand; that flag exists only on the
+`mr-ready` (`--lenovo-client-dir` is the `gitlab-mr-flow/scripts` dir)
+and `pipeline-observer` (optional, forwarded as probe `--client-dir`)
+routes. Bridge `submit --cwd` is separate per-route worker cwd, not an
+alias for `--lenovo-checkout`; readiness `lenovo.revision.repository`
+is only the probed checkout. Details: `docs/lan-bridge-config.md`.

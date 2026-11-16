@@ -74,3 +74,71 @@ Once support is established, write this single line to another local UTF-8 comma
 ```
 
 Submit it with the same configured cwd and bridge inputs, then fetch or observe its JOBID. For both probe and read, accept success only for a MAC-verified result bound to that JOBID with status `completed` or `ok`, integer `exit_code == 0`, no `timed_out`, and no `output_truncated`, as classified in `docs/lan-bridge.md`. An unrecognized status is unknown; a verified timeout, failure, or truncated output is not success. Recover an unknown or interrupted observation using the same JOBID. Preserve `parent.presence` and `gateway_unavailable` exactly. If queue, key, workflow, or result is unavailable, report the affected Jira categories as unverified without switching credential routes.
+
+## Lenovo task-runner checkout (verified, username-free)
+
+The verified Lenovo clone lives at `Documents\repositories\task-runner`
+under the Lenovo user profile. Public files never embed the Lenovo
+username. Resolve it on Lenovo only, for example with PowerShell:
+
+```powershell
+Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Documents\repositories\task-runner'
+```
+
+Run that on Lenovo and use the expanded absolute result. Do not send
+`%USERPROFILE%...`, `%USERPROFILE%` alone, or `$env:...` as a path:
+single-quoted transport keeps them literal, so they would not expand
+on the worker (see `docs/lan-bridge.md` for the interpolation rule).
+Keep the expanded absolute path machine-local (operator notes or
+command history) and pass it per run through the existing flags below;
+no new config field or flag is introduced here.
+
+What each binding actually is (do not equate them):
+
+- `--lenovo-checkout` is a Dell request-builder input (the Lenovo
+  checkout that driver reads). It exists on `dell_request.py`
+  `base`/`publish`/`transfer`/`publish-existing`, on
+  `mr_ready/request.py`, on `pipeline_observer/request.py`, on
+  `release/request.py` (`--lenovo-checkout`), and on
+  `fresh_base/request-base.mjs` / `request-tip.mjs`. `first` has no
+  `--lenovo-checkout`: the exporter observes the remote into an
+  isolated temp bare repo and writes no checkout.
+- Bridge `submit --cwd` is a separate argument: the worker working
+  directory for that job. Read it from the selected route document for
+  that run (for example `docs/mr-ready.md` uses the Lenovo checkout;
+  other routes name their own working dir). Never copy
+  `--lenovo-checkout` into `--cwd` unless that route says so.
+- Readiness `lenovo.revision.repository` is only the checkout probed
+  with `git -C <repository> rev-parse HEAD` by `scripts/readiness/check.py`;
+  `lenovo.cwd` there is only the probe's working directory. Neither is a
+  store for driver, flow, client, node, or entrypoint paths.
+
+Per-route Lenovo flags (only what each driver accepts):
+
+- `dell_request.py publish`: `--lenovo-skill-dir` (required),
+  `--lenovo-driver-dir` (optional, default `<skill-dir>/scripts`),
+  `--python`, `--lenovo-checkout`, `--lenovo-worktree`, plus
+  `--lenovo-flow-dir` (or `DELL_LAN_FLOW_DIR`) for the external flow
+  checkout. `transfer` and `base` take the same skill/driver/python/
+  checkout/worktree shape but no `--lenovo-flow-dir`.
+  `publish-existing` takes skill/driver/python/checkout/worktree plus
+  `--lenovo-flow-dir`. There is no `--lenovo-client-dir` on any
+  `dell_request.py` subcommand.
+- `mr_ready/request.py`: `--python`, `--lenovo-client-dir` (the
+  existing `gitlab-mr-flow/scripts` dir), `--lenovo-checkout`.
+- `pipeline_observer/request.py`: `--python`, `--lenovo-flow-dir`
+  (the `pipeline_observer` dir holding `probe.py`),
+  `--lenovo-checkout`, plus optional `--lenovo-client-dir` (forwarded
+  as probe `--client-dir`).
+- `release/request.py`: `--node`, `--release-tag`, `--lenovo-checkout`
+  (submit `--cwd` is that same checkout per `docs/release.md`).
+
+Only the managed Jira read has a config fallback: `lenovo_python`,
+`lenovo_jira_working_dir`, and `jira_instance` from this file's
+`lan-bridge.json` (schema `task-runner/lan-bridge-config/1`). Every
+other Lenovo task-runner, driver, flow, client, node, or entrypoint
+path above is owner-provided per run through its existing flag; that
+file has no field for them, and the readiness file holds only the
+named checklist (`lenovo.python`/`cwd`/`components`/`tools`/`revision`).
+When the Lenovo clone advances, update the clone on Lenovo; the held
+absolute path is reused unchanged unless the clone itself moved.

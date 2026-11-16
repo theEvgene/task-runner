@@ -28,6 +28,14 @@ when the installed checkout still runs the pre-migration installer.
 ## Route: preview first, version only after the user chooses
 
 All paths below are placeholders (owner-provided, never invented hostnames).
+The three Lenovo paths (`--node`, `--release-tag`, `--lenovo-checkout`)
+are passed per run through the existing `scripts/release/request.py` flags;
+no settings file in this repo provides them. The verified Lenovo checkout
+is `Documents\repositories\task-runner` under the Lenovo user profile:
+resolve it on Lenovo with
+`Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Documents\repositories\task-runner'`
+and pass the expanded absolute result (never a username, `%...%`, or
+`$env:...` placeholder).
 
 1. **Pin the task-runner copy.** Confirm the checkout in use holds
    `docs/release.md` and `scripts/release/request.py`; record its
