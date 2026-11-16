@@ -24,6 +24,7 @@ if str(BRIDGE_DIR) not in sys.path:
     sys.path.insert(0, str(BRIDGE_DIR))
 
 import lan_bridge as bridge  # noqa: E402
+import wait as waitmod  # noqa: E402
 
 SCHEMA = "lan-readiness-config/1"
 REPORT_SCHEMA = "lan-readiness-report/1"
@@ -242,17 +243,26 @@ def _remote_command(config: dict) -> str:
 
 
 def _report(config: dict, job_id: str, components: list[dict],
-            outcome: str | None = None) -> dict:
+            outcome: str | None = None, status: dict | None = None) -> dict:
     states = [item["state"] for item in components]
     final = outcome or ("ready" if states and all(x == "confirmed" for x in states)
                         else "not-ready")
     failing = next((item for item in components if item["state"] != "confirmed"), None)
-    action = "proceed with the selected scenario" if final == "ready" else (
-        failing["nextAction"] if failing else
-        f"re-read the SAME id {job_id}; never resubmit while outcome is unknown")
-    return {"schema": REPORT_SCHEMA, "scenario": config["scenario"],
-            "jobId": job_id, "outcome": final,
-            "components": components, "nextAction": action}
+    if final == "ready":
+        action = "proceed with the selected scenario"
+    elif failing is not None:
+        action = failing["nextAction"]
+    elif status is not None:
+        # The job-state wording lives in wait.py only; never restated here.
+        action = status["nextAction"]
+    else:
+        action = "stop and report the readiness blocker to the owner"
+    report = {"schema": REPORT_SCHEMA, "scenario": config["scenario"],
+              "jobId": job_id, "outcome": final,
+              "components": components, "nextAction": action}
+    if status is not None:
+        report["status"] = status
+    return report
 
 
 def _validate_worker(payload: dict, config: dict) -> list[dict]:
@@ -379,9 +389,8 @@ def run(args: argparse.Namespace) -> int:
                                       timeout_seconds=float(args.wait),
                                       poll_seconds=float(args.poll))
     except bridge.FetchTimeout:
-        report = _report(config, job_id, local, "unknown")
-        report["nextAction"] = (f"re-run with --job-id {job_id}; "
-                                "never resubmit while outcome is unknown")
+        status = waitmod.status_for_absence(config["queue"], key, job_id)
+        report = _report(config, job_id, local, "unknown", status=status)
         print(json.dumps(report, ensure_ascii=False))
         return 3
     components = [*local, *_validate_worker(payload, config)]
@@ -390,7 +399,8 @@ def run(args: argparse.Namespace) -> int:
             "corporate-access", "lenovo", "unconfirmed",
             "filesystem readiness does not prove credentials or service availability",
             "perform the separately authorized live corporate preflight on Lenovo"))
-    report = _report(config, job_id, components)
+    report = _report(config, job_id, components,
+                     status=waitmod.status_from_result(payload))
     print(json.dumps(report, ensure_ascii=False))
     return 0 if report["outcome"] == "ready" else 1
 

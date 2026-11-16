@@ -100,7 +100,9 @@ outcome is unknown.
 ## Output and boundaries
 
 The JSON report is `lan-readiness-report/1` and contains the scenario, job
-ID, overall outcome, named component states, and next action. It never emits
+ID, overall outcome, named component states, and next action. Its `status`
+member is the same `lan-job-status/1` object `wait.py`/`get.py --status`
+emit, so job state is never restated in a second format. It never emits
 the key, command, configured paths, queue contents, or worker stderr. Parallel
 runs have independent random IDs and the canonical queue's immutable,
 no-clobber files; no shared receipt or observer state is used.

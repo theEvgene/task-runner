@@ -394,10 +394,10 @@ def _validate_wait(timeout_seconds: float, poll_seconds: float) -> None:
 def _require_queue(queue_dir: str) -> str:
     q = Path(queue_dir)
     if not q.is_dir():
-        raise BridgeError(f"queue unavailable at {queue_dir}: check path/mount")
+        raise BridgeError("queue unavailable: check path/mount")
     r = q / "results"
     if r.exists() and not r.is_dir():
-        raise BridgeError(f"queue unavailable at {r}: check path/mount")
+        raise BridgeError("queue results path unavailable: check path/mount")
     return str(r.resolve())
 
 

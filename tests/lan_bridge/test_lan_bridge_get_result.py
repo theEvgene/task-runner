@@ -177,8 +177,9 @@ class BlockerTests(unittest.TestCase):
         self.assertEqual(report["outcome"], "found")
         self.assertTrue(report["confirmed"])
         self.assertEqual(report["terminal_outcome"], "unknown_status")
-        self.assertEqual(report["summary"]["outcome"], "unknown_status")
-        self.assertNotEqual(report["summary"]["outcome"], "success")
+        self.assertEqual(report["status"]["terminal"]["outcome"],
+                         "unknown_status")
+        self.assertNotEqual(report["status"]["terminal"]["outcome"], "success")
 
 
 class BeforeAfterTests(unittest.TestCase):

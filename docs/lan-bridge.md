@@ -93,7 +93,7 @@ python scripts/lan_bridge/get.py \
   --queue <queue-dir> --key-file <key-path> \
   [--key-format raw|base64] \
   --id <job-id> [--window <seconds>] [--poll <seconds>] \
-  [--max-windows <n>] [--receipt-out <path>]
+  [--max-windows <n>] [--status] [--receipt-out <path>]
 ```
 
 One call holds the validated id/key/queue across windows (a single queue
@@ -104,7 +104,9 @@ unavailable queue, tampered envelope, bad id). `--window` defaults to 60 s,
 without a window bound, otherwise expiry is exit `3` unknown with the same
 same-id resume action. Interruption recovery is re-running the same command
 with the same id: nothing is ever published, so a late result sealed under
-the original id verifies normally.
+the original id verifies normally. `--status` skips the wait and prints one
+`lan-job-status/1` readback (exit `0` finished, `3` waiting/unknown, `2`
+refused); a bounded timeout prints that same object on stdout.
 
 ## Syntax gate (syntax-only, opt-in per submit)
 
@@ -224,6 +226,37 @@ No verified result yet (bounded wait expired, exit `3`) is **unknown**: not
 evidence the job is running, done, or failed. The timeout message says so and
 points at re-reading the SAME id. There is no "running" outcome anywhere in
 the client or `wait.py`.
+
+## One verified job status (`lan-job-status/1`)
+
+`wait.py:job_status` is the single job-state readback; `get.py --status`
+prints it and readiness embeds the same object instead of restating job
+wording. One shape, one id:
+
+| field | present | meaning |
+|---|---|---|
+| `jobId` | always | the exact id that was read |
+| `outcome` | always | `finished`, `waiting`, `unknown` or `refused` |
+| `nextAction` | always | at most one safe next action |
+| `proof` | always | `result`/`job`/`lease`, each `signed`, `absent`, `unverifiable` or `not read` |
+| `observedOwner` | signed claim bound to this job only | claim `instance` and `pid` (ownership, not liveness) |
+| `occupied` | with `observedOwner` only | the signed lease still holds the job |
+| `deadline` | from the signed request only | `timeout_seconds` (worker execution limit), never an invented clock |
+| `terminal` | `finished` only | `classify_result` outcome, status and exit code |
+
+- `finished`: MAC-verified result bound to this id; `terminal.outcome` keeps
+  success apart from worker failure, worker timeout, truncation and unknown
+  status.
+- `waiting`: no result, but a signed `lenovo-job-claim/1` bound to this exact
+  job envelope. The lease stays held; `nextAction` re-reads the SAME id and
+  never resubmits or releases it. Nothing here frees a lease on a waiter
+  timeout; that stays a separate, unshipped change.
+- `unknown`: no result and no signed lease, or no signed request for the id.
+  Never "running"; `nextAction` never resubmits.
+- `refused`: a result file exists but fails its MAC, id or format check (a
+  result sealed for another id is refused, never reported as this job's
+  completion). The single action asks the queue owner for the sealed result.
+  An unavailable queue still refuses fast and names no host path.
 
 Executor truth (issues #33/#36): on the worker, a PowerShell launcher
 command is replaced by an already-valid encoded outer program. That program

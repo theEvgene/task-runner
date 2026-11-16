@@ -4,21 +4,41 @@ Builds only on the signed ``lan_bridge`` client: no protocol, MAC, queue or
 key change. All waits re-read the SAME job id; this module never publishes,
 so recovery after an observer restart cannot duplicate a job. Absence of a
 result is reported as ``unknown`` -- never as "running".
+
+One verified readback for one job id lives here
+(``job_status``/``status_from_result``/``status_for_absence``): the same
+``lan-job-status/1`` shape for ``get.py`` and for readiness, with an owner,
+a deadline or an occupancy flag only when the queue holds signed evidence
+for it.
 """
 
 from __future__ import annotations
 
+import hashlib
 import time
+from pathlib import Path
 
 import lan_bridge as _bridge  # Module handle: attribute access keeps a
 # monkeypatched lan_bridge.read/_require_queue visible to get_result.
-from lan_bridge import (FetchTimeout, JobNotFoundError, _require_queue,
-                         _validate_job_id, _validate_key, fetch_result,
-                         open_envelope, read)
+from lan_bridge import (FetchTimeout, JobNotFoundError, ProtocolError,
+                         _require_queue, _validate_job_id, _validate_key,
+                         fetch_result, open_envelope, read)
 
 CONFIRMED_SUCCESS_STATUSES = ("completed", "ok")
 
 UNKNOWN = "unknown"
+
+STATUS_SCHEMA = "lan-job-status/1"
+LEASE_SCHEMA = "lenovo-job-claim/1"
+
+FINISHED = "finished"
+WAITING = "waiting"
+REFUSED = "refused"
+
+SIGNED = "signed"
+ABSENT = "absent"
+UNVERIFIABLE = "unverifiable"
+NOT_READ = "not read"
 
 
 def peek_result(queue_dir: str, key: bytes, job_id: str) -> dict | None:
@@ -82,18 +102,159 @@ def classify_absence(job_id: str) -> dict:
                       "never resubmit while unknown"}
 
 
+def _status(job_id: str, outcome: str, next_action: str,
+            result: str, job: str = NOT_READ, lease: str = NOT_READ,
+            owner: dict | None = None, deadline: dict | None = None,
+            terminal: dict | None = None) -> dict:
+    """Build the one status shape; optional fields only on observed proof."""
+    status = {"schema": STATUS_SCHEMA, "jobId": job_id, "outcome": outcome,
+              "nextAction": next_action,
+              "proof": {"result": result, "job": job, "lease": lease}}
+    if owner is not None:
+        status["observedOwner"] = {"instance": owner["instance"],
+                                   "pid": owner["pid"]}
+        status["occupied"] = True
+    if deadline is not None:
+        status["deadline"] = dict(deadline)
+    if terminal is not None:
+        status["terminal"] = dict(terminal)
+    return status
+
+
+def _status_from_info(job_id: str, info: dict) -> dict:
+    """The status for a verified result, from its one classification."""
+    return _status(job_id, FINISHED, info["action"], SIGNED,
+                   terminal={"outcome": info["outcome"],
+                             "status": info["status"],
+                             "exitCode": info["exit_code"]})
+
+
 def summarize_result(payload: dict) -> dict:
-    """Minimal confirmed info sufficient for the agent's next action.
+    """Legacy compact projection of the one status, kept for callers.
 
     Contains the verified id/status/exit/flags only. Never includes key
     material (the payload never carries it) and never claims "running".
     """
     info = classify_result(payload)
-    return {"id": payload.get("id"), "outcome": info["outcome"],
+    status = _status_from_info(payload.get("id"), info)
+    return {"id": status["jobId"], "outcome": info["outcome"],
             "confirmed": True, "status": info["status"],
             "exit_code": info["exit_code"], "timed_out": info["timed_out"],
             "output_truncated": info["output_truncated"],
-            "action": info["action"]}
+            "action": status["nextAction"]}
+
+
+def _signed_job(queue_dir: str, key: bytes, job_id: str) -> tuple:
+    """The MAC-verified request bound to this id: (payload, digest, proof)."""
+    try:
+        raw = _bridge.read(str(Path(queue_dir) / "jobs"), job_id)
+    except JobNotFoundError:
+        return None, None, ABSENT
+    try:
+        payload = open_envelope(raw, key, "job", job_id)
+    except ProtocolError:
+        return None, None, UNVERIFIABLE
+    return payload, hashlib.sha256(raw).hexdigest(), SIGNED
+
+
+def _observed_claim(queue_dir: str, key: bytes, job_id: str,
+                    job_digest: str | None) -> tuple:
+    """The lease owner from a signed claim bound to this exact job.
+
+    Returns ``(owner_or_None, proof)``. A claim whose MAC, id, shape or job
+    digest binding fails is ``unverifiable``: its owner is not reported.
+    """
+    try:
+        raw = _bridge.read(str(Path(queue_dir) / "claims"), job_id)
+    except JobNotFoundError:
+        return None, ABSENT
+    try:
+        payload = open_envelope(raw, key, "claim", job_id)
+    except ProtocolError:
+        return None, UNVERIFIABLE
+    owner = payload.get("owner")
+    if (payload.get("schema") != LEASE_SCHEMA
+            or payload.get("kind") != "claim"
+            or payload.get("id") != job_id
+            or not isinstance(owner, dict)
+            or not isinstance(owner.get("instance"), str)
+            or not owner["instance"]
+            or isinstance(owner.get("pid"), bool)
+            or not isinstance(owner.get("pid"), int)
+            or not isinstance(job_digest, str)
+            or payload.get("job_envelope_sha256") != job_digest):
+        return None, UNVERIFIABLE
+    return {"instance": owner["instance"], "pid": owner["pid"]}, SIGNED
+
+
+def _signed_deadline(job: dict | None) -> dict | None:
+    """Deadline basis from the signed request; never an invented clock."""
+    if job is None:
+        return None
+    seconds = job.get("timeout_seconds")
+    if (isinstance(seconds, int) and not isinstance(seconds, bool)
+            and 1 <= seconds <= 3600):
+        return {"basis": "signed job timeout_seconds (worker execution limit)",
+                "seconds": seconds}
+    return None
+
+
+def status_from_result(payload: dict) -> dict:
+    """The finished answer for a MAC-verified result bound to its own id."""
+    return _status_from_info(payload.get("id"), classify_result(payload))
+
+
+def status_for_absence(queue_dir: str, key: bytes, job_id: str) -> dict:
+    """The not-finished answer: OWNER/DEADLINE only from signed queue data.
+
+    A signed claim is occupancy evidence, not liveness: it keeps the job
+    owned (``waiting``) and the single next action re-reads the SAME id.
+    Nothing is published, released or resubmitted here.
+    """
+    _validate_job_id(job_id)
+    _validate_key(key)
+    job, digest, job_proof = _signed_job(queue_dir, key, job_id)
+    owner, lease_proof = _observed_claim(queue_dir, key, job_id, digest)
+    deadline = _signed_deadline(job)
+    if owner is not None:
+        return _status(
+            job_id, WAITING,
+            f"re-read the SAME id {job_id}; never resubmit or release its lease",
+            "absent", job_proof, SIGNED, owner=owner, deadline=deadline)
+    if job_proof == ABSENT:
+        action = (f"check the id {job_id} against the signed request it was "
+                  "submitted as; never resubmit or reuse another id")
+    else:
+        action = (f"re-read the SAME id {job_id}; never resubmit while no "
+                  "signed result exists")
+    return _status(job_id, UNKNOWN, action, "absent", job_proof, lease_proof,
+                   deadline=deadline)
+
+
+def job_status(queue_dir: str, key: bytes, job_id: str) -> dict:
+    """One non-blocking, verified readback for one job id.
+
+    Returns ``lan-job-status/1`` with outcome ``finished``, ``waiting``,
+    ``unknown`` or ``refused``. A result file that is present but fails its
+    MAC/id/format check is a refusal, never a terminal state; an unavailable
+    queue still raises (fail fast, no spin).
+    """
+    _validate_job_id(job_id)
+    _validate_key(key)
+    results_dir = _require_queue(queue_dir)
+    try:
+        raw = _bridge.read(results_dir, job_id)
+    except JobNotFoundError:
+        return status_for_absence(queue_dir, key, job_id)
+    try:
+        payload = open_envelope(raw, key, "result", job_id)
+    except ProtocolError:
+        return _status(
+            job_id, REFUSED,
+            "ask the queue owner for the sealed result of this exact id; "
+            "never treat the present file as evidence",
+            UNVERIFIABLE)
+    return status_from_result(payload)
 
 
 def stage_timings(payload: dict) -> dict:
@@ -161,15 +322,17 @@ def wait_many_windows(queue_dir: str, key: bytes, job_id: str,
                 "job_id": job_id, "outcome": "found", "windows_used": windows,
                 "polls_bound": polls, "elapsed_s": round(elapsed, 1),
                 "stages": stage_timings(payload),
-                "summary": summarize_result(payload)}
+                "status": status_from_result(payload)}
         if time.monotonic() >= deadline:
             break
     elapsed = time.monotonic() - started
     absence = classify_absence(job_id)
+    status = status_for_absence(queue_dir, key, job_id)
     return None, {"job_id": job_id, "outcome": absence["outcome"],
                   "confirmed": False, "windows_used": windows,
                   "polls_bound": polls, "elapsed_s": round(elapsed, 1),
-                  "detail": absence["detail"], "action": absence["action"]}
+                  "detail": absence["detail"], "action": status["nextAction"],
+                  "status": status}
 
 
 def get_result(queue_dir: str, key: bytes, job_id: str,
@@ -254,17 +417,22 @@ def get_result(queue_dir: str, key: bytes, job_id: str,
                 "polls_bound": windows * per_window,
                 "elapsed_s": round(elapsed, 1),
                 "stages": stage_timings(payload),
-                "summary": summarize_result(payload)}
+                "status": status_from_result(payload)}
         if max_windows and windows >= max_windows:
             absence = classify_absence(job_id)
+            status = status_for_absence(queue_dir, key, job_id)
             return None, {
                 "job_id": job_id, "outcome": absence["outcome"],
                 "confirmed": False, "windows_used": windows,
                 "probes": probes, "polls_bound": windows * per_window,
                 "elapsed_s": round(elapsed, 1),
-                "detail": absence["detail"], "action": absence["action"]}
+                "detail": absence["detail"], "action": status["nextAction"],
+                "status": status}
 
 
-__all__ = ["CONFIRMED_SUCCESS_STATUSES", "UNKNOWN", "classify_absence",
-           "classify_result", "peek_result", "stage_timings",
-           "summarize_result", "wait_many_windows", "get_result"]
+__all__ = ["ABSENT", "CONFIRMED_SUCCESS_STATUSES", "FINISHED", "LEASE_SCHEMA",
+           "NOT_READ", "REFUSED", "SIGNED", "STATUS_SCHEMA", "UNKNOWN",
+           "UNVERIFIABLE", "WAITING", "classify_absence", "classify_result",
+           "get_result", "job_status", "peek_result", "stage_timings",
+           "status_for_absence", "status_from_result", "summarize_result",
+           "wait_many_windows"]

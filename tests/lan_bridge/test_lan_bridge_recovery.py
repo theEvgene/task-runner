@@ -230,7 +230,7 @@ class TimingsTests(unittest.TestCase):
             self.queue, self.key, job_id, total_timeout=5,
             window_timeout=5, poll_seconds=0.5)
         self.assertEqual(report["outcome"], "found")
-        self.assertEqual(report["summary"]["outcome"], "success")
+        self.assertEqual(report["status"]["terminal"]["outcome"], "success")
         self.assertEqual(payload["id"], job_id)
 
 
