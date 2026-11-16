@@ -7,7 +7,11 @@ description: Create one Epic in the fixed LEL Service backlog through the task-r
 
 Use the installed `scripts/jira-protocol.mjs` relative to this `SKILL.md`.
 Read `references/jira-protocol.md` before execution. The runtime is installed
-with this skill; never substitute a similarly named global command.
+with this skill; never substitute a similarly named global command. Run it on
+the host that holds the authorized Jira session: locally when the session is
+local, or on Lenovo through the generic signed queue when the session lives
+only there (see `docs/lenovo-hosted-scripts.md` in the pinned task-runner
+checkout; same two-phase flow, no Jira-specific wrapper).
 
 ## Prepare
 
@@ -33,6 +37,11 @@ node <skill-dir>/scripts/jira-protocol.mjs create-epic \
   --summary <summary> --description <description> \
   [--field <server-field-id>=<value>]...
 ```
+
+For a long, quoted, Unicode, or multiline Summary or Description, write the
+exact UTF-8 text to a file and pass `--summary-file` / `--description-file`
+instead of the inline form (mutually exclusive; the file forms are also the
+bridge-safe forms over the LAN share).
 
 `MissingRequiredFields` names safe server-declared field ids and labels. Ask
 for or derive only supported values, then plan again. Never guess custom-field

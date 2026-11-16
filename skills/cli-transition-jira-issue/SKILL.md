@@ -8,6 +8,10 @@ description: Apply one currently available workflow transition to an explicitly 
 Use the installed `scripts/jira-protocol.mjs` relative to this `SKILL.md` and
 read `references/jira-protocol.md` before execution. This skill applies one
 available transition; it does not synthesize a path to an arbitrary status.
+Run it on the host that holds the authorized Jira session: locally when the
+session is local, or on Lenovo through the generic signed queue when the
+session lives only there (see `docs/lenovo-hosted-scripts.md`; same
+two-phase flow, no Jira-specific wrapper).
 
 ## Discover and select
 

@@ -25,7 +25,9 @@ consume confirmation or mutate. A later `apply --confirm <planDigest>` creates
 test, verifies its normalized exact path and effective value, then creates and
 verifies production. A capture is never a CLI argument and never grants
 runtime mutation permission; there are no signing, reviewer, trust-store, or
-artificial verification inputs.
+artificial verification inputs. `plan` accepts `--description-file <path>` as
+the file-backed alternative to `--description` for quoted, Unicode, or
+multiline text.
 
 The CLI uses the server-returned boolean type UUID and checks duplicates by
 the configured slash-form exact path, independent of display name. This lets

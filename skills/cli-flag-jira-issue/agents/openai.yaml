@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flag Jira Issue (CLI)"
+  short_description: "Add or remove the flag on one LEL issue with a required comment"
+  default_prompt: "Use $cli-flag-jira-issue to plan and safely flag one LEL Jira issue with a required comment."

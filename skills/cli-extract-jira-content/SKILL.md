@@ -7,7 +7,11 @@ description: Extract one explicitly named LEL Jira issue and its standard immedi
 
 Use `scripts/jira-protocol.mjs` relative to this `SKILL.md`. Read
 `references/jira-protocol.md` before execution, require one unambiguous
-`LEL-N` key, and run:
+`LEL-N` key, and run it on the host that holds the authorized Jira session:
+locally when the session is local, or on Lenovo through the generic signed
+queue when the session lives only there (see
+`docs/lenovo-hosted-scripts.md`; same command, no Jira-specific wrapper).
+For the run itself:
 
 ```text
 node <skill-dir>/scripts/jira-protocol.mjs extract --issue LEL-1234

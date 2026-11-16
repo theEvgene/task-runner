@@ -19,10 +19,12 @@ For the managed Jira read, `lenovo_python`, `lenovo_jira_working_dir`, and
 `docs/lan-bridge-config.md`. That read is the installed external
 `nessy-jira-workflow` workflow (`jira_task.py read ...`), not the
 task-runner CLI. The task-runner Jira protocol CLI lives at
-`scripts/jira-protocol.mjs` inside the verified Lenovo clone (see
+`scripts/jira-protocol.mjs` inside the verified Lenovo clone and has its own
+generic signed-queue route (see `docs/lenovo-hosted-scripts.md` and
 `docs/lan-bridge-config.md` for the username-free checkout path and the
-exact supported access route); this skill does not invoke it over the
-bridge and never substitutes one transport for the other. Any task-runner checkout path used by another
+exact supported access route); this skill carries the generic
+submit/fetch/observe mechanism both transports share and never substitutes
+one transport for the other. Any task-runner checkout path used by another
 route is that route's own per-run `--lenovo-checkout` flag: the verified
 Lenovo clone is `Documents\repositories\task-runner` under the Lenovo user
 profile (resolve on Lenovo with

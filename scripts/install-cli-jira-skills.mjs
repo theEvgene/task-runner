@@ -18,6 +18,7 @@ const skillNames = [
   "cli-assign-jira-issue",
   "cli-transition-jira-issue",
   "cli-extract-jira-content",
+  "cli-flag-jira-issue",
 ];
 const runtimeFiles = [
   "scripts/jira-protocol.mjs",
