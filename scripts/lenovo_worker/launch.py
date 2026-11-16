@@ -5,10 +5,19 @@ with credentials from a local file (never in args/log/output), verifies the
 existing queue/key/share, then starts the worker (sibling ``worker.py``)
 and the cleaner (sibling ``cleaner.py``) as detached processes.
 
-Refuses without side effects when: config/password missing, SMB unreachable
-or credentials wrong, queue or key unusable, trash/state misplaced, a pid file
-is corrupt/foreign/unprovable or a live pid runs under a changed
+Refuses without side effects when: the launcher cwd (or a configured
+``workerCwd``) is a UNC path, a mapped network drive, or cannot be proven
+local, config/password missing, SMB unreachable or credentials wrong, queue or
+key unusable, the worker delivery is missing, trash/state misplaced, a pid
+file is corrupt/foreign/unprovable or a live pid runs under a changed
 command/binding, another launch holds the lock, or a second launch races.
+The SMB ``unc`` value is the only allowed UNC path: it names the share, never
+a working directory to run in.
+
+Every refusal carries one reason code and one bounded next action; the receipt
+reports the worker/cleaner launch only (``scope``/``jobOutcome``) and never
+claims that any job ran or completed. Printed text is redacted, so no
+credential, host name, or private absolute path leaves the launcher.
 A provably dead pid (including a legacy record or a changed config under a
 dead pid) is a safe reboot recovery: under the held launch lock the stale
 file is removed and the role is started fresh. Both roles are inspected
@@ -25,9 +34,7 @@ import importlib.util
 import json
 import os
 import shutil
-import subprocess
 import sys
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +44,8 @@ HERE = Path(__file__).resolve().parent
 
 sys.path.insert(0, str(HERE))
 import proc  # noqa: E402  (sibling helper, same delivery)
+import reasons  # noqa: E402  (single owner of refusal reasons)
+import share_probe  # noqa: E402  (bounded SMB probe, observations only)
 
 
 def _load_bridge():
@@ -46,7 +55,8 @@ def _load_bridge():
         if override:
             path = Path(override) / "lan_bridge.py"
     if not path.is_file():
-        raise RuntimeError("bridge client not found (scripts/lan_bridge/lan_bridge.py)")
+        raise reasons.Refusal("client-missing",
+                              "bridge client not found (scripts/lan_bridge/lan_bridge.py)")
     if str(path.parent) not in sys.path:
         sys.path.insert(0, str(path.parent))
     spec = importlib.util.spec_from_file_location("lenovo_launch_bridge", str(path))
@@ -63,7 +73,7 @@ def _now() -> str:
 def _abs(value: str, name: str) -> Path:
     path = Path(value)
     if not path.is_absolute():
-        raise ValueError(f"{name} must be an absolute path")
+        raise reasons.Refusal("config-invalid", f"{name} must be an absolute path")
     return path
 
 
@@ -71,94 +81,10 @@ def _load_config(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as error:
-        raise ValueError(f"cannot read config: {error}") from error
+        raise reasons.Refusal("config-unreadable") from error
     if not isinstance(data, dict):
-        raise ValueError("config must be a JSON object")
+        raise reasons.Refusal("config-invalid", "config must be a JSON object")
     return data
-
-
-def _read_password(password_file: Path) -> str:
-    try:
-        text = password_file.read_text(encoding="utf-8-sig")
-    except OSError as error:
-        raise ValueError(f"credential file unreadable: {error}") from error
-    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
-    if not lines:
-        raise ValueError("credential file holds no password")
-    if len(lines) > 1:
-        raise ValueError("credential file must hold a single line")
-    return lines[0]
-
-
-def _connect_share(smb: dict, shared: Path) -> None:
-    """Make the existing share visible. Fixture mode verifies a local dir."""
-
-    if not isinstance(smb, dict):
-        raise ValueError("smb must be an object")
-    fixture = smb.get("fixtureLocalDir")
-    password_file = smb.get("passwordFile")
-    if fixture:
-        local = Path(str(fixture))
-        if not local.is_dir():
-            raise ValueError(f"share unavailable at {fixture}: check path/mount")
-        expected = smb.get("fixtureRequirePassword")
-        if expected is not None:
-            if not password_file:
-                raise ValueError("bad credentials: no passwordFile in config")
-            if _read_password(Path(str(password_file))) != str(expected):
-                raise ValueError("bad credentials: password mismatch (check credential file)")
-        return
-    unc = str(smb.get("unc") or "")
-    username = str(smb.get("username") or "")
-    if not unc or not username or not password_file:
-        raise ValueError("smb needs unc, username and passwordFile")
-    secret = _read_password(Path(str(password_file)))
-    if len(secret) > 256:
-        raise ValueError("bad credentials: credential file malformed")
-    script = (
-        "$ErrorActionPreference='Stop'\n"
-        f"$unc={json.dumps(unc)}\n"
-        f"$user={json.dumps(username)}\n"
-        f"$pwFile={json.dumps(str(password_file))}\n"
-        "if (Test-Path -LiteralPath $unc) { 'ALREADY:'+$unc; exit 0 }\n"
-        # Same normalization as _read_password (first line, trimmed) so a
-        # trailing CRLF written by any editor matches the fixture check.
-        # The plaintext lives only in this transient script, never in
-        # process args, stdout, stderr, logs, or receipts.
-        "$pwRaw=Get-Content -Raw -LiteralPath $pwFile\n"
-        "if ($null -eq $pwRaw -or $pwRaw.Trim().Length -eq 0) { 'BAD-CREDENTIAL-FILE'; exit 12 }\n"
-        "$pwPlain=(($pwRaw -split \"\\r?\\n\")[0]).Trim()\n"
-        "try {\n"
-        "  $sec=ConvertTo-SecureString -String $pwPlain -AsPlainText -Force\n"
-        "  $pwPlain=$null\n"
-        "  $cred=New-Object PSCredential($user,$sec)\n"
-        "  $null=New-SmbMapping -RemotePath $unc -UserName $user -Password $cred.GetNetworkCredential().Password -Persistent $false\n"
-        "} catch [System.UnauthorizedAccessException] { 'AUTH-DENIED'; exit 10 }\n"
-        "catch { 'MAP-FAILED:'+$_.Exception.Message; exit 11 }\n"
-        "if (Test-Path -LiteralPath $unc) { 'MAPPED:'+$unc; exit 0 }\n"
-        "'MAP-FAILED:unreachable after mapping'; exit 11\n"
-    )
-    with tempfile.NamedTemporaryFile("w", suffix=".ps1", delete=False, encoding="utf-8") as handle:
-        handle.write(script)
-        script_path = handle.name
-    try:
-        completed = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-             "-File", script_path],
-            capture_output=True, text=True, timeout=120, check=False,
-        )
-    finally:
-        try:
-            os.unlink(script_path)
-        except OSError:
-            pass
-    out = ((completed.stdout or "") + (completed.stderr or "")).strip().splitlines()
-    first = out[0].strip() if out else ""
-    if first.startswith(("ALREADY:", "MAPPED:")):
-        return
-    if completed.returncode in (10, 12) or first in ("AUTH-DENIED", "BAD-CREDENTIAL-FILE"):
-        raise ValueError("bad credentials: SMB refused the username/password (check credential file)")
-    raise ValueError(f"share unavailable at {unc}: check host/path (detail: {first[:160]})")
 
 
 def _norm(path: Path | str) -> str:
@@ -181,12 +107,16 @@ def _check_layout(queue: Path, shared: Path, trash: Path, state: Path) -> None:
     """
 
     if queue == shared:
-        raise ValueError("queueDir, sharedDir and trashDir must differ")
-    for label, first, second in (("trash", trash, queue), ("trash", trash, shared),
-                                 ("state", state, queue), ("state", state, shared),
-                                 ("trash/state", trash, state)):
+        raise reasons.Refusal("layout-overlap", "queueDir and sharedDir must differ")
+    for label, first, second, second_label in (
+            ("trashDir", trash, queue, "queueDir"),
+            ("trashDir", trash, shared, "sharedDir"),
+            ("stateDir", state, queue, "queueDir"),
+            ("stateDir", state, shared, "sharedDir"),
+            ("trashDir", trash, state, "stateDir")):
         if _within_or_equal(first, second):
-            raise ValueError(f"{label} dir must be outside {second}")
+            raise reasons.Refusal("layout-overlap",
+                                  f"{label} must be outside {second_label}")
 
 
 LOCK_NAME = ".launch.lock"
@@ -242,7 +172,8 @@ def _acquire_launch_lock(state_dir: Path) -> Path:
             shutil.rmtree(lock, ignore_errors=True)
             continue
         if time.monotonic() >= deadline:
-            raise ValueError("another launch is in progress; re-run to adopt its pids")
+            raise reasons.Refusal("launch-busy",
+                                  "another launch is in progress; re-run to adopt its pids")
         time.sleep(0.2)
 
 
@@ -267,8 +198,9 @@ def _inspect_role(state_dir: Path, role: str, command: list[str],
     try:
         existing = proc.read_pid_file(pid_file)
     except (ValueError, OSError) as error:
-        raise ValueError(f"ambiguous {role} state ({error}); verify no {role} runs, "
-                         f"then remove {pid_file}") from error
+        raise reasons.Refusal("role-ambiguous",
+                              f"ambiguous {role} state (corrupt pid file); verify no "
+                              f"{role} runs, then remove {role}.pid in stateDir") from error
     if existing is None:
         return ("absent", None)
     pid = existing.get("pid")
@@ -278,9 +210,10 @@ def _inspect_role(state_dir: Path, role: str, command: list[str],
         # recoverable; a live one could be anything.
         if not pid_alive:
             return ("absent", None)
-        raise ValueError(f"ambiguous {role} state (unrecognized pid format, "
-                         f"possibly written by an older launcher); verify no {role} "
-                         f"runs, then remove {pid_file}")
+        raise reasons.Refusal("role-ambiguous",
+                              f"ambiguous {role} state (unrecognized pid format, "
+                              f"possibly written by an older launcher); verify no {role} "
+                              f"runs, then remove {role}.pid in stateDir")
     if (existing.get("marker") != marker
             or existing.get("command") != [str(p) for p in command]
             or existing.get("binding") != binding):
@@ -289,28 +222,31 @@ def _inspect_role(state_dir: Path, role: str, command: list[str],
         # owner, so the new config may take over under the launch lock.
         if not pid_alive:
             return ("absent", None)
-        raise ValueError(f"ambiguous {role} state (config changed under a recorded "
-                         f"process); verify, then remove {pid_file}")
+        raise reasons.Refusal("role-ambiguous",
+                              f"ambiguous {role} state (config changed under a recorded "
+                              f"process); verify, then remove {role}.pid in stateDir")
     if not pid_alive:
         return ("absent", None)
     line = proc.cmdline(pid) or ""
     if not line:
         # Alive but command line unprovable (permissions/race): never adopt
         # and never overwrite; a rebooted pid is dead, so it never lands here.
-        raise ValueError(f"ambiguous {role} state (pid {pid} runs but its command "
-                         f"line cannot be proven); verify no {role} runs, "
-                         f"then remove {pid_file}")
+        raise reasons.Refusal("role-ambiguous",
+                              f"ambiguous {role} state (pid {pid} runs but its command "
+                              f"line cannot be proven); verify no {role} runs, "
+                              f"then remove {role}.pid in stateDir")
     if (marker and marker not in line) or any(
             str(token) in " ".join(str(p) for p in command)
             and str(token) not in line
             for token in binding.values() if token):
-        raise ValueError(f"ambiguous {role} state (pid {pid} runs foreign "
-                         f"command); refusing to touch it")
+        raise reasons.Refusal("role-ambiguous",
+                              f"ambiguous {role} state (pid {pid} runs foreign "
+                              f"command); refusing to touch it")
     return ("running", pid)
 
 
 def _ensure_role(state_dir: Path, role: str, command: list[str],
-                 marker: str, binding: dict) -> dict:
+                 marker: str, binding: dict, cwd: Path | None = None) -> dict:
     """Start the role once, or report the running owner. Never kill/replace."""
 
     command = [str(p) for p in command]
@@ -324,18 +260,22 @@ def _ensure_role(state_dir: Path, role: str, command: list[str],
         try:
             pid_file.unlink()
         except OSError as error:
-            raise ValueError(f"ambiguous {role} state (stale pid file "
-                             f"cannot be removed: {error})") from error
+            raise reasons.Refusal("role-ambiguous",
+                                  f"ambiguous {role} state (stale pid file cannot be "
+                                  f"removed); verify, then remove {role}.pid in "
+                                  f"stateDir") from error
     log_file = state_dir / f"{role}.log"
-    new_pid = proc.spawn_detached(command, log_file)
+    new_pid = proc.spawn_detached(command, log_file, cwd)
     try:
         proc.write_pid_file(pid_file, new_pid, marker, _now(),
                             {"command": command, "binding": binding})
     except FileExistsError as error:
-        raise ValueError(f"ambiguous {role} state (pid file appeared mid-start); "
-                         "re-run to adopt it") from error
+        raise reasons.Refusal("role-ambiguous",
+                              f"ambiguous {role} state (pid file appeared mid-start); "
+                              "re-run to adopt it") from error
     if not proc.is_alive(new_pid):
-        raise ValueError(f"{role} exited at once; read {log_file}")
+        raise reasons.Refusal("role-start-failed",
+                              f"{role} exited at once; read {role}.log in stateDir")
     return {"role": role, "state": "started", "pid": new_pid}
 
 
@@ -345,27 +285,76 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _launcher_cwd() -> str | None:
+    try:
+        return os.getcwd()
+    except OSError:
+        return None
+
+
+def _refuse(summary: dict, refusal: reasons.Refusal) -> int:
+    report = reasons.describe(refusal)
+    summary.update({"outcome": "refused", "reason": report["reason"],
+                    "observed": report["state"], "detail": report["detail"],
+                    "nextAction": report["nextAction"], "evidence": report["evidence"]})
+    print(f"launch refused: {report['detail']}", file=sys.stderr)
+    print(json.dumps(summary, ensure_ascii=False))
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    summary: dict = {"schema": LAUNCH_SCHEMA, "at": _now(), "roles": []}
+    summary: dict = {"schema": LAUNCH_SCHEMA, "scope": "worker-launch",
+                     "jobOutcome": "not-evaluated", "at": _now(), "roles": []}
     try:
         config = _load_config(Path(args.config))
+        if any(name not in config for name in ("queueDir", "sharedDir", "keyFile")):
+            raise reasons.Refusal("config-invalid", "config field is missing")
         queue = _abs(str(config["queueDir"]), "queueDir")
         shared = _abs(str(config["sharedDir"]), "sharedDir")
         key_file = _abs(str(config["keyFile"]), "keyFile")
         trash = _abs(str(config.get("trashDir", "") or ""), "trashDir")
         state = _abs(str(config.get("stateDir", "") or ""), "stateDir")
+        # A remote/unprovable cwd refuses before any layout, SMB, lock, or spawn
+        # work: the SMB ``unc`` names a share, never a working directory.
+        worker_cwd: Path | None = None
+        observations = {"cwd": reasons.cwd_safety(_launcher_cwd())}
+        if config.get("workerCwd"):
+            worker_cwd = _abs(str(config["workerCwd"]), "workerCwd")
+            observations["workerCwd"] = reasons.cwd_safety(worker_cwd)
+        verdict = reasons.classify_cwd(observations)
+        if verdict is not None:
+            raise verdict
         _check_layout(queue, shared, trash, state)
-        _connect_share(config.get("smb") or {}, shared)
-        if not shared.is_dir():
-            raise ValueError(f"shared folder unavailable at {shared}: check path/mount")
-        if not queue.is_dir() or not (queue / "jobs").is_dir() or not (queue / "results").is_dir():
-            raise ValueError(f"queue unavailable at {queue}: check path/mount")
+        observations.update(share_probe.connect_share(config.get("smb") or {}))
+        if observations.get("shareVisible") is True and not shared.is_dir():
+            observations["shareVisible"] = False
+        observations["queuePresent"] = (
+            queue.is_dir() and (queue / "jobs").is_dir() and (queue / "results").is_dir())
+        python = str(config.get("python") or proc.python_executable())
+        worker_dir = Path(str(config.get("workerDir") or str(HERE)))
+        worker_cmd = [str(p) for p in config.get("workerCommand", [])] or [
+            python, str(worker_dir / "worker.py"), "--queue", str(queue),
+            "--key-file", str(key_file), "--key-format", str(config.get("keyFormat", "raw")),
+            "--shared", str(shared), "--poll", str(config.get("workerPoll", 5))]
+        cleaner_cmd = [str(p) for p in config.get("cleanerCommand", [])] or [
+            python, str(_default_cleaner(worker_dir)), "--shared", str(shared),
+            "--queue-dir", str(queue), "--trash-dir", str(trash),
+            "--interval", str(config.get("cleanerInterval", 300))]
+        if not config.get("workerCommand") and not config.get("cleanerCommand"):
+            observations["workerPresent"] = (
+                (worker_dir / "worker.py").is_file()
+                and _default_cleaner(worker_dir).is_file())
+        # Evidence-backed only: an unsupported or contradictory observation
+        # refuses as unknown instead of concluding a cause.
+        verdict = reasons.classify(observations)
+        if verdict is not None:
+            raise verdict
         bridge = _load_bridge()
         try:
             bridge.load_key(str(key_file), str(config.get("keyFormat", "raw")), str(queue))
         except Exception as error:
-            raise ValueError(f"key unusable: {error}") from error
+            raise reasons.Refusal("key-unusable", f"key unusable: {error}") from error
         try:
             key_resolved = key_file.resolve()
             for label, root in (("queue", queue), ("shared LAN folder", shared),
@@ -375,24 +364,14 @@ def main(argv: list[str] | None = None) -> int:
                 except ValueError:
                     inside = False
                 if inside:
-                    raise ValueError(f"key inside the {label}")
-        except ValueError:
+                    raise reasons.Refusal("key-misplaced", f"key inside the {label}")
+        except reasons.Refusal:
             raise
         except OSError as error:
-            raise ValueError(f"key custody unprovable: {error}") from error
+            raise reasons.Refusal("key-unusable", "key custody unprovable") from error
         lock = _acquire_launch_lock(state)
         try:
             trash.mkdir(parents=True, exist_ok=True)
-            python = str(config.get("python") or proc.python_executable())
-            worker_dir = Path(str(config.get("workerDir") or str(HERE)))
-            worker_cmd = [str(p) for p in config.get("workerCommand", [])] or [
-                python, str(worker_dir / "worker.py"), "--queue", str(queue),
-                "--key-file", str(key_file), "--key-format", str(config.get("keyFormat", "raw")),
-                "--shared", str(shared), "--poll", str(config.get("workerPoll", 5))]
-            cleaner_cmd = [str(p) for p in config.get("cleanerCommand", [])] or [
-                python, str(_default_cleaner(worker_dir)), "--shared", str(shared),
-                "--queue-dir", str(queue), "--trash-dir", str(trash),
-                "--interval", str(config.get("cleanerInterval", 300))]
             worker_marker = str(config.get("workerMarker") or (worker_dir / "worker.py").name)
             cleaner_marker = str(config.get("cleanerMarker") or "cleaner.py")
             worker_binding = {"queue": str(queue), "key_file": str(key_file)}
@@ -404,16 +383,15 @@ def main(argv: list[str] | None = None) -> int:
             for role, command, marker, binding in planned:
                 _inspect_role(state, role, command, marker, binding)
             for role, command, marker, binding in planned:
-                summary["roles"].append(_ensure_role(state, role, command, marker, binding))
+                summary["roles"].append(
+                    _ensure_role(state, role, command, marker, binding, worker_cwd))
         finally:
             _release_launch_lock(lock)
-        summary["outcome"] = "ready"
+        summary.update({"outcome": "ready", "reason": "none", "nextAction": "none"})
+    except reasons.Refusal as error:
+        return _refuse(summary, error)
     except (ValueError, KeyError, RuntimeError) as error:
-        summary["outcome"] = "refused"
-        summary["reason"] = str(error)[:300]
-        print(f"launch refused: {error}", file=sys.stderr)
-        print(json.dumps(summary, ensure_ascii=False))
-        return 2
+        return _refuse(summary, reasons.Refusal(reasons.UNKNOWN, str(error)))
     print(json.dumps(summary, ensure_ascii=False))
     states = ", ".join(f'{r["role"]}:{r["state"]}:{r["pid"]}' for r in summary["roles"])
     print(f"launch ready ({states})", file=sys.stderr)

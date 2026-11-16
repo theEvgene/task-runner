@@ -93,10 +93,12 @@ def write_pid_file(path: Path, pid: int, marker: str, started: str,
         os.close(fd)
 
 
-def spawn_detached(command: list[str], log_path: Path) -> int:
+def spawn_detached(command: list[str], log_path: Path,
+                   cwd: Path | None = None) -> int:
     """Start a daemon child with output to a log file; return its pid.
 
     The child inherits no secrets: callers pass paths only, never content.
+    ``cwd`` is only ever a caller-verified local absolute directory.
     """
 
     log_path = Path(log_path)
@@ -109,11 +111,13 @@ def spawn_detached(command: list[str], log_path: Path) -> int:
             proc = subprocess.Popen([str(p) for p in command],
                                     stdout=handle, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL,
+                                    cwd=None if cwd is None else str(cwd),
                                     creationflags=flags, close_fds=True)
         else:
             proc = subprocess.Popen([str(p) for p in command],
                                     stdout=handle, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL,
+                                    cwd=None if cwd is None else str(cwd),
                                     start_new_session=True, close_fds=True)
         return int(proc.pid)
     finally:

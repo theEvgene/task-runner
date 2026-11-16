@@ -7,6 +7,8 @@ a fresh temp root and kills the stub processes it starts.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -17,6 +19,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 TESTS_DIR = Path(__file__).resolve().parent
 ROOT = TESTS_DIR.parents[1]
@@ -26,6 +29,7 @@ BRIDGE = ROOT / "scripts" / "lan_bridge"
 sys.path.insert(0, str(BRIDGE))
 sys.path.insert(0, str(SCRIPTS))
 import lan_bridge  # noqa: E402
+import launch as launch_mod  # noqa: E402
 import proc as launch_proc  # noqa: E402
 
 WORKER = SCRIPTS / "worker.py"
@@ -216,6 +220,9 @@ class LaunchTests(unittest.TestCase):
         self.tmp.track_pids(state)
         summary = json.loads(first.stdout)
         self.assertEqual(summary["outcome"], "ready")
+        # The receipt is a launch status only; it never claims a job result.
+        self.assertEqual(summary["scope"], "worker-launch")
+        self.assertEqual(summary["jobOutcome"], "not-evaluated")
         pids = [r["pid"] for r in summary["roles"]]
         second = self._launch(config)
         self.assertEqual(second.returncode, 0, second.stderr)
@@ -315,6 +322,99 @@ class LaunchTests(unittest.TestCase):
         self.assertNotIn(SECRET, blob)
         for pid in self.tmp.pids:
             self.assertNotIn(SECRET, launch_proc.cmdline(pid) or "")
+
+    def test_unc_launcher_cwd_refuses_before_any_spawn(self) -> None:
+        root = self.tmp.root
+        shared = root / "share"
+        shared.mkdir()
+        queue = make_queue(shared)
+        key = root / "key.bin"
+        make_key(key)
+        state, trash = root / "state", root / "trash"
+        config = base_config(root, queue, shared, key, state, trash)
+        cfg = write_config(root / "config.json", **config)
+        out = io.StringIO()
+        # A launcher started from a share is unverifiable as a host cwd: it
+        # refuses before the SMB mapping, the launch lock, or any spawn.
+        with mock.patch.object(launch_mod.os, "getcwd",
+                               return_value="\\\\HOST\\lan-share\\cwd"), \
+                mock.patch.object(launch_mod.proc, "spawn_detached") as spawn, \
+                contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = launch_mod.main(["--config", str(cfg)])
+        self.assertEqual(code, 2)
+        spawn.assert_not_called()
+        summary = json.loads(out.getvalue())
+        self.assertEqual(summary["outcome"], "refused")
+        self.assertEqual(summary["reason"], "launch-cwd-remote")
+        self.assertEqual(summary["jobOutcome"], "not-evaluated")
+        self.assertTrue(summary["nextAction"])
+        self.assertNotIn("HOST", json.dumps(summary))
+        self.assertFalse((state / "worker.pid").exists())
+        self.assertFalse((state / "cleaner.pid").exists())
+        self.assertFalse(trash.exists())
+
+    def test_unc_worker_cwd_refuses_without_spawning(self) -> None:
+        root = self.tmp.root
+        shared = root / "share"
+        shared.mkdir()
+        queue = make_queue(shared)
+        key = root / "key.bin"
+        make_key(key)
+        state, trash = root / "state", root / "trash"
+        config = base_config(root, queue, shared, key, state, trash)
+        config["workerCwd"] = "\\\\HOST\\lan-share\\work"
+        completed = self._launch(config)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        summary = json.loads(completed.stdout)
+        self.assertEqual(summary["reason"], "launch-cwd-remote")
+        self.assertIn("worker cwd", summary["detail"])
+        self.assertNotIn("HOST", completed.stdout + completed.stderr)
+        self.assertFalse((state / "worker.pid").exists())
+        self.assertFalse((state / "cleaner.pid").exists())
+
+    def test_foreign_command_line_refuses_without_killing(self) -> None:
+        root = self.tmp.root
+        shared = root / "share"
+        shared.mkdir()
+        queue = make_queue(shared)
+        key = root / "key.bin"
+        make_key(key)
+        state, trash = root / "state", root / "trash"
+        state.mkdir(parents=True)
+        foreign = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        def stop() -> None:
+            try:
+                foreign.terminate()
+                foreign.wait(5)
+            except OSError:
+                pass
+
+        self.addCleanup(stop)
+        config = base_config(root, queue, shared, key, state, trash)
+        worker_cmd = [sys.executable, str(WORKER), "--queue", str(queue),
+                      "--key-file", str(key), "--key-format", "raw",
+                      "--shared", str(shared), "--poll", "5"]
+        record = {"pid": foreign.pid, "marker": "worker.py", "started": "t",
+                  "command": worker_cmd,
+                  "binding": {"queue": str(queue), "key_file": str(key)}}
+        pid_file = state / "worker.pid"
+        original = json.dumps(record)
+        pid_file.write_text(original, encoding="utf-8")
+        completed = self._launch(config)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("ambiguous worker state", completed.stderr)
+        summary = json.loads(completed.stdout)
+        self.assertEqual(summary["reason"], "role-ambiguous")
+        self.assertTrue(summary["nextAction"])
+        # Nothing is killed, replaced, or duplicated.
+        self.assertIsNone(foreign.poll())
+        self.assertEqual(pid_file.read_text(encoding="utf-8"), original)
+        self.assertFalse((state / "cleaner.pid").exists())
+        self.assertNotIn(str(root), completed.stdout + completed.stderr)
 
 
 if __name__ == "__main__":

@@ -53,6 +53,25 @@ Double-click the shortcut. Success = one JSON line on stdout with
 A second click while both run reports `already-running` with the same pids
 and starts nothing new.
 
+The JSON line is the launch receipt: `"outcome"` is `ready` or `refused`, and
+`"scope":"worker-launch"` plus `"jobOutcome":"not-evaluated"` state that this
+is a worker/cleaner launch status only. It never claims that any queued job
+ran, completed, or produced a result.
+
+A refusal carries one `reason` code, one bounded `nextAction`, and the
+`evidence` tokens it was derived from. Printed text is redacted, so no
+password, host name, or private absolute path appears in stdout, stderr, or a
+log.
+
+## Launch directory (strict)
+
+The SMB `unc` value names the share and is the only allowed UNC path. The
+launcher refuses, before the SMB mapping, the launch lock, or any spawn, when
+the directory it was started from (or the optional `workerCwd`) is a UNC path,
+a mapped network drive, a relative path, or a drive that cannot be proven
+local. Start the shortcut from a local fixed-disk directory; `workerCwd`
+(optional) is one absolute local directory for both spawned roles.
+
 ## What it guarantees
 
 - Existing queue only: a missing `queue/`, `queue/jobs/` or `queue/results/`
@@ -198,6 +217,19 @@ and starts nothing new.
 | `another launch is in progress` | concurrent double-click   | wait seconds, re-run to adopt pids    |
 | `<role> exited at once`       | child crashed               | read `stateDir\<role>.log`            |
 
+`reason` codes map to those messages: `launch-cwd-remote`,
+`launch-cwd-relative`, `launch-cwd-unverifiable`, `smb-auth-refused`,
+`smb-credential-file-invalid`, `smb-network-unreachable`,
+`smb-share-unavailable`, `smb-share-unconfirmed`, `queue-missing`,
+`worker-missing`, `key-unusable`, `key-misplaced`, `layout-overlap`,
+`launch-busy`, `role-ambiguous`, `role-start-failed`, `config-invalid`,
+`client-missing`, and `unknown`. A generic SMB mapping failure is
+`smb-share-unconfirmed`, never bad credentials: a path that is not found does
+not prove that a password is wrong. Contradictory observations (for example a
+share reported mapped while its path is absent) are `unknown` with one next
+action. The launcher never retries a credential and never changes a share,
+firewall, or account.
+
 ## Manual post-reboot validation (REQUIRED, manual only)
 
 Automated tests below use fixtures only and prove no live run. After a real
@@ -253,5 +285,11 @@ success + repeat is idempotent with command/binding adoption; dead pid
 records recover after a reboot without duplicates while live foreign/changed
 pids still refuse with nothing started or deleted; concurrent
 launch serializes on the state lock; misplaced trash/state refuses before
-anything is created; unavailable share and bad credentials refuse; password absent from all
+anything is created; unavailable share and bad credentials refuse; a UNC,
+relative, or unprovable launcher/worker cwd refuses before the SMB mapping,
+the lock, or any spawn; a foreign live pid refuses without killing it; the
+launch receipt stays `scope: worker-launch` with `jobOutcome: not-evaluated`;
+the shared reason classifier turns a generic mapping failure into
+`smb-share-unconfirmed` and contradictory observations into `unknown`, and its
+output carries no credential or private path; password absent from all
 outputs, logs, and child command lines.

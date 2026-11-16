@@ -105,6 +105,12 @@ the key, command, configured paths, queue contents, or worker stderr. Parallel
 runs have independent random IDs and the canonical queue's immutable,
 no-clobber files; no shared receipt or observer state is used.
 
+A local failure report also carries one `reason` code and one bounded
+`nextAction` from the same classifier the Lenovo launcher uses. That path
+publishes no signed job: an uncertain preflight never submits. A generic
+share/path failure is never reported as bad credentials, and contradictory
+observations are `unknown` with one next action.
+
 The Lenovo probe is fixed read-only code: filesystem metadata/digests,
 executable lookup, and optional local `git rev-parse HEAD`. It has no network
 operation. A returned result proves that the worker executed this job; mere
@@ -119,4 +125,6 @@ corporate checks remain separate authorized operations.
 
 The suite uses temporary files, an ephemeral fake key, and a fake worker. It
 covers success, a stale component, bad MAC, timeout followed by same-ID
-retrieval, and concurrent calls. It performs no network or corporate access.
+retrieval, and concurrent calls, plus an uncertain preflight that reports one
+path-free reason and publishes no signed job. It performs no network or
+corporate access.
