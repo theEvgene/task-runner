@@ -103,6 +103,11 @@ What each binding actually is (do not equate them):
   `fresh_base/request-base.mjs` / `request-tip.mjs`. `first` has no
   `--lenovo-checkout`: the exporter observes the remote into an
   isolated temp bare repo and writes no checkout.
+- `--lenovo-worktree` exists only where the Lenovo driver writes a
+  task worktree: `dell_request.py` `publish`/`transfer`/
+  `publish-existing`. `base` takes `--lenovo-checkout` but has no
+  `--lenovo-worktree` (it exports a bundle from the checkout and writes
+  no worktree); `first` has neither checkout nor worktree.
 - Bridge `submit --cwd` is a separate argument: the worker working
   directory for that job. Read it from the selected route document for
   that run (for example `docs/mr-ready.md` uses the Lenovo checkout;
@@ -119,11 +124,28 @@ Per-route Lenovo flags (only what each driver accepts):
   `--lenovo-driver-dir` (optional, default `<skill-dir>/scripts`),
   `--python`, `--lenovo-checkout`, `--lenovo-worktree`, plus
   `--lenovo-flow-dir` (or `DELL_LAN_FLOW_DIR`) for the external flow
-  checkout. `transfer` and `base` take the same skill/driver/python/
-  checkout/worktree shape but no `--lenovo-flow-dir`.
-  `publish-existing` takes skill/driver/python/checkout/worktree plus
-  `--lenovo-flow-dir`. There is no `--lenovo-client-dir` on any
-  `dell_request.py` subcommand.
+  checkout.
+- `dell_request.py transfer`: `--lenovo-skill-dir` (required),
+  `--lenovo-driver-dir` (optional, default `<skill-dir>/scripts`),
+  `--python`, `--lenovo-checkout`, `--lenovo-worktree`; no
+  `--lenovo-flow-dir`.
+- `dell_request.py base`: `--lenovo-skill-dir` (required),
+  `--lenovo-driver-dir` (optional, default `<skill-dir>/scripts`),
+  `--python`, `--lenovo-checkout` only; no `--lenovo-worktree`, no
+  `--lenovo-flow-dir`.
+- `dell_request.py first`: `--lenovo-skill-dir` (required),
+  `--lenovo-driver-dir` (optional, default `<skill-dir>/scripts`),
+  `--python` only; no `--lenovo-checkout`, no `--lenovo-worktree`,
+  no `--lenovo-flow-dir`.
+- `dell_request.py publish-existing`: `--lenovo-skill-dir` (required),
+  `--lenovo-driver-dir` (optional, default `<skill-dir>/scripts`),
+  `--python`, `--lenovo-checkout`, `--lenovo-worktree`, plus
+  `--lenovo-flow-dir` (or `DELL_LAN_FLOW_DIR`).
+- There is no `--lenovo-client-dir` on any `dell_request.py`
+  subcommand.
+- `fresh_base/request-base.mjs` / `request-tip.mjs`: `--lenovo-skill-dir`,
+  `--node`, `--lenovo-checkout`; neither takes `--lenovo-worktree`,
+  `--lenovo-flow-dir`, or `--lenovo-client-dir`.
 - `mr_ready/request.py`: `--python`, `--lenovo-client-dir` (the
   existing `gitlab-mr-flow/scripts` dir), `--lenovo-checkout`.
 - `pipeline_observer/request.py`: `--python`, `--lenovo-flow-dir`
@@ -140,5 +162,37 @@ other Lenovo task-runner, driver, flow, client, node, or entrypoint
 path above is owner-provided per run through its existing flag; that
 file has no field for them, and the readiness file holds only the
 named checklist (`lenovo.python`/`cwd`/`components`/`tools`/`revision`).
+
+## Task-runner Jira CLI versus the managed Jira read (not the same route)
+
+The managed Jira read in step 5 above is the installed external
+`nessy-jira-workflow` workflow (`..\nessy-jira-workflow\scripts\jira_task.py
+read ...`, driven by the existing `dp jira` Jira skills). It is not in
+this repository and it is the only Jira path with a LAN-bridge route and
+a config fallback here.
+
+The task-runner Jira protocol CLI is a different transport at
+`scripts/jira-protocol.mjs` inside the verified Lenovo clone
+(`docs/jira-protocol.md`, agent packaging in
+`docs/jira-agent-skills.md`). Agent skills that need to locate Lenovo
+scripts resolve it on Lenovo from the expanded checkout above, for
+example with PowerShell:
+
+```powershell
+Join-Path (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Documents\repositories\task-runner') 'scripts\jira-protocol.mjs'
+```
+
+Run it only where its session already exists, exactly as
+`docs/jira-protocol.md` states: `node scripts/jira-protocol.mjs
+<command> ...` with `JIRA_SESSION_COOKIE` (plus `JIRA_ATL_TOKEN` for
+`assign`) already present in that host's environment. There is no LAN
+request builder, bridge command shape, or settings-file field in this
+repository that invokes `jira-protocol.mjs` on Lenovo, and running a LAN
+skill neither creates nor provisions those credentials. Missing
+integration is a blocker: do not claim automatic LAN invocation, do not
+treat the `dp jira` workflow and `jira-protocol.mjs` as interchangeable,
+and never route an existing `dp` workflow silently through the other
+transport.
+
 When the Lenovo clone advances, update the clone on Lenovo; the held
 absolute path is reused unchanged unless the clone itself moved.

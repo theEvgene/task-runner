@@ -43,9 +43,10 @@ on Lenovo with
 `Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Documents\repositories\task-runner'`
 and pass the expanded absolute path per run through the existing flags of
 the selected route (held machine-local by the operator; no new config
-field). `first` names no checkout; `base`/`publish`/`transfer`/
-`publish-existing` take `--lenovo-checkout` plus `--lenovo-worktree`
-(where the driver writes), `--lenovo-skill-dir` (plus optional
+field). `first` names no checkout; `base` takes `--lenovo-checkout`
+without `--lenovo-worktree`; `publish`/`transfer`/`publish-existing`
+take `--lenovo-checkout` plus `--lenovo-worktree` (where the driver
+writes); all four take `--lenovo-skill-dir` (plus optional
 `--lenovo-driver-dir`, default `<skill-dir>/scripts`) and `--python`,
 with `--lenovo-flow-dir` (or `DELL_LAN_FLOW_DIR`) only on
 `publish`/`publish-existing`. There is no `--lenovo-client-dir` on any

@@ -16,7 +16,13 @@ observe the same JOBID; accept only a MAC-verified result bound to that id.
 
 For the managed Jira read, `lenovo_python`, `lenovo_jira_working_dir`, and
 `jira_instance` come from the shared settings file per
-`docs/lan-bridge-config.md`. Any task-runner checkout path used by another
+`docs/lan-bridge-config.md`. That read is the installed external
+`nessy-jira-workflow` workflow (`jira_task.py read ...`), not the
+task-runner CLI. The task-runner Jira protocol CLI lives at
+`scripts/jira-protocol.mjs` inside the verified Lenovo clone (see
+`docs/lan-bridge-config.md` for the username-free checkout path and the
+exact supported access route); this skill does not invoke it over the
+bridge and never substitutes one transport for the other. Any task-runner checkout path used by another
 route is that route's own per-run `--lenovo-checkout` flag: the verified
 Lenovo clone is `Documents\repositories\task-runner` under the Lenovo user
 profile (resolve on Lenovo with
