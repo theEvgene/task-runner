@@ -8,6 +8,10 @@ description: Dell-side development through the task-runner signed LAN queue. Use
 Thin pointer. This repository owns the drivers and operational contracts; the
 skill adds no transport, publication, or Ready logic.
 
+Before a live operation, follow `docs/lan-bridge-config.md` in the installed
+pinned task-runner checkout. Both LAN skills use
+`%USERPROFILE%\.config\task-runner\lan-bridge.json`.
+
 Choose one canonical route:
 
 - Check the selected scenario before a live run: `docs/readiness.md` and
