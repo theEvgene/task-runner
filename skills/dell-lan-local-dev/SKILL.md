@@ -46,7 +46,7 @@ the selected route (held machine-local by the operator; no new config
 field). `first` names no checkout; `base` takes `--lenovo-checkout`
 without `--lenovo-worktree`; `publish`/`transfer`/`publish-existing`
 take `--lenovo-checkout` plus `--lenovo-worktree` (where the driver
-writes); all four take `--lenovo-skill-dir` (plus optional
+writes); all five take `--lenovo-skill-dir` (plus optional
 `--lenovo-driver-dir`, default `<skill-dir>/scripts`) and `--python`,
 with `--lenovo-flow-dir` (or `DELL_LAN_FLOW_DIR`) only on
 `publish`/`publish-existing`. There is no `--lenovo-client-dir` on any
