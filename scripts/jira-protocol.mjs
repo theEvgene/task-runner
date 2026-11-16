@@ -9,6 +9,7 @@ import {
 import {
   CONTRACT,
   assignIssue,
+  flagIssue,
   createEpic,
   getIssue,
   getIssueTransitions,
@@ -19,7 +20,7 @@ import { extractIssue } from "./jira_protocol/extract.mjs";
 function usage(message) {
   throw new JiraProtocolError(
     message ??
-      "usage: jira-protocol <extract|detail-view|transitions|transition|assign|create-epic> [options]"
+      "usage: jira-protocol <extract|detail-view|transitions|transition|assign|flag|create-epic> [options]"
   );
 }
 
@@ -140,6 +141,17 @@ async function main() {
     const result = await assignIssue(transport(), {
       issueKey: values.issue,
       assignee: values.assignee,
+      confirm: values.confirm,
+    });
+    emit({ schema: "jira-protocol-result/1", ...result });
+    return result.state === "Completed" ? 0 : 3;
+  }
+  if (command === "flag") {
+    only(values, ["issue", "action", "comment", "confirm"]);
+    const result = await flagIssue(transport(), {
+      issueKey: values.issue,
+      action: values.action,
+      comment: values.comment,
       confirm: values.confirm,
     });
     emit({ schema: "jira-protocol-result/1", ...result });
