@@ -12,6 +12,7 @@ Externally invoked agents start here explicitly; this repo assumes no global aut
 - Verify the target base and create a task worktree -> `docs/fresh-base.md`.
 - Send one signed command through the LAN queue -> `docs/lan-bridge.md`.
 - Run Lenovo-hosted Jira/DCO scripts through the signed queue -> `docs/lenovo-hosted-scripts.md` (generic `lan_bridge` submit/fetch/observe; credentials stay in the Lenovo host environment; DCO plan/state stay Lenovo-local; Jira keeps its two-phase confirm flow).
+- Mute or read the default Windows playback mute state on Lenovo through the signed queue -> `docs/lenovo-audio.md`.
 - Diagnose a stuck/failed signed LAN queue job (same JOBID every 30 s for 10 min; timeout is unknown, never a resubmit) -> `docs/lan-queue-diagnosis.md`.
 - Check readiness for one selected Dell-to-Lenovo scenario -> `docs/readiness.md` + `scripts/readiness/check.py`.
 - Start the Lenovo worker and cleaner with one shortcut after a reboot (existing SMB share, local credentials) -> `docs/lenovo-worker-shortcut.md`.
