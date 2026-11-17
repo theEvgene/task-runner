@@ -197,6 +197,10 @@ def _inspect_role(state_dir: Path, role: str, command: list[str],
     """
 
     pid_file = state_dir / f"{role}.pid"
+    if (state_dir / f"{role}.starting").exists():
+        raise reasons.Refusal("role-ambiguous",
+                              f"ambiguous {role} state (incomplete start); "
+                              f"verify the role before removing {role}.starting in stateDir")
     try:
         existing = proc.read_pid_file(pid_file)
     except (ValueError, OSError) as error:
@@ -267,6 +271,11 @@ def _ensure_role(state_dir: Path, role: str, command: list[str],
                                   f"removed); verify, then remove {role}.pid in "
                                   f"stateDir") from error
     log_file = state_dir / f"{role}.log"
+    # Persist uncertainty before spawn so a failed pid write cannot permit
+    # a second launcher to silently start a duplicate.
+    starting_file = state_dir / f"{role}.starting"
+    with starting_file.open("x", encoding="utf-8"):
+        pass
     new_pid = proc.spawn_detached(command, log_file, cwd)
     try:
         proc.write_pid_file(pid_file, new_pid, marker, _now(),
@@ -274,7 +283,12 @@ def _ensure_role(state_dir: Path, role: str, command: list[str],
     except FileExistsError as error:
         raise reasons.Refusal("role-ambiguous",
                               f"ambiguous {role} state (pid file appeared mid-start); "
-                              "re-run to adopt it") from error
+                              "verify the started process before recovery") from error
+    except OSError as error:
+        raise reasons.Refusal("role-ambiguous",
+                              f"ambiguous {role} state (pid write failed after start); "
+                              f"verify started pid {new_pid} before recovery") from error
+    starting_file.unlink()
     if not proc.is_alive(new_pid):
         raise reasons.Refusal("role-start-failed",
                               f"{role} exited at once; read {role}.log in stateDir")
@@ -386,7 +400,7 @@ def main(argv: list[str] | None = None) -> int:
             trash.mkdir(parents=True, exist_ok=True)
             worker_marker = str(config.get("workerMarker") or (worker_dir / "worker.py").name)
             cleaner_marker = str(config.get("cleanerMarker") or "cleaner.py")
-            # The effective spawn cwd is part of the recorded identity: a live
+            # The configured spawn cwd is part of the recorded identity: a live
             # pid recorded under another cwd refuses like any other binding
             # change instead of being silently adopted.
             cwd_binding = str(worker_cwd) if worker_cwd is not None else ""
