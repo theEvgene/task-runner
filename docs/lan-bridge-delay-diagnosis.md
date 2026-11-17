@@ -1,5 +1,11 @@
 # LAN bridge delay diagnosis
 
+Owner default #12/#13 (240 s / 30 s) stays the code default for fixture and
+short-probe use. The 600 s / 30 s live watch in `docs/lan-bridge.md`
+("Observation rule") is task-level live policy explicitly scoped below that
+owner default, not a replacement: no script default changes here. The
+numbers below describe the fixture mechanism only.
+
 Dominant delay is worker execution plus queue wait, both outside this
 client: an already-present result costs exactly one queue read and returns
 sub-second (asserted in `LatencyDiagnosisTests`). Per empty poll the client

@@ -11,8 +11,17 @@ pinned task-runner checkout. Both LAN skills use the same
 covers discovery, freshness, missing components, and managed Jira reads.
 
 Follow the selected scenario and `docs/lan-bridge.md` using
-`scripts/lan_bridge/lan_bridge.py`. Submit its exact command file and fetch or
-observe the same JOBID; accept only a MAC-verified result bound to that id.
+`scripts/lan_bridge/lan_bridge.py`. Submit its exact command file, then
+observe the SAME JOBID every 30 s for 10 minutes until a MAC-verified
+result bound to that id or a concrete blocker arrives
+(`docs/lan-bridge.md` "Observation rule"); accept only a MAC-verified
+result bound to that id. A short-timeout expiry is unknown, never
+completion; never publish a new JOBID WHILE the outcome is unknown. A
+MAC-verified terminal worker timeout, truncation, or failure is a known
+outcome: recover it as a NEW id per `docs/lan-bridge.md` Confirmed states.
+After
+10 minutes with no response report no response, keeping a confirmed
+worker/caller error apart from queue unavailability.
 
 For the managed Jira read, `lenovo_python`, `lenovo_jira_working_dir`, and
 `jira_instance` come from the shared settings file per

@@ -63,36 +63,42 @@ queue or a repository, duplicate id, unreadable command file, and -- when
 validator (see "Syntax gate" below; without `--dialect` the gate stays
 off and the submit path is unchanged).
 
-2. Fetch the bound result (default: wait up to 240 s, checking every 30 s;
-   owner choice from #12/#13; explicit values stay allowed):
+2. Fetch the bound result (live callers MUST pass explicit `--timeout 600`
+   `--poll 30`; defaults are fixture-only):
 
 ```text
 python scripts/lan_bridge/lan_bridge.py fetch \
   --queue <queue-dir> --key-file <key-path> \
   [--key-format raw|base64] \
-  --id <job-id> [--timeout <seconds>] [--poll <seconds>] \
+  --id <job-id> --timeout 600 --poll 30 \
   [--receipt-out <path>]
 ```
+
+Live flags above are mandatory. Code defaults (`--timeout 240`, `--poll 30`,
+owner default #12/#13) are fixture-only; the 600 s live watch is task policy
+scoped below that default, with no script change.
 
 Prints the result payload JSON only after its MAC verifies **and** its
 `kind`/`id` equal `result`/`<job-id>` (binding before trust: a valid envelope
 for another id never verifies as this one). Exit `0` verified, `2`
 verification/usage failure, `3` bounded-wait timeout with the slot left
 untouched. `--timeout` here is the _result wait_; `submit --timeout` is the
-separate _remote execution limit_. An explicit short `--timeout` is allowed
-but proves nothing: expiry always means **unknown**, never "still running".
+separate _remote execution limit_. A shorter explicit live `--timeout` is
+a bounded probe only: its expiry is **unknown** with the same same-id resume
+action, never completion and never a license to publish a new id.
 
 3. Recover after any interruption with the SAME id (no resubmission):
 
 ```text
 python scripts/lan_bridge/lan_bridge.py fetch \
   --queue <queue-dir> --key-file <key-path> --id <same-job-id> \
-  --timeout 240 --poll 30
+  --timeout 600 --poll 30
 ```
 
 Recovery is stateless (queue files only, no observer memory), so a restarted
 observer simply fetches the same id again. A late result sealed under the
-original id verifies normally. Never re-publish while the outcome is
+original id verifies normally. A short-timeout expiry stays **unknown** and
+never counts as completion. Never re-publish while the outcome is
 unknown: the queue refuses duplicates (`JobExistsError`), and a second submit
 would be a NEW id, not a retry.
 
@@ -103,22 +109,44 @@ would be a NEW id, not a retry.
 python scripts/lan_bridge/get.py \
   --queue <queue-dir> --key-file <key-path> \
   [--key-format raw|base64] \
-  --id <job-id> [--window <seconds>] [--poll <seconds>] \
-  [--max-windows <n>] [--status] [--receipt-out <path>]
+  --id <job-id> --window 60 --poll 30 --max-windows 10 \
+  [--status] [--receipt-out <path>]
 ```
+
+Primary live pattern: ten `--window 60 --poll 30` windows via
+`--max-windows 10` (600 s at a 30 s poll, one bounded call per window); sum
+`windows_used` x window (or `elapsed_s`) to 600. A single
+`--window 600 --poll 30` call only where the harness holds one 600 s call.
+Defaults are fixture-oriented and MUST NOT be used live.
 
 One call holds the validated id/key/queue across windows (a single queue
 resolve however many windows it takes) and returns only when a MAC-verified
 result bound to the id is found or a concrete blocker appears (exit `2`:
-unavailable queue, tampered envelope, bad id, unverifiable request). `--window`
-defaults to 60 s, `--poll` to the owner default 30 s; `--max-windows 0` (the
-default) waits without a window bound, otherwise expiry is exit `3`
-`waiting`/`unknown` with the same same-id resume action. Interruption recovery
-is re-running the same command with the same id: nothing is ever published, so
-a late result sealed under the original id verifies normally. `--status` skips
-the wait and prints one `lan-job-status/1` readback (exit `0` finished, `3`
+unavailable queue, tampered envelope, bad id, unverifiable request; see
+`lan-job-status/1` below). Bounded expiry is exit `3` `waiting`/`unknown`
+with the same same-id resume action. Interruption recovery
+is re-running the identical command with the identical id: nothing is ever
+published, so a late result sealed under the original id verifies normally.
+`--status` skips the wait and prints one `lan-job-status/1` readback (exit `0` finished, `3`
 waiting/unknown, `2` refused); a bounded timeout prints that same object on
 stdout.
+
+## Observation rule (same-id 10-minute watch)
+
+After `submit`, observe the SAME JOBID every 30 s for 10 minutes until a
+MAC-verified result bound to that id or a concrete blocker (exit `2`)
+arrives. A short-timeout expiry is **unknown**, never completion, and WHILE
+the outcome is unknown there is never permission to publish a new JOBID for
+the same work. A verified terminal worker timeout, truncation, or failure
+is a known outcome: recover as a NEW id per Confirmed states below. Report `no response` only after the full 600 s watch: cite
+`elapsed_s >= 600` (or `windows_used` x window >= 600) at a 30 s poll from
+the waiter report; a shorter expiry is `waiting`/`unknown` with the same
+same-id resume, never `no response`. State the `lan-job-status/1` fields
+verbatim with the next same-id action: confirmed error = `finished` with
+`terminal.outcome` in worker failure, worker timeout, truncation,
+unknown status; unavailability = `waiting`/`unknown`/`refused`. Classify via
+`classify_result` / `job_status` in `scripts/lan_bridge/wait.py`, never from
+stderr text.
 
 ## Syntax gate (syntax-only, opt-in per submit)
 

@@ -79,7 +79,9 @@ the readback stays `blocked`: publish that new SHA through the separately
 authorized normal publication flow, then run this scenario again. Old
 pipeline evidence cannot confirm the new head.
 
-For `unknown`, re-fetch the same immutable job id and reconcile the live MR
+For `unknown`, re-fetch the same immutable job id on the same 30 s /
+10-minute watch per `docs/lan-bridge.md` "Observation rule" (short expiry is
+unknown) and reconcile the live MR
 before any new write. A receipt such as `publish_landed_unconfirmed` is never
 reported as confirmed Ready even when readback suggests the write may have
 landed.

@@ -74,8 +74,13 @@ Explicit authorization applies to this one read-only Lenovo probe:
 
 ```text
 <python> scripts/readiness/check.py --config <outside-config.json> \
-  --authorize-lenovo-check [--wait 240] [--poll 30] [--worker-timeout 60]
+  --authorize-lenovo-check --wait 600 --poll 30 [--worker-timeout 60]
 ```
+
+Live `--wait 600 --poll 30` flags are mandatory; code defaults
+(`--wait 240`, `--poll 30` owner default #12/#13) are fixture-oriented and
+MUST NOT be relied on live. A shorter explicit live wait is a bounded probe
+only: its expiry is unknown with the same same-id resume, never completion.
 
 The command performs all Dell checks first. A local failure publishes
 nothing. After those pass it uses the canonical `scripts/lan_bridge` client
@@ -92,11 +97,14 @@ On exit `3`, copy `jobId` from the JSON and retrieve that exact ID:
 
 ```text
 <python> scripts/readiness/check.py --config <same-config.json> \
-  --job-id <same-32hex-id> [--wait 240] [--poll 30]
+  --job-id <same-32hex-id> --wait 600 --poll 30
 ```
 
-The retrieval form never submits. Do not create a new job while the prior
-outcome is unknown.
+The retrieval form never submits. Do not create a new job WHILE the prior
+outcome is unknown. A short-timeout expiry is unknown, never completion;
+report `no response` only after a full 600 s watch at a 30 s poll with
+`elapsed_s >= 600` cited from the waiter report
+(`docs/lan-bridge.md` "Observation rule").
 
 ## Output and boundaries
 

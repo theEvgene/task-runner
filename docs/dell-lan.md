@@ -334,7 +334,8 @@ read, when the user explicitly asks for one, stays a separate
 
 ## 7. Reconcile an unknown or rejected outcome before any retry
 
-- **Unknown push** (`stage: push`, exit 3): keep the job id and re-fetch it; a
+- **Unknown push** (`stage: push`, exit 3): keep the id and re-fetch it
+  per `docs/lan-bridge.md` "Observation rule"; a
   late sealed result is accepted by MAC and id binding. If the slot stays
   empty, use the writer JSON's pre-rendered `reconcileCommand`, or rerun the
   same `dell_request.py publish` construction with the same explicit dialect

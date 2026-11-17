@@ -95,27 +95,35 @@ This route's writer emits no target expectation, so the job stays
 
 Completion: submit printed one `JOBID=<32hex>`.
 
-3. Observe the SAME id until a verified result or a concrete blocker
-   (`docs/lan-bridge.md` §3–§4: `fetch` or `scripts/lan_bridge/get.py`,
-   same key, same queue, same id; a new id is never a retry of an
-   unknown outcome):
+3. Observe the SAME id every 30 s for 10 minutes until a verified result or
+   a concrete blocker
+   (`docs/lan-bridge.md` §3–§4 and "Observation rule": `fetch` or `scripts/lan_bridge/get.py`,
+   same key, same queue, same id; WHILE the outcome is unknown a new id is
+   never a retry; a short-timeout expiry is unknown, never completion):
 
 ```text
 python scripts/lan_bridge/get.py \
   --queue <queue-dir> --key-file <key-path> \
-  --id <job-id> [--window <seconds>] [--poll <seconds>]
+  --id <job-id> --window 60 --poll 30 --max-windows 10
 ```
+
+Primary live pattern is ten `60 s` windows (`--max-windows 10`) totalling
+600 s at a 30 s poll; a single `--window 600 --poll 30` call is allowed only
+when the harness holds one 600 s blocking call. Code defaults stay
+fixture-oriented and MUST NOT be relied on live.
 
 Completion: a MAC-verified envelope bound to this id. Outcome reading
 follows `docs/lan-bridge.md` (Confirmed states vs unknown) and is never
 invented: `exit_code` 0 without `timed_out`/`output_truncated` is
 success; non-zero exit is worker failure; `timed_out` is worker timeout
 and `output_truncated` is incomplete. A preview may be retried with a new
-id (and a larger `--max-output` if needed). For a versioned run, do not
-resubmit: the tag may already exist. Read back the tag and deployment state
+id only after that terminal state (and a larger `--max-output` if needed).
+For a versioned run, do not resubmit: the tag may already exist. Read back the tag and deployment state
 before deciding what remains. Any other status is confirmed-yet-unknown
 (never success); bounded-wait expiry with no envelope is unknown —
-re-read the SAME id.
+re-read the SAME id, and report `no response` only after the full
+10-minute watch with `elapsed_s >= 600` cited
+(`docs/lan-bridge.md` "Observation rule").
 
 4. Show the user the verified stdout, then stop on preview or report
    the result on a versioned run. `release-tag` owns the preview text,
