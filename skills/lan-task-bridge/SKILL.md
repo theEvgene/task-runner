@@ -23,6 +23,9 @@ After
 10 minutes with no response report no response, keeping a confirmed
 worker/caller error apart from queue unavailability.
 
+For a stuck or failed job, diagnose via `docs/lan-queue-diagnosis.md`
+(same id every 30 s for 10 min; timeout is unknown, never a resubmit).
+
 For the managed Jira read, `lenovo_python`, `lenovo_jira_working_dir`, and
 `jira_instance` come from the shared settings file per
 `docs/lan-bridge-config.md`. That read is the installed external
