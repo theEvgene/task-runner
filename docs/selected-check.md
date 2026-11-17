@@ -73,9 +73,15 @@ The `readinessConfig` is the same `lan-readiness-config/1` file used by
 `docs/readiness.md`; `readinessJobId` is the `jobId` printed by that run. The
 check is bound to the evidence: the named directory component must be
 `check.cwd`, the named tool component must be `argv[0]`, and the descriptor
-python must equal the readiness python. A missing or unbound readiness result
-is `NOT_RUN` and publishes no check job; a bad MAC is a protocol refusal
-(exit `2`) and likewise publishes nothing.
+python must equal the readiness python. The named directory component must
+also carry a verified observed revision for that exact cwd (the
+`lenovo-readiness-probe/2` evidence from `docs/readiness.md`) equal to
+`check.expectedRevision`. A missing revision is `NOT_RUN`
+(`revision-unconfirmed`), a different SHA is `NOT_RUN` (`revision-stale`), and
+legacy or unbound evidence is `NOT_RUN` (`evidence-untrusted`); each refuses
+before any check job is published. A missing or unbound readiness result is
+`NOT_RUN` and publishes no check job; a bad MAC is a protocol refusal (exit
+`2`) and likewise publishes nothing.
 
 ## Run
 
@@ -109,14 +115,19 @@ receipt keeps the submitted `jobId` so the operator can re-read it.
   return code is the result; HEAD is re-read after the child and a moved
   revision cannot pass.
 - Lenovo: the local preflight checks the queue, the key, the readiness
-  evidence and the descriptor-to-evidence pins before any submit. It then
-  publishes exactly ONE signed job through the existing queue. That job
-  carries a fixed preamble which re-checks cwd, executable and the checkout
-  revision on the target host and prints one small JSON line. A preamble
-  refusal prints `NOT_RUN`, exits `78`, and never runs the check. A preamble
-  check timeout prints `FAIL`, exits `79`, and is never a pass. Otherwise the
-  preamble runs the exact argv without a shell, prints `RUN` with the real
-  child exit, and exits with that same code.
+  evidence and the descriptor-to-evidence pins before any submit. The evidence
+  must include a verified observed revision for the required cwd equal to
+  `expectedRevision`; an absent, legacy, malformed, differently bound, or
+  stale revision refuses before submission and publishes no check job. The
+  readiness evidence was produced by an earlier, separately authorized
+  readiness run; this seam never creates a preflight job of its own. After a
+  confirmed preflight it publishes exactly ONE signed job through the
+  existing queue. That job carries a fixed preamble which re-checks cwd,
+  executable and the checkout revision on the target host and prints one
+  small JSON line. A preamble refusal prints `NOT_RUN`, exits `78`, and never
+  runs the check. A preamble check timeout prints `FAIL`, exits `79`, and is
+  never a pass. Otherwise the preamble runs the exact argv without a shell,
+  prints `RUN` with the real child exit, and exits with that same code.
 - The receipt accepts the result only when the signed envelope verifies
   (MAC and id), the envelope exit agrees with the receipt exit, a signed
   `RUN` names exactly the expected SHA, and the consuming adapter has real
@@ -124,13 +135,16 @@ receipt keeps the submitted `jobId` so the operator can re-read it.
   truncated output, an unreadable or unverifiable result, or a disagreement
   between envelope and receipt is `UNKNOWN` or `FAIL`, never `PASS`.
 
-A failed local preflight publishes no remote job. The target-host preamble is
-part of the one submitted job; it is the only way to verify a remote revision
-without a second submit, and it refuses before the check is spawned. The
-readiness probe that supplies worker/cwd/tool evidence is a separate earlier
-read-only run with its own explicit authorization. When a remote result is
-unknown or unverifiable, the receipt keeps the job id and the next run uses
-`--job-id` instead of publishing another job.
+A failed local preflight publishes no remote job, including the revision
+cases above. The target-host preamble stays as the second protection: it
+catches a checkout that moved after the readiness evidence was captured, and
+it remains the revision check on `--job-id` recovery. It is part of the one
+submitted job, so it verifies the remote revision without a second submit and
+refuses before the check is spawned. The readiness probe that supplies
+worker/cwd/tool/revision evidence is a separate earlier read-only run with its
+own explicit authorization; the selected check never submits a preflight job.
+When a remote result is unknown or unverifiable, the receipt keeps the job id
+and the next run uses `--job-id` instead of publishing another job.
 
 ## Receipt (`lan-selected-check-receipt/1`)
 
@@ -151,7 +165,10 @@ One JSON object is printed (and optionally written by `--receipt-out`):
 - `outcome`: `PASS`, `FAIL`, `NOT_RUN` or `UNKNOWN`.
 - `revision`: the expected SHA, the observed SHA when readable, its state
   (`confirmed`, `stale`, `unconfirmed`) and the evidence source
-  (`local-git` or `signed-target-preamble`). `confirmed` requires the observed
+  (`local-git`, `readiness-evidence`, or `signed-target-preamble`).
+  `readiness-evidence` appears on a pre-submit revision refusal from the
+  earlier readiness evidence; `signed-target-preamble` appears on a result
+  from the submitted job. `confirmed` requires the observed
   SHA to equal the expected SHA: a signed `RUN` naming another SHA is
   `NOT_RUN` (`revision-stale`), never `PASS`.
 - `preflight`: `confirmed` or `refused` with one bounded reason code.
@@ -192,7 +209,9 @@ is never promoted to `PASS`.
 The suite uses temporary files, an ephemeral fake key and a fake worker. It
 covers the Dell pass, stale revision, a revision repository outside the check
 cwd, missing cwd/tool, nonzero exit, the real target preamble, the Lenovo
-pass, a refused target preamble, nonzero exit, `UNKNOWN` without
-resubmission, same-id recovery without a second submit, an unverifiable
-result that keeps its job id, and refused or tampered readiness evidence. It
-performs no network, SMB, or corporate access.
+pass, verified readiness revision evidence, a mismatched or missing readiness
+revision that publishes no check job, legacy evidence that is never verified,
+an untrusted cwd binding, a refused target preamble, nonzero exit, `UNKNOWN`
+without resubmission, same-id recovery without a second submit, an
+unverifiable result that keeps its job id, and refused or tampered readiness
+evidence. It performs no network, SMB, or corporate access.

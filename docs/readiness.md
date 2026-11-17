@@ -107,7 +107,10 @@ id was read, its `status` member is the same `lan-job-status/1` object
 `wait.py`/`get.py --status` emit, so job state is never restated in a second
 format; the bounded-wait report's overall `outcome` mirrors
 `status.outcome`. A report produced before submission (a failed local check)
-has no `status` member because no job was read. It never emits
+has no `status` member because no job was read. A directory component also
+carries `observedRevision` and `revisionEvidence` (`verified`, `legacy`, or
+`untrusted`); these are evidence for the selected check and never change this
+report's readiness outcome. It never emits
 the key, command, configured paths, queue contents, or worker stderr. Parallel
 runs have independent random IDs and the canonical queue's immutable,
 no-clobber files; no shared receipt or observer state is used.
@@ -126,8 +129,15 @@ The Lenovo probe is fixed read-only code: filesystem metadata/digests and
 executable lookup. It has no network
 operation. A returned result proves that the worker executed this job; mere
 presence of a worker file never counts as worker readiness. Live Lenovo and
-corporate checks remain separate authorized operations. Checkout revisions are
-never probed: a stale checkout does not block readiness.
+corporate checks remain separate authorized operations. For every configured
+directory component the probe also reads `git rev-parse HEAD` and emits that
+40-hex SHA together with a digest of the component path
+(`lenovo-readiness-probe/2`). A directory that is not a readable git checkout
+reports a null revision. Revision is not a readiness gate and never changes
+`ready`/`not-ready` here; `docs/selected-check.md` consumes it as a
+pre-submit pin. Evidence from the older `lenovo-readiness-probe/1` is still
+accepted here for presence, but it carries no revision and is never verified
+revision evidence for a selected check.
 
 ## Local fixture verification
 

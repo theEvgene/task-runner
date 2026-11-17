@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -82,11 +83,22 @@ class SelectedCheckLenovoTests(unittest.TestCase):
             },
         }
 
-    def _publish_evidence(self, tamper: bool = False) -> None:
+    _DEFAULT = object()
+
+    def _publish_evidence(self, tamper: bool = False,
+                          schema: str = "lenovo-readiness-probe/2",
+                          revision: object = _DEFAULT,
+                          cwd_digest: str | None = None) -> None:
+        if revision is self._DEFAULT:
+            revision = self.head
+        checkout = {"name": "checkout", "state": "confirmed"}
+        if schema == "lenovo-readiness-probe/2":
+            checkout["observedRevision"] = revision
+            checkout["cwdDigest"] = cwd_digest or hashlib.sha256(
+                str(self.target).encode("utf-8")).hexdigest()
         body = {
-            "schema": "lenovo-readiness-probe/1", "scenario": "lan-bridge",
-            "components": [{"name": "checkout", "state": "confirmed"},
-                           {"name": "python", "state": "confirmed"}],
+            "schema": schema, "scenario": "lan-bridge",
+            "components": [checkout, {"name": "python", "state": "confirmed"}],
         }
         result = bridge.build_result_payload(
             self.evidence_job, "completed", exit_code=0,
@@ -95,6 +107,10 @@ class SelectedCheckLenovoTests(unittest.TestCase):
         if tamper:
             sealed[-3] ^= 1
         bridge.publish(self.queue / "results", self.evidence_job, bytes(sealed))
+
+    def _republish_evidence(self, **kwargs: object) -> None:
+        (self.queue / "results" / f"{self.evidence_job}.json").unlink()
+        self._publish_evidence(**kwargs)
 
     def _job_ids(self) -> list[str]:
         jobs = self.queue / "jobs"
@@ -163,6 +179,10 @@ class SelectedCheckLenovoTests(unittest.TestCase):
         self.assertTrue(receipt["hostBound"])
         self.assertEqual(receipt["hostEvidence"], "signed-queue-result")
         self.assertEqual(receipt["revision"]["state"], "confirmed")
+        self.assertEqual(receipt["revision"]["source"],
+                         "signed-target-preamble")
+        self.assertEqual(receipt["preflight"],
+                         {"state": "confirmed", "reason": "confirmed"})
         self.assertEqual(receipt["execution"]["kind"], "signed-queue")
         self.assertRegex(self._check_job_id(receipt), r"^[0-9a-f]{32}$")
         self.assertEqual(len(self._job_ids()), 2, "exactly one check submit")
@@ -174,6 +194,17 @@ class SelectedCheckLenovoTests(unittest.TestCase):
         self.assertEqual(job["working_directory"], str(self.target))
         self.assertEqual(job["dialect"], "cmd")
         self.assertNotIn("SystemExit(0)", job["command"])
+
+    def test_lenovo_readiness_evidence_revision_is_verified(self) -> None:
+        payload = bridge.fetch_result(
+            str(self.queue), self.key, self.evidence_job,
+            timeout_seconds=1, poll_seconds=0.01)
+        components = readiness.worker_components(payload, self.config)
+        checkout = next(item for item in components
+                        if item["name"] == "checkout")
+        self.assertEqual(checkout["state"], "confirmed")
+        self.assertEqual(checkout["revisionEvidence"], "verified")
+        self.assertEqual(checkout["observedRevision"], self.head)
 
     def test_lenovo_target_preamble_not_run_is_not_pass(self) -> None:
         worker = self._fake_worker({
@@ -318,6 +349,59 @@ class SelectedCheckLenovoTests(unittest.TestCase):
                 self.assertEqual(receipt["preflight"]["reason"], reason)
                 self.assertEqual(len(self._job_ids()), 1,
                                  "a refused preflight submitted a check job")
+
+    def test_lenovo_evidence_revision_mismatch_refuses_before_submit(self) -> None:
+        self._republish_evidence(revision="0" * 40)
+        proc = self._run()
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        receipt = self._receipt(proc)
+        self.assertEqual(receipt["outcome"], "NOT_RUN")
+        self.assertEqual(receipt["preflight"]["reason"], "revision-stale")
+        self.assertEqual(receipt["revision"]["state"], "stale")
+        self.assertEqual(receipt["revision"]["observed"], "0" * 40)
+        self.assertEqual(receipt["revision"]["source"], "readiness-evidence")
+        self.assertIsNone(receipt["execution"]["exitCode"])
+        self.assertEqual(len(self._job_ids()), 1,
+                         "a stale target revision submitted a check job")
+
+    def test_lenovo_evidence_missing_revision_refuses_before_submit(self) -> None:
+        self._republish_evidence(revision=None)
+        proc = self._run()
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        receipt = self._receipt(proc)
+        self.assertEqual(receipt["outcome"], "NOT_RUN")
+        self.assertEqual(receipt["preflight"]["reason"], "revision-unconfirmed")
+        self.assertEqual(receipt["revision"]["state"], "unconfirmed")
+        self.assertEqual(receipt["revision"]["source"], "readiness-evidence")
+        self.assertIsNone(receipt["execution"]["exitCode"])
+        self.assertEqual(len(self._job_ids()), 1,
+                         "missing target revision submitted a check job")
+
+    def test_lenovo_legacy_evidence_is_not_verified(self) -> None:
+        self._republish_evidence(schema="lenovo-readiness-probe/1")
+        proc = self._run()
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        receipt = self._receipt(proc)
+        self.assertEqual(receipt["outcome"], "NOT_RUN")
+        self.assertEqual(receipt["preflight"]["reason"], "evidence-untrusted")
+        self.assertEqual(receipt["revision"]["state"], "unconfirmed")
+        self.assertEqual(receipt["revision"]["source"], "readiness-evidence")
+        self.assertEqual(len(self._job_ids()), 1,
+                         "legacy evidence submitted a check job")
+
+    def test_lenovo_untrusted_cwd_binding_is_not_verified(self) -> None:
+        for kwargs in ({"cwd_digest": "f" * 64},
+                       {"revision": "not-a-sha"}):
+            with self.subTest(kwargs=kwargs):
+                self._republish_evidence(**kwargs)
+                proc = self._run()
+                self.assertEqual(proc.returncode, 1, proc.stderr)
+                receipt = self._receipt(proc)
+                self.assertEqual(receipt["outcome"], "NOT_RUN")
+                self.assertEqual(receipt["preflight"]["reason"],
+                                 "evidence-untrusted")
+                self.assertEqual(len(self._job_ids()), 1,
+                                 "untrusted evidence submitted a check job")
 
     def test_lenovo_missing_or_tampered_evidence_never_passes(self) -> None:
         (self.queue / "results" / f"{self.evidence_job}.json").unlink()

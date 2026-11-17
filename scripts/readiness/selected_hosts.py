@@ -160,6 +160,16 @@ def preflight_lenovo(desc: dict) -> tuple[dict, bytes | None]:
         raise Refusal(f"readiness evidence refused: {error}") from error
     if any(item["state"] != "confirmed" for item in components):
         return _refused("worker-unproven"), key
+    cwd_evidence = next((item for item in components
+                         if item["name"] == required["cwd"]), None)
+    if (cwd_evidence is None
+            or cwd_evidence.get("revisionEvidence") != "verified"):
+        return _refused("evidence-untrusted"), key
+    observed = cwd_evidence.get("observedRevision")
+    if observed is None:
+        return _refused("revision-unconfirmed"), key
+    if observed != check["expectedRevision"]:
+        return _refused("revision-stale", observed), key
     command = remote_command(desc)
     if len(command) > MAX_COMMAND_CHARS or not syntax.validate(command, "cmd").ok:
         return _refused("command-refused"), key

@@ -9,6 +9,7 @@ no queue, host, share, key or network.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import subprocess
 import sys
@@ -42,8 +43,30 @@ class RemoteProbeTests(unittest.TestCase):
             capture_output=True, text=True, check=False, timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(json.loads(proc.stdout),
-                         {"schema": "lenovo-readiness-probe/1",
+                         {"schema": "lenovo-readiness-probe/2",
                           "scenario": "lan-bridge", "components": []})
+
+    def test_the_probe_binds_directory_revision_to_its_cwd(self):
+        head = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+            text=True).strip().lower()
+        config = {
+            "scenario": "lan-bridge",
+            "components": [{"name": "checkout", "type": "directory",
+                            "path": str(ROOT)}],
+            "tools": [],
+        }
+        data = base64.b64encode(
+            json.dumps(config).encode("utf-8")).decode("ascii")
+        proc = subprocess.run(
+            [sys.executable, "-c", remote_probe.PROGRAM, data],
+            capture_output=True, text=True, check=False, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        component = json.loads(proc.stdout)["components"][0]
+        self.assertEqual(component["observedRevision"], head)
+        self.assertEqual(
+            component["cwdDigest"],
+            hashlib.sha256(str(ROOT).encode("utf-8")).hexdigest())
 
 
 if __name__ == "__main__":

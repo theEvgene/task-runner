@@ -88,6 +88,18 @@ def _next_action(outcome: str, preflight: dict, execution: dict | None) -> str:
                                      "nothing was executed")
 
 
+def _revision_source(host: str, preflight: dict,
+                     execution: dict | None) -> str:
+    if host == "dell":
+        return "local-git"
+    if execution is not None and execution.get("observedRevision") is not None:
+        return "signed-target-preamble"
+    if preflight.get("reason") in ("revision-stale", "revision-unconfirmed",
+                                   "evidence-untrusted"):
+        return "readiness-evidence"
+    return "signed-target-preamble"
+
+
 def build_receipt(desc: dict, preflight: dict,
                   execution: dict | None) -> dict:
     check = desc["check"]
@@ -122,8 +134,7 @@ def build_receipt(desc: dict, preflight: dict,
         "revision": {"expected": check["expectedRevision"],
                      "observed": observed_revision,
                      "state": revision_state,
-                     "source": ("local-git" if host == "dell"
-                                else "signed-target-preamble")},
+                     "source": _revision_source(host, preflight, execution)},
         "preflight": {"state": preflight["state"],
                       "reason": preflight["reason"]},
         "execution": {
