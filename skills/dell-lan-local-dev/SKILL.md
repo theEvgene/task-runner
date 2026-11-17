@@ -9,7 +9,7 @@ Thin pointer. This repository owns the drivers and operational contracts; the
 skill adds no transport, publication, or Ready logic.
 
 Before a live operation, follow `docs/lan-bridge-config.md` in the installed
-pinned task-runner checkout. Both LAN skills use
+task-runner checkout. Both LAN skills use
 `%USERPROFILE%\.config\task-runner\lan-bridge.json`.
 
 Choose one canonical route:
@@ -26,7 +26,7 @@ Choose one canonical route:
 - Operate or recover the signed queue itself: `docs/lan-bridge.md` and
   `scripts/lan_bridge/`.
 
-Use paths from the pinned task-runner checkout on both hosts. Keep development,
+Use paths from the task-runner checkout on both hosts. Keep development,
 build, lint, and tests on Dell; use Lenovo only for the corporate and
 closed-dependency steps named by the selected route. Each remote read or write
 needs the route's explicit authorization. An unknown result is recovered under
@@ -57,5 +57,4 @@ with `--lenovo-flow-dir` (or `DELL_LAN_FLOW_DIR`) only on
 `mr-ready` (`--lenovo-client-dir` is the `gitlab-mr-flow/scripts` dir)
 and `pipeline-observer` (optional, forwarded as probe `--client-dir`)
 routes. Bridge `submit --cwd` is separate per-route worker cwd, not an
-alias for `--lenovo-checkout`; readiness `lenovo.revision.repository`
-is only the probed checkout. Details: `docs/lan-bridge-config.md`.
+alias for `--lenovo-checkout`. Details: `docs/lan-bridge-config.md`.

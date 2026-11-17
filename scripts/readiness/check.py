@@ -110,29 +110,17 @@ def validate_config(raw: dict) -> dict:
     }
     if config["keyFormat"] not in ("raw", "base64"):
         raise Refusal("keyFormat must be raw or base64")
-    revision = lenovo.get("revision")
-    if revision is not None:
-        if not isinstance(revision, dict):
-            raise Refusal("lenovo revision must be an object")
-        expected = _string(revision, "expected").lower()
-        if len(expected) != 40 or any(c not in "0123456789abcdef" for c in expected):
-            raise Refusal("lenovo revision expected value must be 40 hex")
-        config["lenovo"]["revision"] = {
-            "name": _string(revision, "name"),
-            "repository": _string(revision, "repository"),
-            "expected": expected,
-        }
-        config["lenovo"]["git"] = _string(lenovo, "git")
+    if "revision" in (lenovo or {}):
+        # Removed blocker: the stale HEAD-vs-configured Task Runner pin no
+        # longer gates LAN operation. Old configs may still carry the field;
+        # it is ignored and never probed.
+        pass
     if scenario == "dell-lan":
         if not config["local"]["components"] or not config["lenovo"]["components"]:
             raise Refusal("dell-lan requires explicit local and Lenovo components")
-        if revision is None:
-            raise Refusal("dell-lan requires the expected Lenovo checkout revision")
     for side in ("local", "lenovo"):
         names = [item["name"] for item in config[side]["components"]]
         names.extend(item["name"] for item in config[side]["tools"])
-        if side == "lenovo" and "revision" in config[side]:
-            names.append(config[side]["revision"]["name"])
         if len(names) != len(set(names)):
             raise Refusal(f"{side} component names must be unique")
     return config
@@ -258,16 +246,13 @@ def _validate_worker(payload: dict, config: dict) -> list[dict]:
         raise Refusal("verified worker result is not bound to the selected readiness scenario")
     allowed = {item["name"] for item in config["lenovo"]["components"]}
     allowed.update(item["name"] for item in config["lenovo"]["tools"])
-    if "revision" in config["lenovo"]:
-        allowed.add(config["lenovo"]["revision"]["name"])
     raw_components = body["components"]
     if any(not isinstance(item, dict) or item.get("name") not in allowed
            or item.get("state") not in ("confirmed", "missing", "stale", "unconfirmed")
            for item in raw_components):
         raise Refusal("verified worker result contains an unexpected component")
     expected_count = (len(config["lenovo"]["components"])
-                      + len(config["lenovo"]["tools"])
-                      + (1 if "revision" in config["lenovo"] else 0))
+                      + len(config["lenovo"]["tools"]))
     if (len(raw_components) != expected_count
             or len({x["name"] for x in raw_components}) != expected_count):
         raise Refusal("verified worker result omitted or duplicated a required component")

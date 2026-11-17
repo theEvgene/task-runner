@@ -33,14 +33,5 @@ for item in cfg.get("tools",[]):
  command=item["command"]
  found=(Path(command).is_file() if Path(command).is_absolute() else shutil.which(command) is not None)
  add(item["name"],"confirmed" if found else "missing","executable is available" if found else "executable is absent","none" if found else "install or select the required executable")
-revision=cfg.get("revision")
-if revision:
- try:
-  run=subprocess.run([cfg["git"],"-C",revision["repository"],"rev-parse","HEAD"],capture_output=True,text=True,timeout=15,check=False)
-  actual=run.stdout.strip().lower()
-  if run.returncode!=0 or len(actual)!=40: add(revision["name"],"unconfirmed","revision could not be read","repair the local checkout")
-  elif actual!=revision["expected"]: add(revision["name"],"stale","checkout revision differs from expected","update the Lenovo checkout")
-  else: add(revision["name"],"confirmed","checkout is at the expected revision","none")
- except Exception: add(revision["name"],"unconfirmed","revision probe failed","repair the local checkout")
 print(json.dumps({"schema":"lenovo-readiness-probe/1","scenario":cfg["scenario"],"components":out},separators=(",",":")))
 '''

@@ -6,9 +6,9 @@ description: Agent-operable signed LAN command route to the Lenovo worker. Use f
 # LAN task bridge
 
 Before a live operation, follow `docs/lan-bridge-config.md` in the installed
-pinned task-runner checkout. Both LAN skills use the same
+task-runner checkout. Both LAN skills use the same
 `%USERPROFILE%\.config\task-runner\lan-bridge.json` settings. The instruction
-covers discovery, freshness, missing components, and managed Jira reads.
+covers discovery, missing components, and managed Jira reads.
 
 Follow the selected scenario and `docs/lan-bridge.md` using
 `scripts/lan_bridge/lan_bridge.py`. Submit its exact command file, then

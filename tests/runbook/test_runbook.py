@@ -44,7 +44,6 @@ CASES = {
     "smb-network",
     "unsupported-runtime",
     "wrong-cwd",
-    "drifted-checkout",
     "consent-required",
 }
 STATUSES = {"OBSERVED-LOCAL", "NOT_VERIFIED", "UNKNOWN"}
@@ -199,7 +198,6 @@ class RunbookTests(unittest.TestCase):
                 "cleaner-process",
                 "launcher-shortcut",
                 "readiness-report",
-                "checkout-revision",
             },
         )
 

@@ -15,17 +15,17 @@ configurations. Start with the shared settings file above. If it or a field is
 missing, use these sources as evidence, not fixture defaults:
 
 - Resolve `%USERPROFILE%\.agents\skills\lan-task-bridge` (or
-  `dell-lan-local-dev`) to its installed target. Its containing checkout and
-  `git rev-parse HEAD` identify the installed checkout and revision; compare
-  them with the configured pin below.
+  `dell-lan-local-dev`) to its installed target. Its containing checkout
+  identifies the installed checkout; a checkout revision is informational only
+  and never a LAN operation gate.
 - An owner-provided `lan-readiness-config/1` file has no fixed path. Locate it
   from a recorded invocation or ask for its path. Its `queue`, `keyFile`,
   `keyFormat`, and `lenovo.python` correspond to `queue_dir`, `key_file`,
   `key_format`, and `lenovo_python`. Its `lenovo.cwd` is the selected worker
   cwd; use it as `lenovo_jira_working_dir` only if verified as the Jira skill
-  directory. `local.components`, `local.tools`, `lenovo.components`,
-  `lenovo.tools`, and optional `lenovo.revision` are scenario-specific
-  readiness checks, not shared settings or a Dell checkout pin. See
+  directory. `local.components`, `local.tools`, `lenovo.components`, and
+  `lenovo.tools` are scenario-specific
+  readiness checks, not shared settings. See
   `docs/readiness.md`.
 - On Lenovo, the documented launcher config is
   `%LOCALAPPDATA%\task-runner\lenovo-worker.json`. Its `queueDir` and
@@ -43,9 +43,9 @@ missing, use these sources as evidence, not fixture defaults:
   a needed source or value cannot be verified, report it as unverified and
   stop. Do not modify these sources during discovery.
 
-1. Resolve the installed skill junction under `%USERPROFILE%\.agents\skills` to its actual target. The release installer links skill directories into a pinned task-runner checkout. Locate this instruction and template from that checkout. Read the settings file and discover existing values before requesting missing information. Do not invent paths, revisions, or Jira instances.
-2. Require schema `task-runner/lan-bridge-config/1`, nonempty absolute paths for the task-runner checkout, queue, and key file, key format `raw` or `base64`, and a full pinned commit SHA. For managed Jira reads additionally require nonempty absolute paths for `lenovo_python` and `lenovo_jira_working_dir`, plus an explicit `jira_instance`; do not require these Jira-only fields for an independent GitLab MR scenario. Name each absent or invalid component in the blocker. The key file is a path only: never read or print its contents during discovery, put key bytes in JSON, or place it in a repository, queue, or shared LAN folder.
-3. Validate freshness before use: the resolved installed skill target must be in the configured checkout; Git HEAD must equal the configured full commit, and the checkout must have no changes to the selected skill, this instruction, template, or scripts and docs used by the selected route. Verify the selected route's required files exist. Name each missing file or mismatched/dirty component; stop rather than calling an older or unverified installation current. The configured commit is an operator pin, not proof of the newest remote revision; compare against the intended locally available revision when an update is requested. Do not fetch or update another checkout implicitly.
+1. Resolve the installed skill junction under `%USERPROFILE%\.agents\skills` to its actual target. The release installer links skill directories into a task-runner checkout. Locate this instruction and template from that checkout. Read the settings file and discover existing values before requesting missing information. Do not invent paths or Jira instances.
+2. Require schema `task-runner/lan-bridge-config/1` and nonempty absolute paths for the queue and key file, with key format `raw` or `base64`. For managed Jira reads additionally require nonempty absolute paths for `lenovo_python` and `lenovo_jira_working_dir`, plus an explicit `jira_instance`; do not require these Jira-only fields for an independent GitLab MR scenario. Name each absent or invalid component in the blocker. The key file is a path only: never read or print its contents during discovery, put key bytes in JSON, or place it in a repository, queue, or shared LAN folder.
+3. Verify the selected route's required files exist before use. Name each missing file; stop rather than calling an incomplete installation current. A checkout revision is never a gate: do not compare Git HEAD against configured values and do not refuse a dirty tree. Do not fetch or update another checkout implicitly.
 4. Check queue availability and key-file existence without displaying key material. Follow `docs/lan-bridge.md` and the selected scenario for key validation, signing, authorization, and result verification. Pass configured paths and format as existing CLI arguments; configuration does not alter the protocol. Observe a submitted JOBID every 30 s for 10 minutes per `docs/lan-bridge.md` ("Observation rule"): a short-timeout expiry is unknown, never completion. If a submitted result is unknown or observation is interrupted, recover the same JOBID; never submit a replacement while its outcome is unknown.
 5. For managed Jira reads, use `lenovo_jira_working_dir` as the worker cwd and `lenovo_python` as the executable. First verify the installed workflow on Lenovo: write the following single line to a local UTF-8 command file (no secrets; substitute the configured Python path):
 
@@ -113,15 +113,13 @@ What each binding actually is (do not equate them):
   that run (for example `docs/mr-ready.md` uses the Lenovo checkout;
   other routes name their own working dir). `submit --expected-cwd` is the
   producer's signed declaration of that same directory, never a second
-  source: `dell_request.py` emits it as `expectedCwd` (the pinned
+  source: `dell_request.py` emits it as `expectedCwd` (the declared
   `--lenovo-checkout`, or an explicit `--expected-cwd`), and the worker
   refuses a provable difference before spawning. Pass it with the identical
   path the route names for `--cwd`, and never a path the route does not
   name; a route that declares no expectation stays `unverified-target`, not
   verified.
-- Readiness `lenovo.revision.repository` is only the checkout probed
-  with `git -C <repository> rev-parse HEAD` by `scripts/readiness/check.py`;
-  `lenovo.cwd` there is only the probe's working directory. Neither is a
+- Readiness `lenovo.cwd` is only the probe's working directory, not a
   store for driver, flow, client, node, or entrypoint paths.
 
 Per-route Lenovo flags (only what each driver accepts):
@@ -163,7 +161,7 @@ Per-route Lenovo flags (only what each driver accepts):
 
 Per-route target expectation (`submit --expected-cwd`), one declaration per
 writer: `dell_request.py` `base`, `publish`, `transfer`, and
-`publish-existing` declare the pinned `--lenovo-checkout` (or an explicit
+`publish-existing` declare the declared `--lenovo-checkout` (or an explicit
 `--expected-cwd`); `dell_request.py first` and the `fresh_base`, `mr_ready`,
 `pipeline_observer`, and `release` writers declare none, so those jobs stay
 `unverified-target`. `scripts/readiness/check.py` never seals one either.
@@ -174,7 +172,7 @@ Only the managed Jira read has a config fallback: `lenovo_python`,
 other Lenovo task-runner, driver, flow, client, node, or entrypoint
 path above is owner-provided per run through its existing flag; that
 file has no field for them, and the readiness file holds only the
-named checklist (`lenovo.python`/`cwd`/`components`/`tools`/`revision`).
+named checklist (`lenovo.python`/`cwd`/`components`/`tools`).
 
 ## Task-runner Jira CLI versus the managed Jira read (not the same route)
 
