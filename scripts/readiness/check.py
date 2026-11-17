@@ -20,10 +20,12 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 BRIDGE_DIR = HERE.parent / "lan_bridge"
-if str(BRIDGE_DIR) not in sys.path:
-    sys.path.insert(0, str(BRIDGE_DIR))
+WORKER_DIR = HERE.parent / "lenovo_worker"
+sys.path[:0] = [str(item) for item in (BRIDGE_DIR, WORKER_DIR)
+                if str(item) not in sys.path]
 
 import lan_bridge as bridge  # noqa: E402
+import reasons  # noqa: E402  (single owner of refusal reasons)
 
 SCHEMA = "lan-readiness-config/1"
 REPORT_SCHEMA = "lan-readiness-report/1"
@@ -348,6 +350,18 @@ def _validate_submitted_checklist(config: dict, key: bytes, job_id: str) -> None
             "existing job is not bound to the exact selected readiness checklist")
 
 
+def _local_observations(config: dict, components: list[dict]) -> dict:
+    state = {item["name"]: item["state"] for item in components}
+
+    def confirmed(items: list[dict]) -> bool:
+        return all(state.get(item["name"]) == "confirmed" for item in items)
+
+    return {"queuePresent": state.get("signed-queue") == "confirmed",
+            "keyPresent": state.get("queue-key") == "confirmed",
+            "componentPresent": confirmed(config["local"]["components"]),
+            "toolPresent": confirmed(config["local"]["tools"])}
+
+
 def run(args: argparse.Namespace) -> int:
     config_path = Path(args.config).resolve()
     repo_root = bridge.find_repo_root()
@@ -361,7 +375,15 @@ def run(args: argparse.Namespace) -> int:
     config = validate_config(_object(config_path))
     local = local_checks(config)
     if any(item["state"] != "confirmed" for item in local):
-        print(json.dumps(_report(config, "not-submitted", local), ensure_ascii=False))
+        # An uncertain preflight never submits a signed job.
+        observations = _local_observations(config, local)
+        described = reasons.describe(reasons.classify_local(observations)
+                                     or reasons.Refusal("preflight-incomplete",
+                                                        observations=observations))
+        report = _report(config, "not-submitted", local)
+        report["reason"] = described["reason"]
+        report["nextAction"] = described["nextAction"]
+        print(json.dumps(report, ensure_ascii=False))
         return 1
     key = bridge.load_key(config["keyFile"], config["keyFormat"], config["queue"])
     if args.job_id:
@@ -380,6 +402,7 @@ def run(args: argparse.Namespace) -> int:
                                       poll_seconds=float(args.poll))
     except bridge.FetchTimeout:
         report = _report(config, job_id, local, "unknown")
+        report["reason"] = reasons.UNKNOWN
         report["nextAction"] = (f"re-run with --job-id {job_id}; "
                                 "never resubmit while outcome is unknown")
         print(json.dumps(report, ensure_ascii=False))

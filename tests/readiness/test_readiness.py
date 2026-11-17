@@ -340,6 +340,18 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(set(self._wait_job_ids(2)), ids)
         self.assertEqual({path.stem for path in (self.queue / "results").glob("*.json")}, ids)
 
+    def test_uncertain_preflight_reports_one_reason_and_publishes_nothing(self):
+        shutil.rmtree(self.queue)
+        proc = subprocess.run(self._command("--authorize-lenovo-check"),
+                              capture_output=True, text=True, check=False)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        report = json.loads(proc.stdout)
+        self.assertEqual(report["outcome"], "not-ready")
+        self.assertEqual(report["reason"], "queue-missing")
+        self.assertTrue(report["nextAction"])
+        self.assertFalse(self.queue.exists())  # no empty queue, no signed job
+        self.assertNotIn(str(self.temp), proc.stdout + proc.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
