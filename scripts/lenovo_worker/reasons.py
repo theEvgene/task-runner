@@ -157,7 +157,7 @@ def share_status(first_line: str, exit_code: int | None) -> str:
         return "MAPPED"
     if token == "BAD-CREDENTIAL-FILE":
         return "BAD-CREDENTIAL-FILE"
-    if exit_code in (10, 12) or token == "AUTH-DENIED":
+    if token == "AUTH-DENIED":
         return "AUTH-DENIED"
     if token.startswith("MAP-FAILED"):
         return "MAP-FAILED"
@@ -221,8 +221,8 @@ def classify(observations: dict) -> Refusal | None:
         return Refusal("queue-missing", observations=observations)
     if observations.get("workerPresent") is False:
         return Refusal("worker-missing", observations=observations)
-    if status in (None, "UNOBSERVED") and observations.get("queuePresent") is None:
-        return Refusal(UNKNOWN, "no share or queue observation", observations)
+    if status == "UNOBSERVED" or (status is None and observations.get("queuePresent") is None):
+        return Refusal(UNKNOWN, "share status could not be observed", observations)
     return None
 
 

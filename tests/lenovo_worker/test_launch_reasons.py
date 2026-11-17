@@ -98,6 +98,10 @@ class ClassifyTests(unittest.TestCase):
 
 
 class ShareTokenTests(unittest.TestCase):
+    def test_unobserved_share_refuses_even_with_queue_present(self):
+        verdict = reasons.classify({"shareStatus": "UNOBSERVED", "queuePresent": True})
+        self.assertEqual(verdict.reason, "unknown")
+
     def test_probe_tokens_are_normalized(self) -> None:
         cases = (("ALREADY:\\\\HOST\\share", 0, "MAPPED"),
                  ("MAPPED:\\\\HOST\\share", 0, "MAPPED"),
@@ -105,6 +109,8 @@ class ShareTokenTests(unittest.TestCase):
                  ("BAD-CREDENTIAL-FILE", 12, "BAD-CREDENTIAL-FILE"),
                  ("MAP-FAILED:The network path was not found", 11, "MAP-FAILED"),
                  ("something-else", 1, "UNOBSERVED"),
+                 ("", 10, "UNOBSERVED"),
+                 ("", 12, "UNOBSERVED"),
                  ("", None, "UNOBSERVED"))
         for token, exit_code, expected in cases:
             with self.subTest(token=token, exit_code=exit_code):

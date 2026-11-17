@@ -116,6 +116,5 @@ def connect_share(smb: dict) -> dict:
                 "shareDetail": first[:120]}
     if status == "UNOBSERVED":
         # An unexpected token is not evidence for any specific cause.
-        return {"shareStatus": "MAP-FAILED", "shareVisible": None,
-                "shareDetail": first[:120]}
+        return {"shareStatus": "UNOBSERVED", "shareVisible": None}
     return {"shareStatus": status, "shareVisible": None}
