@@ -231,8 +231,13 @@ changed.
 ## 6. Submit and let Lenovo publish; read back the exact SHA and MR
 
 Submit the command file with the standard client, passing the exact
-`--dialect <dialect>` and `--receipt-script-path <receiptScriptPath>` from the
-request writer's JSON output. Do not infer or translate the dialect after the
+`--dialect <dialect>`, `--receipt-script-path <receiptScriptPath>`, and
+`--expected-cwd <expectedCwd>` from the request writer's JSON output. Pass the
+same absolute Lenovo path as bridge `--cwd`: the two are sealed together, and
+the worker refuses a job whose `--cwd` differs from the signed expectation
+before it claims or spawns anything. A request that presents no expectation
+(the `first` route) runs with its target left explicitly `unverified-target`,
+never reported as verified. Do not infer or translate the dialect after the
 command is built. On Lenovo the single command runs `lenovo_publish.py`, which
 re-hashes the request, re-verifies
 the staged bundle, imports the task commit once with a compare-and-swap on

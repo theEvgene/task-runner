@@ -64,6 +64,22 @@ def refuse(message: str) -> int:
     return 1
 
 
+def expected_working_directory(args, request: dict) -> str | None:
+    """The pinned Lenovo working directory this request asks the job to use.
+
+    An explicit ``--expected-cwd`` wins; otherwise a route that pins a Lenovo
+    checkout declares that checkout. A route without such a path presents no
+    expectation: the job then stays ``unverified-target`` instead of a match.
+    """
+
+    declared = getattr(args, "expected_cwd", None)
+    if declared:
+        require_absolute_lenovo_paths(("--expected-cwd", declared))
+        return str(Path(declared))
+    pinned = request.get("lenovoCheckout")
+    return str(pinned) if pinned else None
+
+
 def write_request(args, request: dict, driver: str, dialect: str) -> int:
     shared = Path(args.shared)
     if not shared.is_dir():
@@ -126,6 +142,7 @@ def write_request(args, request: dict, driver: str, dialect: str) -> int:
         "reconcileCommand": reconcile_command,
         "dialect": dialect,
         "receiptScriptPath": driver_path,
+        "expectedCwd": expected_working_directory(args, request),
         "returnFile": str(out_dir / request["manifestName"]) if "manifestName" in request else None,
     }
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
@@ -294,6 +311,10 @@ def build_parser() -> argparse.ArgumentParser:
         item.add_argument("--out-dir", help="where to write the request (default: the shared dir)")
         item.add_argument("--request-name", required=True, help="request file name on the shared dir")
         item.add_argument("--command-file", required=True, help="UTF-8 command file for the bridge")
+        item.add_argument("--expected-cwd", default=None,
+                          help="absolute Lenovo working directory the job must "
+                               "run in; defaults to the pinned --lenovo-checkout "
+                               "when the route has one, otherwise no expectation")
         item.add_argument("--repo", help="Dell checkout that must not contain the shared dir")
 
     base = sub.add_parser("base", help="ask Lenovo for the published base bundle")

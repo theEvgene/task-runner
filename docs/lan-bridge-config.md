@@ -113,6 +113,11 @@ What each binding actually is (do not equate them):
   that run (for example `docs/mr-ready.md` uses the Lenovo checkout;
   other routes name their own working dir). Never copy
   `--lenovo-checkout` into `--cwd` unless that route says so.
+  `submit --expected-cwd` is the producer's signed declaration of that same
+  working directory: `dell_request.py` emits it as `expectedCwd` (the pinned
+  `--lenovo-checkout`, or an explicit `--expected-cwd`; `first` pins none),
+  and the worker refuses a provable difference before spawning. A route that
+  declares no expectation stays `unverified-target`, not verified.
 - Readiness `lenovo.revision.repository` is only the checkout probed
   with `git -C <repository> rev-parse HEAD` by `scripts/readiness/check.py`;
   `lenovo.cwd` there is only the probe's working directory. Neither is a

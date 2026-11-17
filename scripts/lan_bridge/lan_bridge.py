@@ -355,12 +355,16 @@ def submit_job(queue_dir: str, key: bytes, command: str,
                max_output_bytes: int = 65536,
                return_files: list | None = None, dialect=None,
                receipt_script_path: str | None = None,
-               resource_claims: list | None = None) -> str:
+               resource_claims: list | None = None,
+               expected_working_directory: str | None = None) -> str:
     """Seal the command payload and publish it immutably; return the job id.
 
     ``resource_claims`` publishes the signed reservation together with the
     job under the queue-local referee; conflicts refuse before publication.
-    Without claims the legacy path is unchanged.
+    ``expected_working_directory`` is the producer's declared target: the
+    worker refuses a job whose signed expectation differs from its working
+    directory before claiming or spawning anything. Without it the target
+    stays unverified rather than "assumed equal".
     """
 
     _syn.enforce(command, dialect, BridgeError)
@@ -370,7 +374,8 @@ def submit_job(queue_dir: str, key: bytes, command: str,
                                 timeout_seconds=timeout_seconds,
                                 max_output_bytes=max_output_bytes,
                                 return_files=return_files, dialect=dialect,
-                                receipt_script_path=receipt_script_path)
+                                receipt_script_path=receipt_script_path,
+                                expected_working_directory=expected_working_directory)
     if resource_claims is None:
         publish(str(Path(queue_dir) / "jobs"), job_id, seal(payload, key))
         return job_id
@@ -451,7 +456,8 @@ def cmd_submit(args: argparse.Namespace) -> int:
                             int(args.timeout), int(args.max_output),
                             return_files, args.dialect,
                             args.receipt_script_path,
-                            resource_claims=args.claim)
+                            resource_claims=args.claim,
+                            expected_working_directory=args.expected_cwd)
     except (BridgeError, ValueError, TypeError,
             FileQueueError, ProtocolError) as e:
         print(f"submit refused: {e}", file=sys.stderr)
@@ -523,6 +529,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_submit.add_argument(
         "--receipt-script-path", default=None,
         help="absolute intended receipt-producing script path, sealed into the job",
+    )
+    p_submit.add_argument(
+        "--expected-cwd", default=None,
+        help="absolute expected working directory on the worker, sealed into "
+             "the job; the worker refuses a job whose --cwd differs before "
+             "spawning, and an omitted value leaves the target unverified",
     )
     p_submit.add_argument("--claim", action="append",
                           help="managed-write footprint (repeatable)")

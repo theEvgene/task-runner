@@ -43,8 +43,17 @@ python scripts/lan_bridge/lan_bridge.py submit \
   [--return-file <path-on-worker> ...] \
   [--dialect powershell|cmd] \
   [--receipt-script-path <absolute-intended-script>] \
+  [--expected-cwd <absolute-working-dir-on-worker>] \
   [--claim <resource> ...]
 ```
+
+`--expected-cwd` is the producer's declared target: it travels inside the
+same MAC, and the worker refuses a job whose `--cwd` differs from it before
+claiming or spawning anything (`target-cwd-mismatch`, sealed terminal error,
+path identities only as fingerprints). Omitting it never asserts a match: the
+job stays `unverified-target` and the worker log says so, while the command
+still runs exactly as before. Only a caller that can pin the target should
+declare it.
 
 Exit `2` refuses without executing: empty command, bad key, key inside the
 queue or a repository, duplicate id, unreadable command file, and -- when

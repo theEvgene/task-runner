@@ -49,6 +49,7 @@ def _load_bridge() -> object:
 
 
 bridge = _load_bridge()
+import job_payload as payload_rules  # noqa: E402  (loaded with the bridge)
 
 
 class ExecutorRefused(Exception):
@@ -298,6 +299,26 @@ def _prepare_job(queue: Path, key: bytes,
     if dialect not in (None, "cmd", "powershell"):
         return _seal_result(queue, key, job_id, status="error", exit_code=2,
                             stderr="job-unverifiable: unsupported authenticated dialect")
+    expected_workdir = job.get("expected_working_directory")
+    if expected_workdir is not None and (
+            not isinstance(expected_workdir, str) or not expected_workdir.strip()):
+        return _seal_result(
+            queue, key, job_id, status="error", exit_code=2,
+            stderr="job-unverifiable: bad expected_working_directory")
+    target, expected_id, actual_id = payload_rules.target_decision(
+        expected_workdir, workdir)
+    if target == "cwd-mismatch":
+        # The signed expectation is provable and wrong: refuse before the
+        # claim, before the spawn, with path fingerprints only.
+        return _seal_result(
+            queue, key, job_id, status="error", exit_code=2,
+            stderr=(f"target-cwd-mismatch: expected {expected_id} "
+                    f"actual {actual_id}; command not run"))
+    if target == "unverified-target":
+        # No comparable expected path: the job may run, but its target is
+        # never reported as verified.
+        print(f"worker: target unverified for {job_id} "
+              "(no comparable expected working directory)", file=sys.stderr)
     try:
         timeout_s = int(job.get("timeout_seconds", 300))
         limit = int(job.get("max_output_bytes", 65536))
