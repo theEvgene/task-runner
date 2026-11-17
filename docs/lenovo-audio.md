@@ -41,7 +41,7 @@ memory; nothing is installed). A host that blocks the spawn seals a terminal
 - The Lenovo working directory for `submit --cwd` (any existing directory;
   the command touches no files, so the checkout is the usual choice).
 - Timeouts: remote execution limit `--timeout 60` is ample (the run is
-  instant); result wait uses the owner defaults (`fetch --timeout 240
+  instant); result wait uses the live settings (`fetch --timeout 600
   --poll 30`).
 
 No secrets, tokens, or user absolute paths travel in the job: the command
@@ -81,7 +81,7 @@ python scripts/lan_bridge/get.py \
 
 (`fetch --id <JOBID>` is the equivalent single wait; both never publish.)
 On bounded-wait expiry the outcome is unknown: re-read the SAME id with
-`--job-id`/`get.py --id`. Never submit a second job while the outcome is
+`fetch --id` or `get.py --id`. Never submit a second job while the outcome is
 unknown; the queue refuses duplicates and a second submit would be a NEW
 id, not a retry.
 
@@ -113,7 +113,7 @@ else is never success:
 | verified envelope, unparsable or foreign stdout | `unknown_receipt` | NEW id, never success |
 | worker timeout / truncated output / unrecognized status | terminal, per `wait.classify_result` | NEW id (larger limits for truncation) |
 | no verified result yet (bounded wait expired) | unknown | SAME id via `fetch`/`get.py`, never a resubmit |
-| host blocked the spawn (verified `error`, empty stdout) | `worker_failure` | fix host policy, then a NEW id |
+| host blocked the spawn (verified `error`, empty stdout) | `unknown_status` | inspect worker result, fix host policy, then a NEW id |
 
 A repeated `mute` that reports `muted` true is the idempotent steady
 state, not a toggle. `decide` in `audio.py` implements exactly this table;
