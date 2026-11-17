@@ -1,0 +1,1 @@
+"""Lenovo audio tests."""
