@@ -90,6 +90,9 @@ python scripts/lan_bridge/lan_bridge.py submit \
   --timeout 300 --max-output 65536
 ```
 
+This route's writer emits no target expectation, so the job stays
+`unverified-target`; the checkout above is only the working directory.
+
 Completion: submit printed one `JOBID=<32hex>`.
 
 3. Observe the SAME id until a verified result or a concrete blocker

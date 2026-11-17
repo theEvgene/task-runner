@@ -15,7 +15,7 @@ The loop runs in both directions over the one channel that already exists
 (`docs/lan-bridge.md`): Lenovo exports the published base, Dell imports it
 once, works and checks locally, then Lenovo imports the task commit and
 publishes it through the owner-provided external flow. Content crosses on the
-owner-provided LAN share that already hosts the queue; authenticity travels
+owner-provided LAN share that also hosts the queue; authenticity travels
 inside the HMAC-signed job payload as SHA-256 values.
 
 Every step below is one exact command. Nothing here adds a transport, a
@@ -87,7 +87,8 @@ on Lenovo; omit it only when `--lenovo-skill-dir/scripts` already holds the
 drivers (legacy checkout layout). `--repo` is the local Dell checkout; the
 writer refuses a shared path inside it.
 
-Submit it with the standard client (`docs/lan-bridge.md`), declaring the
+Submit it with the standard client (`docs/lan-bridge.md`), passing
+`--expected-cwd <expectedCwd>` with the same `--cwd` and declaring the
 manifest as a return file so a small MAC-bound artifact also comes back
 in-band. Completion: submit printed one `JOBID=<32hex>`.
 
@@ -192,11 +193,11 @@ python scripts/dell_lan/dell_request.py publish \
 ```
 
 `--dialect` is mandatory and names the shell that will execute the generated
-command file. The writer never guesses from the host, executable, or command:
-an omitted or unsupported value exits 2 before writing the request or command
-file. The PowerShell dialect builder produces a literal program beginning with
-the call operator (`&`); the writer then applies the one supported explicit
-`powershell.exe -Command` launcher for signed submit and worker execution.
+command file. The writer never infers it: an omitted or unsupported value
+exits 2 before either file is written. The PowerShell dialect builder produces
+a literal program beginning with the call operator (`&`); the writer then
+applies the one supported explicit `powershell.exe -Command` launcher for
+signed submit and worker execution.
 `cmd` output uses the quoted Windows command form. Cmd arguments containing
 `%` or `!` expansion markers, control characters, or an embedded double quote
 are unrepresentable and refuse before either file is written. PowerShell
@@ -204,13 +205,11 @@ single-quoted arguments preserve `%` and `!`; the worker replaces the validated
 launcher with an encoded wrapper before crossing `cmd.exe`. An embedded double
 quote in a PowerShell argument still refuses at transport adaptation because it
 would close the supported launcher's script quote. Diagnostics name only the
-dialect and fixed reason. Submit with the same dialect reported by the writer's
-JSON output.
+dialect and fixed reason.
 
 Only the actions the user authorized go in `--authorize`; `reconcile` only
 when the read-only probe was authorized too, and `undraft` only when the
-user consented to marking the MR Ready (a `ready` request without it is
-refused by the writer, exit 2). `--lenovo-flow-dir` names the
+user consented to marking the MR Ready. `--lenovo-flow-dir` names the
 external flow checkout on Lenovo (or set `DELL_LAN_FLOW_DIR` there); without
 either, the driver fails closed before any write. A `draft` request
 publishes a Draft MR and never runs the undraft step; a repeat transfer
@@ -231,9 +230,12 @@ changed.
 ## 6. Submit and let Lenovo publish; read back the exact SHA and MR
 
 Submit the command file with the standard client, passing the exact
-`--dialect <dialect>` and `--receipt-script-path <receiptScriptPath>` from the
-request writer's JSON output. Do not infer or translate the dialect after the
-command is built. On Lenovo the single command runs `lenovo_publish.py`, which
+`--dialect <dialect>`, `--receipt-script-path <receiptScriptPath>`, and
+`--expected-cwd <expectedCwd>` from the writer's JSON output, with the same
+absolute path as `--cwd`: the worker refuses a provable difference before it
+claims or spawns anything, and a route that presents no expectation stays
+`unverified-target`. Do not infer or translate the dialect after the command
+is built. On Lenovo the single command runs `lenovo_publish.py`, which
 re-hashes the request, re-verifies
 the staged bundle, imports the task commit once with a compare-and-swap on
 `refs/heads/<task-branch>` (a repeat names the prior SHA; mismatch, dirty
@@ -280,11 +282,9 @@ for the writer, reconciliation, and failure contracts.
 
 ## 6b. Ready route: consented undraft with readback, no pipeline wait
 
-A `ready` request is the same publish with one extra consented step. The
-driver refuses a `ready` request without `undraft` in `--authorize` before
-any write (exit 2, `consent-missing`); a `draft` request is unchanged and
-never runs the undraft step, so Draft stays the silent default and is never
-lifted by accident.
+A `ready` request is the same publish with one extra consented step.
+A `draft` request is unchanged and never runs the undraft step, so Draft stays
+the silent default and is never lifted by accident.
 
 With consent, the driver runs, in order: push → Draft MR create/update
 (never a second MR for one branch; every update converges to the complete

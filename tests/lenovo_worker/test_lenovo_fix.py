@@ -272,5 +272,128 @@ class EnvelopeBudgetTests(unittest.TestCase):
             self.assertEqual(result["id"], job_id)
 
 
+class DeclaredTargetCwdTests(unittest.TestCase):
+    """#57: a signed expected cwd is proven before the command spawns."""
+
+    def setUp(self) -> None:
+        self.tmp = TempRoot()
+        self.addCleanup(self.tmp.cleanup)
+        root = self.tmp.root
+        shared = root / "share"
+        shared.mkdir()
+        self.shared = shared
+        self.queue = make_queue(shared)
+        self.key_path = root / "key.bin"
+        self.key = make_key(self.key_path)
+        self.workdir = root / "work"
+        self.workdir.mkdir()
+        self.marker = self.workdir / "ran.txt"
+
+    def publish(self, expected: str | None) -> str:
+        job_id = os.urandom(16).hex()
+        payload = lan_bridge.build_job_payload(
+            job_id=job_id,
+            command=f'"{PY}" -c "import pathlib;'
+                    'pathlib.Path(\'ran.txt\').write_text(\'ran\')"',
+            working_directory=os.fspath(self.workdir),
+            expected_working_directory=expected)
+        lan_bridge.publish(str(self.queue / "jobs"), job_id,
+                           lan_bridge.seal(payload, self.key))
+        return job_id
+
+    def worker(self) -> subprocess.CompletedProcess:
+        return run([PY, WORKER, "--queue", self.queue, "--key-file",
+                    self.key_path, "--shared", self.shared, "--once"])
+
+    def result(self, job_id: str) -> dict:
+        raw = (self.queue / "results" / f"{job_id}.json").read_bytes()
+        return lan_bridge.open_envelope(raw, self.key, "result", job_id)
+
+    def test_equal_declared_cwd_is_verified_and_executes(self) -> None:
+        # Same directory, different spelling and trailing separator: verified.
+        job_id = self.publish(os.fspath(self.workdir) + os.sep)
+        completed = self.worker()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(self.marker.is_file())
+        self.assertEqual(self.result(job_id)["status"], "ok")
+
+    def test_wrong_declared_cwd_refuses_before_spawn(self) -> None:
+        other = self.tmp.root / "other-checkout"
+        other.mkdir()
+        job_id = self.publish(os.fspath(other))
+        completed = self.worker()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertFalse(self.marker.exists(), "the command must not run")
+        self.assertFalse(
+            (self.queue / "claims" / f"{job_id}.json").exists(),
+            "a refused target must not even claim the job")
+        result = self.result(job_id)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["exit_code"], 2)
+        self.assertIn("target-cwd-mismatch", result["stderr"])
+        # Path identity is anonymized: neither absolute path leaks.
+        self.assertNotIn(os.fspath(other), result["stderr"])
+        self.assertNotIn(os.fspath(self.workdir), result["stderr"])
+
+    def test_absent_declared_cwd_is_unverified_and_still_runs(self) -> None:
+        job_id = self.publish(None)
+        completed = self.worker()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(self.marker.is_file())
+        result = self.result(job_id)
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("target-cwd-mismatch", result["stderr"])
+        self.assertIn("target unverified", completed.stderr)
+
+    def test_decision_never_reports_unprovable_paths_as_a_match(self) -> None:
+        import job_payload
+
+        state, expected_id, actual_id = job_payload.target_decision(
+            "C:\\Work\\Checkout\\", "c:/work/checkout")
+        self.assertEqual(state, "verified")
+        self.assertEqual((len(expected_id), len(actual_id)), (16, 16))
+        for expected, actual in (
+                (None, "C:\\work"),
+                ("C:\\a\\..\\a", "C:\\a"),
+                ("relative-dir", "C:\\a"),
+                ("C:\\a", "")):
+            with self.subTest(expected=expected, actual=actual):
+                self.assertEqual(
+                    job_payload.target_decision(expected, actual)[0],
+                    "unverified-target")
+        self.assertEqual(
+            job_payload.target_decision("C:\\a", "C:\\b")[0], "cwd-mismatch")
+
+    def test_empty_job_id_is_refused_before_any_publication(self) -> None:
+        for empty in ("", "not-hex", "A" * 32):
+            with self.subTest(job_id=empty):
+                with self.assertRaises(ValueError):
+                    lan_bridge.build_job_payload(
+                        job_id=empty, command="echo hi",
+                        working_directory=os.fspath(self.workdir))
+        self.assertEqual(list((self.queue / "jobs").iterdir()), [])
+
+    def test_bad_mac_seals_one_refusal_without_execution_or_retry(self) -> None:
+        job_id = os.urandom(16).hex()
+        payload = lan_bridge.build_job_payload(
+            job_id=job_id,
+            command=f'"{PY}" -c "import pathlib;'
+                    'pathlib.Path(\'ran.txt\').write_text(\'ran\')"',
+            working_directory=os.fspath(self.workdir))
+        lan_bridge.publish(str(self.queue / "jobs"), job_id,
+                           lan_bridge.seal(payload, os.urandom(32)))
+        completed = self.worker()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertFalse(self.marker.exists(), "an unverifiable job must not run")
+        self.assertIn("job-unverifiable", self.result(job_id)["stderr"])
+        self.assertNotIn(self.key.hex(), completed.stdout + completed.stderr)
+
+        sys.path.insert(0, str(SCRIPTS))
+        import worker as worker_mod
+
+        self.assertEqual(worker_mod.run_once(self.queue, self.key),
+                         {"sealed": 0, "skipped": 0, "refused": 0, "failed": 0})
+
+
 if __name__ == "__main__":
     unittest.main()

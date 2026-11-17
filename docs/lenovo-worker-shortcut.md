@@ -67,6 +67,12 @@ and starts nothing new.
   sealed, and a finished `--once`/`--max-jobs` batch exits 2 when any job
   was refused or failed. Invalid `working_directory`/spawn failures seal a
   bounded terminal error (exit 2) instead of crashing or re-executing.
+  A job that carries the signed `expected_working_directory` is compared with
+  its `working_directory` before any claim or spawn: a provable difference
+  seals one `target-cwd-mismatch` terminal error naming only path
+  fingerprints, and the command never starts. A job without a comparable
+  expectation still runs, but its target is reported as `unverified-target`
+  in the worker log, never as verified.
   Declared return files keep the bridge contract (any path the job names)
   with byte bounds (8 files, 256 KiB each, 1 MiB total); truncation sets
   `output_truncated`. Outputs plus encoded files are fitted to a safe

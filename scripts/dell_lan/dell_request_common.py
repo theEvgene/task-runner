@@ -31,6 +31,34 @@ def require_absolute_lenovo_paths(*pairs: tuple[str, str]) -> None:
                 f"{label} must be the absolute path on the Lenovo machine"))
 
 
+def add_common_arguments(item: argparse.ArgumentParser) -> None:
+    """Register the arguments every Dell request route shares."""
+
+    item.add_argument("--shared", required=True,
+                      help="owner-provided LAN share that holds the queue")
+    item.add_argument("--token", required=True,
+                      help="16 lowercase hex request token")
+    item.add_argument("--lenovo-skill-dir", required=True,
+                      help="absolute installed skill dir on Lenovo")
+    item.add_argument("--lenovo-driver-dir", default=None,
+                      help="absolute dir holding the Lenovo drivers on that "
+                           "machine (default: <lenovo-skill-dir>/scripts)")
+    item.add_argument("--python", required=True,
+                      help="absolute interpreter path on the Lenovo machine")
+    item.add_argument("--out-dir",
+                      help="where to write the request (default: the shared dir)")
+    item.add_argument("--request-name", required=True,
+                      help="request file name on the shared dir")
+    item.add_argument("--command-file", required=True,
+                      help="UTF-8 command file for the bridge")
+    item.add_argument("--expected-cwd", default=None,
+                      help="absolute Lenovo working directory the job must "
+                           "run in; defaults to the pinned --lenovo-checkout "
+                           "when the route has one, otherwise no expectation")
+    item.add_argument("--repo",
+                      help="Dell checkout that must not contain the shared dir")
+
+
 def flow_args(args) -> list[str]:
     """Extra Lenovo command arguments for a publication driver."""
 
