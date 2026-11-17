@@ -211,7 +211,12 @@ and only for what its fields say (`classify_result`):
 
 - `completed`/`ok` + integer `exit_code == 0`, no `timed_out`, no
   `output_truncated` → terminal **success**.
-- Non-zero exit → terminal **worker failure** (verified, not success).
+- `completed`/`ok` + non-zero `exit_code` → terminal **worker failure**
+  (verified, not success). A verified `error`-status envelope (the worker
+  seals any nonzero process exit this way) is **unknown_status**, never
+  success by itself: the Jira/DCO receipt-authoritative route in
+  `docs/lenovo-hosted-scripts.md` still parses its complete authenticated
+  stdout receipt, and only a `Completed` receipt counts as success.
 - `timed_out` → terminal **worker timeout**; fix worker limits, re-run as a
   NEW id.
 - `output_truncated` → terminal but **incomplete**; the CLI warns on stderr

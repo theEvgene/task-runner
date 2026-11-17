@@ -90,24 +90,36 @@ submit while the outcome is unknown is a new id, never a retry.
 
 ## Acceptance (transport first, receipt authoritative)
 
-1. Transport: accept only a MAC-verified result bound to the JOBID with
-   `completed`/`ok`, no `timed_out`, no `output_truncated`
-   (`classify_result` in `docs/lan-bridge.md`). An unrecognized `status`
-   is unknown, never success. The envelope `exit_code` is a transport
-   outcome, not the CLI verdict: `0` means the worker process reported
-   success, nonzero means the worker process reported something else —
-   the exact CLI state always comes from the stdout receipt, never from
-   the envelope code alone.
+1. Transport: require a MAC-verified result bound to the JOBID with no
+   `timed_out`, no `output_truncated`, and a complete authenticated
+   stdout receipt available (`classify_result` in `docs/lan-bridge.md`).
+   Both `completed`/`ok` and `error` statuses proceed to step-2 receipt
+   parsing when stdout is complete: the worker seals `status: error`
+   for any nonzero process exit, so CLI plan exits such as `3` arrive
+   as `error` envelopes. An `error` status is never success by itself;
+   only a `Completed` receipt (step 2) is success. `timed_out` is
+   terminal worker timeout (NEW id); `output_truncated` is terminal
+   incomplete (NEW id with larger `--max-output`). An unrecognized
+   `status`, missing stdout, or truncated output is unknown, never
+   success. The envelope `exit_code` is a transport outcome, not the
+   CLI verdict: never re-interpret a nonzero envelope code as a
+   different CLI state and never infer the exact CLI code survived —
+   the exact CLI state always comes from the stdout receipt JSON,
+   never from the envelope code alone.
 2. CLI: the stdout receipt `state` is authoritative for Jira/DCO runs.
    Parse the receipt JSON first. `Completed` (CLI exit `0`) is the only
    success; `AwaitingConfirmation` (CLI exit `3`: Jira write plans and
-   DCO `apply` preflight) is an expected non-success plan state, not a
+   DCO `apply` preflight, including `ReadyToCreate`/`TestVerified`
+   preflight states) is an expected non-success plan state, not a
    transport failure — continue the two-phase flow with `--confirm`
-   instead of treating the envelope as failed. The other stable
-   non-success states are decided by the receipt with the per-operation
-   readback below: `MissingRequiredFields`/`Duplicate` (CLI exit `4`),
-   Jira incomplete extraction (CLI exit `6`), DCO `FailedTest` (CLI exit
-   `6`), DCO `Partial` (CLI exit `7`). Exit tables live in
+   instead of treating the envelope as failed. Split exit `4` by CLI:
+   Jira exit `4` is `MissingRequiredFields` only (`create-epic`; Jira
+   has no `Duplicate` state) while DCO exit `4` is `Duplicate`. Jira
+   incomplete extraction is exit `6`; DCO `FailedTest` is exit `6`,
+   `Partial` is exit `7`. Exit-`2` receipts (`Failed` for Jira, `Error`
+   for DCO) are terminal for the attempted inputs: fix inputs, then a
+   NEW JOBID, never a mutation retry. Any unlisted or unparsable
+   receipt `state` is unknown, never success. Exit tables live in
    `docs/jira-protocol.md` (Exit states) and `docs/dco-feature-flags.md`.
    Jira writes are two-phase: a read-only plan returning
    `AwaitingConfirmation` (or `MissingRequiredFields`), then a later
@@ -122,15 +134,22 @@ submit while the outcome is unknown is a new id, never a retry.
 3. Unknown writes: receipt `state` `UnknownOutcome` /
    `AwaitingRenewedConfirmation` (CLI exit `5`; Jira `UnknownOutcome`) is
    never permission to retry a mutation, regardless of the envelope
-   `exit_code`. Re-read the same JOBID first; then re-run the read-only step
+   `exit_code`. DCO `Error` (CLI exit `2`) is a catch-all that can hide
+   an unknown mutation outcome: an escaping `AmbiguousOutcome` or a
+   `Completed` re-verification readback failure surfaces as `Error`/`2`,
+   not `5`. Treat any DCO `Error`/`2` after a mutation-capable `apply`
+   as possibly-unknown and fail closed with the same handling as exit
+   `5`. Re-read the same JOBID first; then re-run the read-only step
    on Lenovo (Jira plan
    without `--confirm`; DCO `apply` without confirmation for readback-only
    recovery) and verify flag state, comment presence, or exact-path toggle
    readback before deciding. HTTP 401/403 (Jira) is terminal for that route.
-   Envelope caution: one Lenovo smoke run surfaced a CLI exit `2` as
-   envelope `1` with byte-identical stdout, so a nonzero envelope code must
-   never be re-interpreted as a different CLI state and never authorizes a
-   blind replay — always decide from the receipt.
+   Envelope caution (single unverified observation, no JOBID, receipt,
+   log, or stdout hash attached): one Lenovo smoke run reportedly
+   surfaced a CLI exit `2` as envelope `1` with byte-identical stdout,
+   so a nonzero envelope code must never be re-interpreted as a
+   different CLI state and never authorizes a blind replay — always
+   decide from the receipt.
 
 ## DCO same-host files
 

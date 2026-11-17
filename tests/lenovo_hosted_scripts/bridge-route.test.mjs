@@ -91,6 +91,22 @@ test("bridge doc is the single generic route and stays username-free", async () 
     assert.match(doc, new RegExp(needle.replace(/[./-]/g, "\\$&")));
   assert.doesNotMatch(doc, /C:\\Users\\/);
   assert.doesNotMatch(doc, /jira-task\.py read/);
+  for (const needle of [
+    "has no `Duplicate` state",
+    "possibly-unknown",
+    "single unverified observation",
+    "never infer the exact CLI code survived",
+    "unparsable",
+    "never a mutation retry",
+  ])
+    assert.match(doc, new RegExp(needle.replace(/[./-]/g, "\\$&")));
+  const bridge = await readFile(join(root, "docs", "lan-bridge.md"), "utf8");
+  assert.match(bridge, /error.*stdout receipt/s);
+  const ops = await readFile(
+    join(root, "scripts", "jira_protocol", "operations.mjs"),
+    "utf8"
+  );
+  assert.doesNotMatch(ops, /Duplicate/);
   const dcoSkill = await readFile(
     join(root, "skills", "create-dco-feature-flags-protocol", "SKILL.md"),
     "utf8"
