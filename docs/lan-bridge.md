@@ -8,9 +8,11 @@ job id. The queue is immutable: a published id is never replaced.
 Canonical client: `scripts/lan_bridge/lan_bridge.py` (stdlib only; protocol
 v1, no crypto change from the reviewed MVP revision). Recovery helpers with
 no protocol change live in `scripts/lan_bridge/wait.py`: windowed resume
-(`wait_many_windows`), non-blocking verified read (`peek_result`),
-confirmed-state classification (`classify_result`,
-`classify_absence`, `summarize_result`) and stage timings (`stage_timings`).
+(`wait_many_windows`), non-blocking verified read (`peek_result`), the one
+job-state readback (`job_status`, `status_from_result`,
+`status_for_absence`), confirmed-state classification (`classify_result`,
+`classify_absence`) and stage timings (`stage_timings`). The older
+`summarize_result` projection was removed so one job has one state shape.
 Nothing here reimplements the envelope, the MAC, or the queue; scenario docs
 (`docs/fresh-base.md`, `docs/pipeline-observer.md`, `docs/dell-lan.md`)
 build their exact commands and call this client. The second agent operation
@@ -102,18 +104,21 @@ python scripts/lan_bridge/get.py \
   --queue <queue-dir> --key-file <key-path> \
   [--key-format raw|base64] \
   --id <job-id> [--window <seconds>] [--poll <seconds>] \
-  [--max-windows <n>] [--receipt-out <path>]
+  [--max-windows <n>] [--status] [--receipt-out <path>]
 ```
 
 One call holds the validated id/key/queue across windows (a single queue
 resolve however many windows it takes) and returns only when a MAC-verified
 result bound to the id is found or a concrete blocker appears (exit `2`:
-unavailable queue, tampered envelope, bad id). `--window` defaults to 60 s,
-`--poll` to the owner default 30 s; `--max-windows 0` (the default) waits
-without a window bound, otherwise expiry is exit `3` unknown with the same
-same-id resume action. Interruption recovery is re-running the same command
-with the same id: nothing is ever published, so a late result sealed under
-the original id verifies normally.
+unavailable queue, tampered envelope, bad id, unverifiable request). `--window`
+defaults to 60 s, `--poll` to the owner default 30 s; `--max-windows 0` (the
+default) waits without a window bound, otherwise expiry is exit `3`
+`waiting`/`unknown` with the same same-id resume action. Interruption recovery
+is re-running the same command with the same id: nothing is ever published, so
+a late result sealed under the original id verifies normally. `--status` skips
+the wait and prints one `lan-job-status/1` readback (exit `0` finished, `3`
+waiting/unknown, `2` refused); a bounded timeout prints that same object on
+stdout.
 
 ## Syntax gate (syntax-only, opt-in per submit)
 
@@ -209,7 +214,8 @@ python scripts/lan_bridge/lan_bridge.py submit \
 - A missing queue dir (wrong path, unmounted share) refuses at once with
   exit `2` (`queue unavailable ... check path/mount`): it never waits the
   full timeout and never claims the job is pending. A present queue dir
-  with no result file yet stays pending (exit `3` unknown, re-read SAME id).
+  with no result file yet is `waiting` when a signed lease holds the job,
+  otherwise `unknown`; both are exit `3` with the same-id resume action.
 - No live second host is proven by shipping this client: the fixture suite
   below is local only. A live run is a separate, explicitly authorized step.
 
@@ -229,10 +235,57 @@ and only for what its fields say (`classify_result`):
 - Any other `status` → verified envelope, **unknown meaning**; never treated
   as success.
 
-No verified result yet (bounded wait expired, exit `3`) is **unknown**: not
-evidence the job is running, done, or failed. The timeout message says so and
-points at re-reading the SAME id. There is no "running" outcome anywhere in
-the client or `wait.py`.
+No verified result yet (bounded wait expired, exit `3`) is `waiting` when a
+signed lease holds the job and `unknown` otherwise: neither is evidence the
+job is running, done, or failed. The timeout message says so and points at
+re-reading the SAME id. There is no "running" outcome anywhere in the client
+or `wait.py`.
+
+## One verified job status (`lan-job-status/1`)
+
+`wait.py:job_status` is the single job-state readback; `get.py --status`
+prints it and readiness embeds the same object instead of restating job
+wording. One shape, one id:
+
+| field | present | meaning |
+|---|---|---|
+| `jobId` | always | the exact id that was read |
+| `outcome` | always | `finished`, `waiting`, `unknown` or `refused` |
+| `nextAction` | always | at most one safe next action |
+| `proof` | always | `result`/`job`/`lease`, each `signed`, `absent`, `unverifiable` or `not read` |
+| `observedOwner` | signed claim bound to this job only | claim `instance` and `pid` (ownership, not liveness) |
+| `occupied` | with `observedOwner` only | the signed lease still holds the job |
+| `deadline` | from the signed request only | `timeout_seconds` (worker execution limit), never an invented clock |
+| `terminal` | `finished` only | `classify_result` outcome, status and exit code |
+
+- `finished`: MAC-verified result bound to this id; `terminal.outcome` keeps
+  success apart from worker failure, worker timeout, truncation and unknown
+  status.
+- `waiting`: no result, but a signed `lenovo-job-claim/1` bound to this exact
+  job envelope and to the held state. The claim is checked with the same
+  `job_claim.claim_matches` predicate the owning worker applies (schema,
+  kind, id, owner types, 32-hex generation, digest, state), so the observer
+  cannot report an owner the worker would refuse. The worker-derived resource
+  set is not re-derivable on the observing host and stays the owner's final
+  check. The lease stays held; `nextAction` re-reads the SAME id and never
+  resubmits or releases it. Nothing here frees a lease on a waiter timeout;
+  that stays a separate, unshipped change.
+- `unknown`: no result and no signed lease, or no signed request for the id.
+  Never "running"; `nextAction` never resubmits.
+- `refused`: a result file exists but fails its MAC, id or format check (a
+  result sealed for another id is refused, never reported as this job's
+  completion), or the signed request itself cannot be verified (a tampered
+  or foreign-id request file is untrusted, not the absent-id `unknown`; no
+  re-read can repair it). The single action asks the queue owner for the
+  sealed file. An unavailable queue still refuses fast and names no host
+  path.
+
+The waiter reports (`wait_many_windows`, `get_result`, `get.py`) keep
+`job_id`, `windows_used`, `probes`/`polls_bound`, `elapsed_s` and `action`,
+and carry that same object as `status`; the report's own `outcome` mirrors
+`status.outcome` on a non-found expiry, so one report never states two job
+states. A found result keeps `outcome: found` and `status.outcome:
+finished`.
 
 Executor truth (issues #33/#36): on the worker, a PowerShell launcher
 command is replaced by an already-valid encoded outer program. That program
@@ -283,44 +336,9 @@ Stage splits (`stage_timings`) use numeric worker marks only; the protocol's
 opaque `started_at`/`finished_at` strings (e.g. fixture `"t0"`/`"t1"`) yield
 `unknown` for every stage rather than an invented split.
 
-## Delay diagnosis (measured, local fixtures)
+## Delay diagnosis
 
-Dominant delay is worker execution plus queue wait, both outside this
-client: an already-present result costs exactly one queue read and returns
-sub-second (asserted in `LatencyDiagnosisTests`). Per empty poll the client
-spends one directory probe. The owner default (240 s / 30 s) therefore cuts
-empty-poll probes ~3x versus the previous 660 s / 10 s default for the same
-wait (at most 10 reads per full window versus 67), at the price of a 30 s
-detection-latency bound instead of 10 s -- an explicit trade-off; a shorter
-wait can still be chosen per call with `--poll`. No deeper client-side cut
-was made: slicing the 30 s sleep into hidden 1 s probes would silently
-redefine the owner-chosen check interval, so it stays out of scope under
-#12/#13. Protocol, MAC, id binding, immutability and key handling are
-unchanged.
-
-Measured this round (local fixture only: window 0.4 s / poll 0.05 s, late
-result sealed after two empty windows; reproduce with
-`python -m unittest discover -s tests/lan_bridge -p
-test_lan_bridge_get_result.py`, probe counting in `BeforeAfterTests`):
-
-| metric                              | before: re-invoked `fetch` per window (2 calls) | after: one `get_result`  |
-| ----------------------------------- | ----------------------------------------------- | ------------------------ |
-| queue-dir resolves                  | 2 (one per call)                                | 1 (validated once)       |
-| queue reads to the same late result | 10                                              | 19                       |
-| elapsed                             | 0.42 s                                          | 0.82 s                   |
-| already-present result              | 1 read, sub-second                              | 1 read, 0.008 s observed |
-
-Reads and elapsed scale with when the late result arrives in both paths, so
-the before/after gap there is fixture arrival time, not mechanism speed, and
-is reported as such rather than as an optimization win. The deterministic
-saving is the per-window setup: one validation + one queue resolve per
-`get_result` however many windows it observes, versus one per `fetch` call.
-Dominant delay stays worker-side (execution + queue wait): an
-already-present result costs exactly one read in both paths. Stage splits
-(`stage_timings`) still use only confirmed numeric worker marks -- opaque
-protocol strings yield `unknown` for every stage, and `queue_s`/`delivery_s`
-have no confirmed marks at all, so they stay `unknown` here. No live second
-host is proven by any of these numbers.
+See [local fixture measurements](lan-bridge-delay-diagnosis.md).
 
 ## Local verification
 
@@ -328,6 +346,7 @@ host is proven by any of these numbers.
 <python> -m unittest discover -s tests/lan_bridge -v
 ```
 
+Includes `test_lan_bridge_status.py` for verified job state and claim evidence.
 Covers the published interop vector byte-for-byte, MAC tamper and wrong-id
 refusal, command-in-payload transmission, result id binding,
 duplicate-publish refusal, key handling, a fixture submit/worker/fetch
@@ -339,7 +358,7 @@ classification, window reports with `unknown` stages, tamper/bad-id/
 truncated/unavailable handling with no key material in any output, and the
 poll-bound/latency assertions above, plus the continuous get-result suite
 (`test_lan_bridge_get_result.py`): late result across windows under the
-original id with exactly one submission, bounded expiry as unknown plus
+original id with exactly one submission, bounded expiry as waiting or unknown plus
 restart recovery with the same id, tamper/unavailable/bad-id fast blockers,
 verified-but-unrecognized status returned as confirmed-yet-unknown (never
 success), the single-resolve before/after fixture, and the one-probe
