@@ -181,9 +181,6 @@ class ConfirmedVsUnknownTests(unittest.TestCase):
             self.assertEqual(info["outcome"], outcome)
             self.assertTrue(info["confirmed"])
             self.assertNotEqual(info["outcome"], "running")
-            summary = waitmod.summarize_result(payload)
-            self.assertEqual(summary["id"], job_id)
-            self.assertNotIn("running", json.dumps(summary).lower())
 
 
 class TimingsTests(unittest.TestCase):
@@ -220,7 +217,7 @@ class TimingsTests(unittest.TestCase):
         self.assertEqual(numeric["exec_s"], 2.5)
         self.assertEqual(numeric["queue_s"], "unknown")
 
-    def test_found_report_carries_summary_and_bounded_polls(self):
+    def test_found_report_carries_status_and_bounded_polls(self):
         job_id = bridge.submit_job(self.queue, self.key, "cmd", "C:\\s")
         bridge.publish(os.path.join(self.queue, "results"), job_id,
                        bridge.seal(bridge.build_result_payload(
@@ -230,7 +227,7 @@ class TimingsTests(unittest.TestCase):
             self.queue, self.key, job_id, total_timeout=5,
             window_timeout=5, poll_seconds=0.5)
         self.assertEqual(report["outcome"], "found")
-        self.assertEqual(report["summary"]["outcome"], "success")
+        self.assertEqual(report["status"]["terminal"]["outcome"], "success")
         self.assertEqual(payload["id"], job_id)
 
 
