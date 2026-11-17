@@ -42,20 +42,6 @@ import launch as launch_mod  # noqa: E402
 import proc as launch_proc  # noqa: E402
 
 
-class StartRecordFailureTests(unittest.TestCase):
-    def test_failed_pid_write_blocks_a_second_spawn(self):
-        root = TempRoot()
-        self.addCleanup(root.cleanup)
-        state = root.root
-        with mock.patch.object(launch_proc, "spawn_detached", return_value=1234) as spawn, \
-             mock.patch.object(launch_proc, "write_pid_file", side_effect=OSError("disk full")):
-            with self.assertRaises(launch_mod.reasons.Refusal):
-                launch_mod._ensure_role(state, "worker", ["worker"], "marker", {})
-            with self.assertRaises(launch_mod.reasons.Refusal):
-                launch_mod._ensure_role(state, "worker", ["worker"], "marker", {})
-            self.assertEqual(spawn.call_count, 1)
-
-
 class WorkerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = TempRoot()

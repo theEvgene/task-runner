@@ -73,8 +73,8 @@ REASONS: dict[str, dict] = {
     "launch-busy": {"state": "refused", "detail": "another launch is in progress",
                     "nextAction": "re-run to adopt the pids of the launch in progress"},
     "role-ambiguous": {"state": "refused", "detail": "ambiguous role state",
-                       "nextAction": "verify the named process manually, then remove that "
-                                     "pid file; the launcher never kills"},
+                       "nextAction": "verify the role and follow the named state record in detail; "
+                                     "the launcher never kills"},
     "role-start-failed": {"state": "refused", "detail": "a role exited at once",
                           "nextAction": "read the role log under stateDir"},
     "tool-missing": {"state": "refused", "detail": "required executable is absent",

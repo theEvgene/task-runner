@@ -148,3 +148,5 @@ They start no process, open no queue or share, use no key, and reach no host:
 a document check is not a live check. Live host, SMB, and credential paths stay
 `NOT_RUN` until an owner-observed readback is recorded, so this runbook never
 claims more than the fixture map proves.
+
+An incomplete role start leaves `<role>.starting`; the owner verifies the role before removing this marker.

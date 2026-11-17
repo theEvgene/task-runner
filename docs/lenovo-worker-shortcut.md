@@ -193,7 +193,9 @@ local directory that must already exist for both spawned roles.
   refuses with the exact pid file to inspect and starts nothing and deletes
   nothing. The launcher never kills, never replaces, never `--force`s. Remediation:
   verify no such process runs (`tasklist /FI "PID eq N"`), then remove
-  `stateDir\<role>.pid`.
+  the state record named in `detail`: `stateDir\<role>.pid` or
+  `stateDir\<role>.starting`. A `.starting` marker signals an incomplete
+  start and must stay until the owner has verified the process state.
 - Process identity is bound to the full command array plus its configuration
   (`queue`/`keyFile` and configured `workerCwd` for the worker,
   `shared`/`trash` and configured `workerCwd` for the cleaner). A live pid recorded

@@ -276,7 +276,12 @@ def _ensure_role(state_dir: Path, role: str, command: list[str],
     starting_file = state_dir / f"{role}.starting"
     with starting_file.open("x", encoding="utf-8"):
         pass
-    new_pid = proc.spawn_detached(command, log_file, cwd)
+    try:
+        new_pid = proc.spawn_detached(command, log_file, cwd)
+    except OSError as error:
+        raise reasons.Refusal("role-ambiguous",
+                              f"ambiguous {role} state (start failed); verify the role "
+                              f"before removing {role}.starting in stateDir") from error
     try:
         proc.write_pid_file(pid_file, new_pid, marker, _now(),
                             {"command": command, "binding": binding})
@@ -288,7 +293,12 @@ def _ensure_role(state_dir: Path, role: str, command: list[str],
         raise reasons.Refusal("role-ambiguous",
                               f"ambiguous {role} state (pid write failed after start); "
                               f"verify started pid {new_pid} before recovery") from error
-    starting_file.unlink()
+    try:
+        starting_file.unlink()
+    except OSError as error:
+        raise reasons.Refusal("role-ambiguous",
+                              f"ambiguous {role} state (start marker remains); verify "
+                              f"pid {new_pid} before removing {role}.starting in stateDir") from error
     if not proc.is_alive(new_pid):
         raise reasons.Refusal("role-start-failed",
                               f"{role} exited at once; read {role}.log in stateDir")
