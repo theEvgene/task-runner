@@ -74,7 +74,7 @@ Explicit authorization applies to this one read-only Lenovo probe:
 
 ```text
 <python> scripts/readiness/check.py --config <outside-config.json> \
-  --authorize-lenovo-check [--wait 240] [--poll 30] [--worker-timeout 60]
+  --authorize-lenovo-check [--wait 600] [--poll 30] [--worker-timeout 60]
 ```
 
 The command performs all Dell checks first. A local failure publishes
@@ -92,11 +92,12 @@ On exit `3`, copy `jobId` from the JSON and retrieve that exact ID:
 
 ```text
 <python> scripts/readiness/check.py --config <same-config.json> \
-  --job-id <same-32hex-id> [--wait 240] [--poll 30]
+  --job-id <same-32hex-id> [--wait 600] [--poll 30]
 ```
 
 The retrieval form never submits. Do not create a new job while the prior
-outcome is unknown.
+outcome is unknown. A short-timeout expiry is unknown, never completion;
+only a full 600 s watch with no verified result is reported as no response.
 
 ## Output and boundaries
 

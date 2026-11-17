@@ -51,7 +51,8 @@ and pass the expanded absolute result (never a username, `%...%`, or
 
 ## Fail-closed rules
 
-- Observe the SAME JOBID until a verified result or a concrete blocker;
+- Observe the SAME JOBID every 30 s for 10 minutes until a verified result
+  or a concrete blocker (`docs/lan-bridge.md` "Observation rule");
   an unknown outcome never gets a resubmission under a new id. A preview
   may be retried with a new id; a versioned run is never resubmitted
   (the tag may already exist).

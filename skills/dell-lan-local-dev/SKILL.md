@@ -30,7 +30,8 @@ Use paths from the pinned task-runner checkout on both hosts. Keep development,
 build, lint, and tests on Dell; use Lenovo only for the corporate and
 closed-dependency steps named by the selected route. Each remote read or write
 needs the route's explicit authorization. An unknown result is recovered under
-the same job id; it is never permission to submit a replacement.
+the same job id on the same 30 s / 10-minute watch (`docs/lan-bridge.md`
+"Observation rule"); it is never permission to submit a replacement.
 
 Run only the fixture suite relevant to a change. The documented tests do not
 contact Lenovo, Jira, GitLab, or another network service.

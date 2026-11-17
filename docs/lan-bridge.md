@@ -63,8 +63,8 @@ queue or a repository, duplicate id, unreadable command file, and -- when
 validator (see "Syntax gate" below; without `--dialect` the gate stays
 off and the submit path is unchanged).
 
-2. Fetch the bound result (default: wait up to 240 s, checking every 30 s;
-   owner choice from #12/#13; explicit values stay allowed):
+2. Fetch the bound result (live observation: wait 600 s, checking every 30 s;
+   explicit values stay allowed only for local fixture runs):
 
 ```text
 python scripts/lan_bridge/lan_bridge.py fetch \
@@ -87,12 +87,13 @@ but proves nothing: expiry always means **unknown**, never "still running".
 ```text
 python scripts/lan_bridge/lan_bridge.py fetch \
   --queue <queue-dir> --key-file <key-path> --id <same-job-id> \
-  --timeout 240 --poll 30
+  --timeout 600 --poll 30
 ```
 
 Recovery is stateless (queue files only, no observer memory), so a restarted
 observer simply fetches the same id again. A late result sealed under the
-original id verifies normally. Never re-publish while the outcome is
+original id verifies normally. A short-timeout expiry stays **unknown** and
+never counts as completion. Never re-publish while the outcome is
 unknown: the queue refuses duplicates (`JobExistsError`), and a second submit
 would be a NEW id, not a retry.
 
@@ -110,15 +111,28 @@ python scripts/lan_bridge/get.py \
 One call holds the validated id/key/queue across windows (a single queue
 resolve however many windows it takes) and returns only when a MAC-verified
 result bound to the id is found or a concrete blocker appears (exit `2`:
-unavailable queue, tampered envelope, bad id, unverifiable request). `--window`
-defaults to 60 s, `--poll` to the owner default 30 s; `--max-windows 0` (the
-default) waits without a window bound, otherwise expiry is exit `3`
-`waiting`/`unknown` with the same same-id resume action. Interruption recovery
+unavailable queue, tampered envelope, bad id, unverifiable request). Live
+observation totals 600 s at a 30 s poll -- for example `--window 600
+--poll 30`, or ten `--window 60 --poll 30` windows via `--max-windows 10`;
+`--window` defaults to 60 s, `--poll` to the owner default 30 s for fixture
+use. `--max-windows 0` (the default) waits without a window bound, otherwise
+expiry is exit `3` `waiting`/`unknown` with the same same-id resume action. Interruption recovery
 is re-running the same command with the same id: nothing is ever published, so
 a late result sealed under the original id verifies normally. `--status` skips
 the wait and prints one `lan-job-status/1` readback (exit `0` finished, `3`
 waiting/unknown, `2` refused); a bounded timeout prints that same object on
 stdout.
+
+## Observation rule (same-id 10-minute watch)
+
+After `submit`, observe the SAME JOBID every 30 s for 10 minutes until a
+MAC-verified result bound to that id or a concrete blocker (exit `2`)
+arrives. A short-timeout expiry is **unknown**, never completion, and never
+permission to publish a new JOBID for the same work. Report `no response`
+only after the full 10 minutes with no verified result; name a confirmed
+worker/caller error (verified failure, worker timeout, truncation,
+refused envelope) apart from queue/host unavailability, honestly and
+without promotion.
 
 ## Syntax gate (syntax-only, opt-in per submit)
 
