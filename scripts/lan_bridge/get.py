@@ -75,7 +75,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"get refused: {e}", file=sys.stderr)
         return 2
     if args.status:
-        print(json.dumps(status, ensure_ascii=False))
+        text = json.dumps(status, ensure_ascii=False)
+        if args.receipt_out:
+            out = Path(args.receipt_out)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(text + "\n", encoding="utf-8")
+        print(text)
         return _status_exit(status)
     elapsed = time.monotonic() - started
     if payload is None:

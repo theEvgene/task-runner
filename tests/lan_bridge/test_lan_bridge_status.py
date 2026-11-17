@@ -188,7 +188,7 @@ class AbsenceTests(StatusCase):
     def test_unsubmitted_id_is_unknown_without_invented_deadline(self):
         # The owner-provided queue mount exists; only this id was never
         # submitted, so nothing may be reported for it.
-        Path(self.queue).mkdir(parents=True, exist_ok=True)
+        Path(self.queue, "jobs").mkdir(parents=True, exist_ok=True)
         status = waitmod.job_status(self.queue, self.key, "a" * 32)
         self.assert_single_shape(status)
         self.assertEqual(status["outcome"], "unknown")
@@ -233,6 +233,24 @@ class RefusalTests(StatusCase):
         status = waitmod.job_status(self.queue, self.key, job_id)
         self._assert_one_action(status)
         self.assertEqual(status["proof"]["result"], "unverifiable")
+
+    def test_absence_refuses_when_queue_or_jobs_disappears(self):
+        job_id = self.submit()
+        (Path(self.queue) / "jobs" / f"{job_id}.json").unlink()
+        (Path(self.queue) / "jobs").rmdir()
+        with self.assertRaises(bridge.BridgeError):
+            waitmod.status_for_absence(self.queue, self.key, job_id)
+        Path(self.queue).rmdir()
+        with self.assertRaises(bridge.BridgeError):
+            waitmod.status_for_absence(self.queue, self.key, job_id)
+
+    def test_status_writes_requested_receipt(self):
+        job_id = self.submit()
+        receipt = self.root / "receipt.json"
+        proc = run_cli("--queue", self.queue, "--key-file", str(self.key_file),
+                       "--id", job_id, "--status", "--receipt-out", str(receipt))
+        self.assertEqual(proc.returncode, 3)
+        self.assertEqual(json.loads(receipt.read_text()), json.loads(proc.stdout))
 
     def test_unavailable_queue_refusal_names_no_path(self):
         missing = str(self.root / "no-queue")

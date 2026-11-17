@@ -215,6 +215,9 @@ def status_for_absence(queue_dir: str, key: bytes, job_id: str) -> dict:
     """
     _validate_job_id(job_id)
     _validate_key(key)
+    _require_queue(queue_dir)
+    if not (Path(queue_dir) / "jobs").is_dir():
+        raise _bridge.BridgeError("queue jobs unavailable: check path/mount")
     job, digest, job_proof = _signed_job(queue_dir, key, job_id)
     owner, lease_proof = _observed_claim(queue_dir, key, job_id, digest)
     deadline = _signed_deadline(job)
