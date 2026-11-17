@@ -7,7 +7,11 @@ description: Assign one explicitly named LEL Jira issue to an exact Jira login t
 
 Use the installed `scripts/jira-protocol.mjs` relative to this `SKILL.md` and
 read `references/jira-protocol.md` before execution. Supply an exact `LEL-N`
-key and exact Jira login. The CLI has no current-user lookup: “assign to me” is
+key and exact Jira login. Run it on the host that holds the authorized Jira
+session: locally when the session is local, or on Lenovo through the generic
+signed queue when the session lives only there (see
+`docs/lenovo-hosted-scripts.md`; same two-phase flow, no Jira-specific
+wrapper). The CLI has no current-user lookup: “assign to me” is
 incomplete until the login is known from user-provided or already verified
 context. Never infer it from an email, display name, or operating-system user.
 

@@ -17,6 +17,7 @@ const names = [
   "cli-assign-jira-issue",
   "cli-transition-jira-issue",
   "cli-extract-jira-content",
+  "cli-flag-jira-issue",
 ];
 
 test("all Jira protocol skills are CLI-prefixed and use the installed runtime", async () => {
@@ -27,6 +28,7 @@ test("all Jira protocol skills are CLI-prefixed and use the installed runtime", 
     assert.match(text, /references\/jira-protocol\.md/);
     assert.match(text, /relative to this `SKILL\.md`/);
     assert.match(text, /401\/403/);
+    assert.match(text, /lenovo-hosted-scripts\.md/);
   }
 });
 
@@ -68,6 +70,18 @@ test("extract binds the REST command, completeness ledger, and external gaps", a
   assert.match(text, /Wiki pages/);
   assert.match(text, /attachment bodies/);
   assert.match(text, /HTTP 401\/403 is terminal/);
+});
+
+test("flag binds the required comment, refusal replay, and recovery boundary", async () => {
+  const text = await readFile(skill(names[4]), "utf8");
+  assert.match(text, /jira-protocol\.mjs flag[\s\\]+--issue LEL-1234/);
+  assert.match(text, /--comment-file/);
+  assert.match(text, /--confirm <confirmation>/);
+  assert.match(text, /readback\.flag/);
+  assert.match(text, /readback\.commentId/);
+  assert.match(text, /UnknownOutcome/);
+  assert.match(text, /never repeat the mutation/);
+  assert.match(text, /lenovo-hosted-scripts\.md/);
 });
 
 test("installer source names the actual runtime and records its hashes", async () => {

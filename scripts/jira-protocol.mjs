@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import {
   JiraAmbiguousOutcome,
@@ -46,6 +47,24 @@ function parse(argv) {
     else values[key] = value;
   }
   return { command, values };
+}
+
+export async function resolveFileBackedText(values, inlineName, fileName) {
+  const inline = values[inlineName];
+  const file = values[fileName];
+  if (inline !== undefined && file !== undefined)
+    throw new JiraProtocolError(
+      `--${inlineName} and --${fileName} are mutually exclusive`
+    );
+  if (file === undefined) return inline;
+  try {
+    return await readFile(file, "utf8");
+  } catch (error) {
+    throw new JiraProtocolError(`--${fileName} is unreadable`, {
+      details: { path: file },
+      ...(error?.code ? { details: { path: file, code: error.code } } : {}),
+    });
+  }
 }
 
 function only(values, allowed) {
@@ -147,21 +166,35 @@ async function main() {
     return result.state === "Completed" ? 0 : 3;
   }
   if (command === "flag") {
-    only(values, ["issue", "action", "comment", "confirm"]);
+    only(values, ["issue", "action", "comment", "comment-file", "confirm"]);
+    const comment = await resolveFileBackedText(values, "comment", "comment-file");
     const result = await flagIssue(transport(), {
       issueKey: values.issue,
       action: values.action,
-      comment: values.comment,
+      comment,
       confirm: values.confirm,
     });
     emit({ schema: "jira-protocol-result/1", ...result });
     return result.state === "Completed" ? 0 : 3;
   }
   if (command === "create-epic") {
-    only(values, ["summary", "description", "confirm", "field"]);
+    only(values, [
+      "summary",
+      "summary-file",
+      "description",
+      "description-file",
+      "confirm",
+      "field",
+    ]);
+    const summary = await resolveFileBackedText(values, "summary", "summary-file");
+    const description = await resolveFileBackedText(
+      values,
+      "description",
+      "description-file"
+    );
     const result = await createEpic(transport(), {
-      summary: values.summary,
-      description: values.description,
+      summary,
+      description,
       fields: fields(values.field),
       confirm: values.confirm,
     });

@@ -22,7 +22,13 @@ const EXIT_BY_STATE = {
 };
 
 const OPTIONS_BY_COMMAND = {
-  plan: new Set(["application", "key", "description", "out"]),
+  plan: new Set([
+    "application",
+    "key",
+    "description",
+    "description-file",
+    "out",
+  ]),
   apply: new Set(["plan", "state", "timeout-ms", "confirm", "renew-confirm"]),
 };
 
@@ -59,10 +65,15 @@ async function main(argv) {
   const options = parse([...argv]);
   if (options.command === "plan") {
     const application = options.application ?? "l-loans";
+    if (options.description !== undefined && options["description-file"] !== undefined)
+      throw new Error("--description and --description-file are mutually exclusive");
+    let description = options.description;
+    if (options["description-file"] !== undefined)
+      description = await readFile(options["description-file"], "utf8");
     const plan = buildPlan(
       application,
       required(options, "key"),
-      required(options, "description")
+      required({ description }, "description")
     );
     if (options.out) {
       await mkdir(dirname(options.out), { recursive: true });

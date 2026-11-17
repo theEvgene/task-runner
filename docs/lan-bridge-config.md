@@ -196,14 +196,16 @@ Join-Path (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Documents\re
 Run it only where its session already exists, exactly as
 `docs/jira-protocol.md` states: `node scripts/jira-protocol.mjs
 <command> ...` with `JIRA_SESSION_COOKIE` (plus `JIRA_ATL_TOKEN` for
-`assign`) already present in that host's environment. There is no LAN
-request builder, bridge command shape, or settings-file field in this
-repository that invokes `jira-protocol.mjs` on Lenovo, and running a LAN
-skill neither creates nor provisions those credentials. Missing
-integration is a blocker: do not claim automatic LAN invocation, do not
-treat the `dp jira` workflow and `jira-protocol.mjs` as interchangeable,
-and never route an existing `dp` workflow silently through the other
-transport.
+`assign`) already present in that host's environment. That CLI also has a
+generic signed-queue route for Dell-started agents: run the identical
+command on Lenovo through `scripts/lan_bridge/lan_bridge.py` as
+`docs/lenovo-hosted-scripts.md` states (same two-phase flow, file-backed
+free text over the LAN share, credentials never on the queue). There is no
+Jira-specific request builder or settings-file field: the bridge carries the
+plain Lenovo argv, and running a LAN skill neither creates nor provisions
+Lenovo-side credentials. Do not treat the `dp jira` workflow and
+`jira-protocol.mjs` as interchangeable, and never route an existing `dp`
+workflow silently through the other transport.
 
 When the Lenovo clone advances, update the clone on Lenovo; the held
 absolute path is reused unchanged unless the clone itself moved.

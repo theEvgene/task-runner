@@ -47,6 +47,15 @@ The CLI does not ingest captures, cryptographic evidence, reviewer keys, or
 trust material at runtime. The implementation is fixed and tested from the
 sanitized observation; credentials remain process environment variables only.
 
+## Lenovo bridge route
+
+When the bearer tokens live only on Lenovo, run the identical `plan` /
+`apply` commands there through the generic signed queue as
+`docs/lenovo-hosted-scripts.md` states. `plan --description-file` carries
+free text over the LAN share; `--plan` and `--state` are Lenovo-local paths
+on the same host; the confirmation and recovery flow is unchanged; tokens
+never travel the queue. There is no DCO-specific wrapper.
+
 ## Commands
 
 Build and save an offline plan:
@@ -58,6 +67,11 @@ node scripts/dco-feature-flags.mjs plan `
   --description "Example" `
   --out $env:TEMP\example-flag-plan.json
 ```
+
+For a long, quoted, Unicode, or multiline description, write the exact UTF-8
+text to a file and pass `--description-file <path>` instead of
+`--description` (mutually exclusive; the file form is also the bridge-safe
+form over the LAN share).
 
 Review the JSON, then place legitimately obtained tokens in the process
 environment for read-only preflight. Separate tokens are preferred;

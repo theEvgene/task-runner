@@ -1,12 +1,18 @@
 # Jira protocol agent skills
 
-Four model-invoked, `cli-`-prefixed skills package the Jira protocol CLI by
+Five model-invoked, `cli-`-prefixed skills package the Jira protocol CLI by
 operation:
 
 - `cli-create-lel-service-backlog-issue`
 - `cli-assign-jira-issue`
 - `cli-transition-jira-issue`
 - `cli-extract-jira-content`
+- `cli-flag-jira-issue`
+
+Each skill runs the installed CLI on the host that holds the authorized
+session: locally, or on Lenovo through the generic signed queue as
+`docs/lenovo-hosted-scripts.md` states (same command, file-backed free text
+over the LAN share, credentials never on the queue).
 
 They intentionally coexist with the Personal Agent Toolkit Jira skills. Their
 prefix makes the transport choice visible; they do not replace or silently
@@ -44,6 +50,7 @@ The skills use only the documented commands:
 | assign     | `assign`                              | direct issue read reports the exact assignee login                       |
 | transition | `transitions`, `transition`           | direct issue read reports the planned target status id                   |
 | extract    | `extract`                             | REST-visible issue, comments, metadata inventories, and immediate parent |
+| flag       | `flag`                                | direct issue read reports the requested flag state plus a new comment id |
 
 Every write is a read-only plan followed by a separate invocation carrying the
 exact live-model-bound confirmation digest. `UnknownOutcome` is never

@@ -7,14 +7,22 @@ description: Create paired boolean DCO feature flags for L Loans UI or Finance F
 
 Use the bundled CLI as the execution boundary. Collect only feature-flag
 `key`, `description`, and optional `application`; L Loans UI is the default.
-Preserve description capitalization and strip Markdown emphasis only when it
+Run it on the host that holds the bearer tokens: locally when the tokens are
+local, or on Lenovo through the generic signed queue when the tokens live
+only there (see `docs/lenovo-hosted-scripts.md` in the pinned task-runner
+checkout; plan and state stay Lenovo-local, same confirmation flow, no
+DCO-specific wrapper). Preserve description capitalization and strip Markdown
+emphasis only when it
 is formatting.
 
 ## Plan
 
 Resolve `scripts/dco-feature-flags.mjs` relative to this `SKILL.md`, never
 relative to the caller's working directory. Run `plan` with the collected
-values and an `--out` path outside the checkout. The CLI accepts no capture,
+values and an `--out` path outside the checkout. For a long, quoted, Unicode,
+or multiline description, write the exact UTF-8 text to a file and pass
+`--description-file` instead of `--description` (mutually exclusive; the file
+form is also the bridge-safe form over the LAN share). The CLI accepts no capture,
 review, trust-store, or signing inputs.
 
 Show the immutable preview and `planDigest`: application, key, description,
