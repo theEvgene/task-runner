@@ -60,9 +60,7 @@ class ReadinessTests(unittest.TestCase):
     def _result(self, job_id: str, state: str = "confirmed") -> dict:
         names = [item["name"] for item in self.config["lenovo"]["components"]]
         names.extend(item["name"] for item in self.config["lenovo"]["tools"])
-        revision = self.config["lenovo"].get("revision")
-        if revision:
-            names.append(revision["name"])
+        # Legacy revision pins are ignored by the probe and never expected here.
         body = {
             "schema": "lenovo-readiness-probe/1",
             "scenario": self.config["scenario"],
@@ -330,10 +328,6 @@ class ReadinessTests(unittest.TestCase):
             "components": [{"name": "bridge-client", "type": "file",
                             "path": str(self.marker), "sha256": digest}],
             "tools": [{"name": "python-tool", "command": sys.executable}],
-            "git": "git",
-            "revision": {"name": "task-runner-revision",
-                         "repository": str(ROOT),
-                         "expected": "1ae7474222d62e0c8300fc323112e6401f9109c9"},
         })
         self._write_config()
         first = subprocess.run(self._command("--authorize-lenovo-check"),
@@ -346,7 +340,6 @@ class ReadinessTests(unittest.TestCase):
                 path=str(self.temp / "other-component.txt")),
             lambda cfg: cfg["lenovo"]["components"][0].update(sha256="f" * 64),
             lambda cfg: cfg["lenovo"]["tools"][0].update(command="other-python"),
-            lambda cfg: cfg["lenovo"]["revision"].update(expected="f" * 40),
         )
         for mutate in mutations:
             with self.subTest(mutate=mutate):
@@ -366,12 +359,6 @@ class ReadinessTests(unittest.TestCase):
             "local": {"components": [{"name": "dell-driver", "type": "file",
                                       "path": str(self.marker)}], "tools": []},
         })
-        self.config["lenovo"].update({
-            "git": "git",
-            "revision": {"name": "task-runner-revision",
-                         "repository": str(ROOT),
-                         "expected": "1ae7474222d62e0c8300fc323112e6401f9109c9"},
-        })
         self._write_config()
         worker = self._worker()
         proc = subprocess.run(self._command("--authorize-lenovo-check"),
@@ -384,6 +371,20 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(report["scenario"], "dell-lan")
         self.assertEqual(report["outcome"], "not-ready")
         self.assertEqual(corporate["state"], "unconfirmed")
+
+    def test_legacy_revision_field_is_ignored_not_blocking(self):
+        self.config["lenovo"]["revision"] = {
+            "name": "task-runner-revision",
+            "repository": str(ROOT),
+            "expected": "f" * 40,
+        }
+        self._write_config()
+        worker = self._worker()
+        proc = subprocess.run(self._command("--authorize-lenovo-check"),
+                              capture_output=True, text=True, check=False)
+        worker.join(2)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["outcome"], "ready")
 
     def test_parallel_checks_have_distinct_immutable_jobs(self):
         worker = self._worker(count=2)

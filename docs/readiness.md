@@ -11,9 +11,9 @@ service, or prove more than the named checks.
 - `lan-bridge` proves that the Dell queue and key are usable and that a
   worker returned one MAC-bound result. Add every worker-side file or tool
   required by the intended command to the configuration.
-- `dell-lan` additionally requires explicit local and Lenovo component lists
-  and the expected Lenovo task-runner checkout revision. It checks files,
-  executable discovery, and the local Git revision. The final
+- `dell-lan` additionally requires explicit local and Lenovo component lists.
+  It checks files and
+  executable discovery. The final
   `corporate-access` condition remains `unconfirmed`: file or credential
   presence is not proof that the corporate service is reachable. Its next
   action is a separately authorized live preflight on Lenovo.
@@ -50,19 +50,7 @@ commit a real queue, key, share, checkout, or corporate path.
 ```
 
 Components have `type: file|directory`. A file may include its expected
-SHA-256; a different digest is `stale`, not success. A `dell-lan` input also
-includes this object inside `lenovo`:
-
-```json
-{
-  "git": "git",
-  "revision": {
-    "name": "task-runner-revision",
-    "repository": "<task-runner-checkout-on-lenovo>",
-    "expected": "<40-lowercase-hex>"
-  }
-}
-```
+SHA-256; a different digest is `stale`, not success.
 
 For `dell-lan`, list at least the Dell share/checkout and the Lenovo
 task-runner driver/publication-flow paths as components. The configuration is
@@ -129,11 +117,12 @@ publishes no signed job: an uncertain preflight never submits. A generic
 share/path failure is never reported as bad credentials, and contradictory
 observations are `unknown` with one next action.
 
-The Lenovo probe is fixed read-only code: filesystem metadata/digests,
-executable lookup, and optional local `git rev-parse HEAD`. It has no network
+The Lenovo probe is fixed read-only code: filesystem metadata/digests and
+executable lookup. It has no network
 operation. A returned result proves that the worker executed this job; mere
 presence of a worker file never counts as worker readiness. Live Lenovo and
-corporate checks remain separate authorized operations.
+corporate checks remain separate authorized operations. Checkout revisions are
+never probed: a stale checkout does not block readiness.
 
 ## Local fixture verification
 
