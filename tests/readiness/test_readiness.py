@@ -108,6 +108,19 @@ class ReadinessTests(unittest.TestCase):
         thread.start()
         return thread
 
+    def _publish_claim(self, job_id: str) -> None:
+        raw = bridge.read(self.queue / "jobs", job_id)
+        claim = {
+            "schema": "lenovo-job-claim/1", "kind": "claim", "id": job_id,
+            "owner": {"instance": "lenovo-worker-1", "pid": 5150},
+            "generation": "ab" * 16, "claimed_at": "fixture",
+            "resources": ["exclusive:global", "working-directory:c:\\fixture"],
+            "job_envelope_sha256": hashlib.sha256(raw).hexdigest(),
+            "state": "owned-unknown-until-signed-result",
+        }
+        bridge.publish(self.queue / "claims", job_id,
+                       bridge.seal(claim, self.key))
+
     def _publish_completed_job(self, timeout_seconds: object) -> str:
         submitted = subprocess.run(
             self._command("--authorize-lenovo-check"), capture_output=True,
@@ -222,6 +235,55 @@ class ReadinessTests(unittest.TestCase):
         raw = bridge.read(self.queue / "jobs", job_id)
         job = bridge.open_envelope(raw, self.key, "job", job_id)
         self.assertEqual(job["dialect"], "cmd")
+
+    def test_bounded_wait_embeds_one_meaningful_job_status(self):
+        # F1/F5: the timeout report names one job state only, and its status
+        # member is the same lan-job-status/1 object, not a second wording.
+        first = subprocess.run(self._command("--authorize-lenovo-check"),
+                               capture_output=True, text=True, check=False)
+        self.assertEqual(first.returncode, 3, first.stderr)
+        unknown = json.loads(first.stdout)
+        self.assertEqual(unknown["outcome"], "unknown")
+        self.assertEqual(unknown["status"]["schema"], "lan-job-status/1")
+        self.assertEqual(unknown["outcome"], unknown["status"]["outcome"])
+        self.assertEqual(unknown["nextAction"], unknown["status"]["nextAction"])
+        job_id = unknown["jobId"]
+        self.assertEqual(len(self._wait_job_ids()), 1)
+        self._publish_claim(job_id)
+        waiting = subprocess.run(self._command("--job-id", job_id),
+                                 capture_output=True, text=True, check=False)
+        self.assertEqual(waiting.returncode, 3, waiting.stderr)
+        report = json.loads(waiting.stdout)
+        self.assertEqual(report["outcome"], "waiting")
+        self.assertEqual(report["outcome"], report["status"]["outcome"])
+        self.assertEqual(report["status"]["schema"], "lan-job-status/1")
+        self.assertEqual(report["status"]["jobId"], job_id)
+        self.assertTrue(report["status"]["occupied"])
+        self.assertEqual(report["nextAction"], report["status"]["nextAction"])
+        self.assertIn("never resubmit", report["nextAction"])
+        self.assertNotIn("running", json.dumps(report["status"]).lower())
+        self.assertNotIn(self.key.hex(), waiting.stdout + waiting.stderr)
+        # Same-ID recovery never publishes a second job or releases the lease.
+        self.assertEqual(len(self._wait_job_ids()), 1)
+
+    def test_unverifiable_request_is_refused_at_exit_two(self):
+        # F4: the refused arm reuses the one job status; a request failing its
+        # MAC binding is exit 2, never a waiting or unknown guess.
+        pending = subprocess.Popen(self._command("--authorize-lenovo-check"),
+                                   stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True)
+        job_id = self._wait_job_ids()[0]
+        path = self.queue / "jobs" / f"{job_id}.json"
+        sealed = bytearray(path.read_bytes())
+        sealed[-3] ^= 1
+        path.write_bytes(bytes(sealed))
+        out, err = pending.communicate(timeout=10)
+        self.assertEqual(pending.returncode, 2, out + err)
+        report = json.loads(out)
+        self.assertEqual(report["outcome"], "refused")
+        self.assertEqual(report["outcome"], report["status"]["outcome"])
+        self.assertEqual(report["nextAction"], report["status"]["nextAction"])
+        self.assertEqual(len(self._wait_job_ids()), 1)
 
     def test_timeout_then_same_id_retrieval_never_resubmits(self):
         first = subprocess.run(self._command("--authorize-lenovo-check"),
