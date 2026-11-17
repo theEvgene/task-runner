@@ -6,6 +6,8 @@
   "keyFormat": "raw",
   "python": "C:\\Users\\owner\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
   "workerDir": "C:\\Users\\owner\\task-runner\\scripts\\lenovo_worker",
+  "workerCwd": "",
+  "$comment_workerCwd": "OPTIONAL: one absolute LOCAL directory that already exists for both spawned roles. Never a UNC path, a mapped network drive, a relative path, or a missing path; the launcher refuses those before spawning.",
   "trashDir": "C:\\Users\\owner\\.local-state\\lan-share-trash",
   "stateDir": "C:\\Users\\owner\\.local-state\\lan-launch",
   "workerPoll": 5,

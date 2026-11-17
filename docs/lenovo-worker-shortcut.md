@@ -53,6 +53,26 @@ Double-click the shortcut. Success = one JSON line on stdout with
 A second click while both run reports `already-running` with the same pids
 and starts nothing new.
 
+The JSON line is the launch receipt: `"outcome"` is `ready` or `refused`, and
+`"scope":"worker-launch"` plus `"jobOutcome":"not-evaluated"` state that this
+is a worker/cleaner launch status only. It never claims that any queued job
+ran, completed, or produced a result.
+
+A refusal carries one `reason` code, one bounded `nextAction`, and the
+`evidence` tokens it was derived from. Printed text is redacted, so no
+password, host name, or private absolute path appears in stdout, stderr, or a
+log.
+
+## Launch directory (strict)
+
+The SMB `unc` value names the share and is the only allowed UNC path. The
+launcher refuses, before the SMB mapping, the launch lock, or any spawn, when
+the directory it was started from (or the optional `workerCwd`) is a UNC path,
+a mapped network drive, a relative path, a drive that cannot be proven
+local, or a local path that is absent / not a directory. Start the shortcut
+from a local fixed-disk directory; `workerCwd` (optional) is one absolute
+local directory that must already exist for both spawned roles.
+
 ## What it guarantees
 
 - Existing queue only: a missing `queue/`, `queue/jobs/` or `queue/results/`
@@ -179,11 +199,17 @@ and starts nothing new.
   refuses with the exact pid file to inspect and starts nothing and deletes
   nothing. The launcher never kills, never replaces, never `--force`s. Remediation:
   verify no such process runs (`tasklist /FI "PID eq N"`), then remove
-  `stateDir\<role>.pid`.
+  the state record named in `detail`: `stateDir\<role>.pid` or
+  `stateDir\<role>.starting`. A `.starting` marker signals an incomplete
+  start and must stay until the owner has verified the process state.
 - Process identity is bound to the full command array plus its configuration
-  (`queue`/`keyFile` for the worker, `shared`/`trash` for the cleaner). A
-  live pid recorded under a different command or binding refuses instead of
-  being adopted.
+  (`queue`/`keyFile` and configured `workerCwd` for the worker,
+  `shared`/`trash` and configured `workerCwd` for the cleaner). A live pid recorded
+  under a different command or binding refuses instead of being adopted, so
+  editing `workerCwd` under a live worker refuses once: verify the process,
+  remove that pid file, and re-run. A worker started before this key existed
+  holds a record without `cwd` and refuses the same way while alive; a dead
+  pid still recovers automatically.
 - The shortcut propagates the launcher exit: `ready` is exit 0, any refusal
   is exit 2.
 - Corporate policy is unchanged: no autostart, no firewall/share change,
@@ -194,15 +220,39 @@ and starts nothing new.
 | Message                       | Meaning                     | Fix                                   |
 | ----------------------------- | --------------------------- | ------------------------------------- |
 | `cannot read config`         | config path wrong           | point the shortcut at the real JSON   |
+| `launch cwd is remote / not absolute / …` | UNC, mapped drive, relative, unprovable, or absent launch directory | start from a local fixed disk; create `workerCwd` if it is missing |
 | `share unavailable …`         | Dell down / UNC wrong       | check host, share name, cable/VPN     |
+| `the share is mapped but sharedDir is not a directory` | `sharedDir` does not name the mapped share | point `sharedDir` at the mapped share |
 | `bad credentials …`           | SMB refused user/password   | fix user or password file content     |
 | `queue unavailable …`         | share up, queue path wrong  | fix `queueDir` to the existing queue  |
 | `key unusable / key inside …` | key file wrong or misplaced | re-issue key outside queue/share/repo |
 | `trash/state … must be outside` | trash/state inside queue/share | move them outside both             |
-| `ambiguous <role> state`      | live foreign/unprovable pid, live pid under changed config | verify, then remove that pid file |
+| `ambiguous <role> state`      | live foreign/unprovable pid, live pid under changed config/launch cwd | verify, then remove that pid file |
 | `roles[].state: started` (fresh pid) | dead pid after a reboot (legacy or changed config) | no action: relaunched fresh under the lock |
 | `another launch is in progress` | concurrent double-click   | wait seconds, re-run to adopt pids    |
 | `<role> exited at once`       | child crashed               | read `stateDir\<role>.log`            |
+
+`reason` codes emitted by this launcher: `config-unreadable`,
+`config-invalid`, `launch-cwd-remote`, `launch-cwd-relative`,
+`launch-cwd-unverifiable`, `launch-cwd-invalid`, `smb-auth-refused`,
+`smb-credential-file-invalid`, `smb-share-unconfirmed`,
+`shared-dir-invalid`, `queue-missing`, `worker-missing`, `key-unusable`,
+`key-misplaced`, `layout-overlap`, `launch-busy`, `role-ambiguous`,
+`role-start-failed`, `client-missing`, and `unknown`.
+
+`scripts/readiness/check.py` shares the same classifier for its local
+preflight and can emit only `queue-missing`, `key-unusable`, `tool-missing`,
+`component-unconfirmed`, `preflight-incomplete`, and `unknown`.
+
+A generic SMB mapping failure is `smb-share-unconfirmed`, never bad
+credentials: a path that is not found does not prove that a password is wrong,
+and this bounded probe produces no observation that would distinguish an
+unreachable host from an absent share name, so neither is claimed.
+Contradictory observations (for example an auth refusal while the share path
+is visible) are `unknown` with one next action, and a wrong `sharedDir` under a
+mapped share is reported as that config fact, not as a contradiction. The
+launcher never retries a credential and never changes a share, firewall, or
+account.
 
 ## Manual post-reboot validation (REQUIRED, manual only)
 
@@ -259,5 +309,14 @@ success + repeat is idempotent with command/binding adoption; dead pid
 records recover after a reboot without duplicates while live foreign/changed
 pids still refuse with nothing started or deleted; concurrent
 launch serializes on the state lock; misplaced trash/state refuses before
-anything is created; unavailable share and bad credentials refuse; password absent from all
+anything is created; unavailable share and bad credentials refuse; a UNC,
+relative, unprovable, or absent launcher/worker cwd refuses before the SMB
+mapping, the lock, or any spawn with one launch receipt; a `workerCwd` change
+under a live pid refuses without killing it; a mapped share with a wrong
+`sharedDir` refuses as `shared-dir-invalid` instead of a false contradiction;
+a foreign live pid refuses without killing it; the
+launch receipt stays `scope: worker-launch` with `jobOutcome: not-evaluated`;
+the shared reason classifier turns a generic mapping failure into
+`smb-share-unconfirmed` and contradictory observations into `unknown`, and its
+output carries no credential or private path; password absent from all
 outputs, logs, and child command lines.
