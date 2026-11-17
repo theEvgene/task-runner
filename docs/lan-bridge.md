@@ -228,6 +228,13 @@ python scripts/lan_bridge/lan_bridge.py submit \
   owner and generation, the exact job bytes, the resource set, and the
   exact result bytes; a signed result alone keeps the footprint held.
 
+## Failure diagnosis
+
+For a stuck or failed job, follow `lan-queue-diagnosis.md` (same document
+directory): same id every 30 s for 10 min, timeout stays unknown,
+per-stage user updates. From the repository root this is
+`docs/lan-queue-diagnosis.md` (entry: `AGENTS.md`).
+
 ## Boundaries
 
 - One command per job, one working directory, one timeout, bounded
