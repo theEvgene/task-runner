@@ -6,6 +6,7 @@ Empty repository baseline. Agent tooling only; no runtime source yet.
 
 Externally invoked agents start here explicitly; this repo assumes no global auto-discovery. Use only the script your intent needs:
 
+- Diagnose a worker, queue, SMB, or resumed-thread problem before any repair (one table: case, trusted receipt field, read-only action, stop/readback) -> `docs/runbook.md`.
 - Monitor a GitLab MR pipeline via the signed Dell-to-Lenovo queue -> `docs/pipeline-observer.md`.
 - Prepare an existing GitLab MR for Ready on Lenovo -> `docs/mr-ready.md`.
 - Verify the target base and create a task worktree -> `docs/fresh-base.md`.
