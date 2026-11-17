@@ -132,8 +132,10 @@ same path is refused (`repo-exists`): one first copy, never replaced.
 ## 4. Recover an unknown outcome before any retry
 
 - Bounded wait expired (exit `3`) or an interrupted wait: re-fetch the
-  SAME job id (`lan_bridge.py fetch ... --id <same-job-id>` or
-  `scripts/lan_bridge/get.py ... --id <same-job-id>` with windows).
+  SAME job id on the same 30 s / 10-minute watch per `docs/lan-bridge.md`
+  "Observation rule" (`lan_bridge.py fetch ... --id <same-job-id>` or
+  `scripts/lan_bridge/get.py ... --id <same-job-id>` with windows; short
+  expiry is unknown, never completion).
   A late result sealed under the original id verifies normally.
 - Worker failure (exit `1`, `verdict: rejected`): read the carried exit
   code and stderr, fix on the Lenovo side, and submit a NEW job id with a

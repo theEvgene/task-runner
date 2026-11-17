@@ -16,7 +16,10 @@ observe the SAME JOBID every 30 s for 10 minutes until a MAC-verified
 result bound to that id or a concrete blocker arrives
 (`docs/lan-bridge.md` "Observation rule"); accept only a MAC-verified
 result bound to that id. A short-timeout expiry is unknown, never
-completion; never publish a new JOBID while the outcome is unknown. After
+completion; never publish a new JOBID WHILE the outcome is unknown. A
+MAC-verified terminal worker timeout, truncation, or failure is a known
+outcome: recover it as a NEW id per `docs/lan-bridge.md` Confirmed states.
+After
 10 minutes with no response report no response, keeping a confirmed
 worker/caller error apart from queue unavailability.
 

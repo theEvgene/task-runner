@@ -53,8 +53,10 @@ and pass the expanded absolute result (never a username, `%...%`, or
 
 - Observe the SAME JOBID every 30 s for 10 minutes until a verified result
   or a concrete blocker (`docs/lan-bridge.md` "Observation rule");
-  an unknown outcome never gets a resubmission under a new id. A preview
-  may be retried with a new id; a versioned run is never resubmitted
+  WHILE the outcome is unknown it never gets a resubmission under a new id.
+  A MAC-verified terminal worker timeout, truncation, or failure is a known
+  outcome: a preview may be retried with a new id only after that terminal
+  state; a versioned run is never resubmitted
   (the tag may already exist).
 - Preview creates nothing: no version and no tag without the user's
   explicit version choice and confirmation text.

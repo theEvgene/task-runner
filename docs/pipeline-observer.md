@@ -73,7 +73,9 @@ Lenovo runs the single probed command from the request
 | `mismatch` | wrong MR/SHA, bad MAC/kind/ID, unreadable success stdout, or inconsistency (e.g. `passed` with no pipeline/SHA) | 1 |
 | `unknown` | timeout, truncation, untrusted status/exit, unreadable failure stdout, or SHA-less non-passed receipt (e.g. Lenovo-side outage) | 3 |
 
-`unknown` keeps the slot: re-fetch the same job id and reconcile before
+`unknown` keeps the slot: re-fetch the same job id on the same 30 s /
+10-minute watch per `docs/lan-bridge.md` "Observation rule" (short expiry is
+unknown) and reconcile before
 any new job id. A moved MR head invalidates the receipt; re-probe the
 new head. Parallel calls must use separate request/command/receipt files.
 

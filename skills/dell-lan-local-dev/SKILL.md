@@ -31,7 +31,9 @@ build, lint, and tests on Dell; use Lenovo only for the corporate and
 closed-dependency steps named by the selected route. Each remote read or write
 needs the route's explicit authorization. An unknown result is recovered under
 the same job id on the same 30 s / 10-minute watch (`docs/lan-bridge.md`
-"Observation rule"); it is never permission to submit a replacement.
+"Observation rule"); WHILE the outcome is unknown it is never permission to
+submit a replacement. A MAC-verified terminal worker timeout, truncation, or
+failure is a known outcome recovered as a NEW id per that rule.
 
 Run only the fixture suite relevant to a change. The documented tests do not
 contact Lenovo, Jira, GitLab, or another network service.
