@@ -194,7 +194,7 @@ and starts nothing new.
 | `key unusable / key inside …` | key file wrong or misplaced | re-issue key outside queue/share/repo |
 | `trash/state … must be outside` | trash/state inside queue/share | move them outside both             |
 | `ambiguous <role> state`      | live foreign/unprovable pid, live pid under changed config | verify, then remove that pid file |
-| `stale pid (auto-recovered)`   | dead pid after a reboot (legacy or changed config) | no action: relaunched fresh under the lock |
+| `roles[].state: started` (fresh pid) | dead pid after a reboot (legacy or changed config) | no action: relaunched fresh under the lock |
 | `another launch is in progress` | concurrent double-click   | wait seconds, re-run to adopt pids    |
 | `<role> exited at once`       | child crashed               | read `stateDir\<role>.log`            |
 
