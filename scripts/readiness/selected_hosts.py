@@ -276,7 +276,11 @@ def execute_lenovo(desc: dict, key: bytes, job_id: str | None = None) -> dict:
 def lenovo_result(job_id: str, payload: dict, expected_revision: str) -> dict:
     for field in ("timed_out", "output_truncated"):
         if field not in payload or type(payload[field]) is not bool:
-            raise Refusal(f"verified worker result field {field!r} must be a boolean")
+            return {"kind": "signed-queue", "jobId": job_id, "verified": False,
+                    "state": "unknown", "exitCode": None, "timedOut": False,
+                    "truncated": False, "observedHost": None,
+                    "observedRevision": None, "revisionState": None,
+                    "hostEvidence": None, "reason": "invalid-result"}
     base = {"kind": "signed-queue", "jobId": job_id, "verified": True,
             "exitCode": payload.get("exit_code"),
             "timedOut": payload["timed_out"],

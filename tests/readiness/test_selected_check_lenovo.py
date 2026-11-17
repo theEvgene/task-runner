@@ -231,6 +231,18 @@ class SelectedCheckLenovoTests(unittest.TestCase):
         self.assertIn(job_id, receipt["nextAction"])
         self.assertEqual(len(self._job_ids()), 2, "unknown must not resubmit")
 
+    def test_invalid_result_preserves_job_id_and_requests_owner_inspection(self) -> None:
+        job_id = "c" * 32
+        execution = selected_hosts.lenovo_result(job_id, {}, self.head)
+        self.assertEqual(execution["jobId"], job_id)
+        self.assertEqual(execution["state"], "unknown")
+        action = selected._next_action("UNKNOWN", {}, execution)
+        self.assertIn(job_id, action)
+        self.assertIn("owner", action)
+        self.assertIn("never resubmit", action)
+        execution["reason"] = "worker-refused"
+        self.assertIn("owner", selected._next_action("UNKNOWN", {}, execution))
+
     def test_lenovo_run_receipt_with_a_foreign_revision_is_not_pass(self) -> None:
         payload = bridge.build_result_payload(
             "c" * 32, "completed", exit_code=0,

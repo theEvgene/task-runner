@@ -74,6 +74,9 @@ def _next_action(outcome: str, preflight: dict, execution: dict | None) -> str:
                 "is not a pass")
     if outcome == "UNKNOWN":
         job_id = execution["jobId"] if execution else None
+        if job_id and execution["reason"] in ("worker-refused", "invalid-result"):
+            return (f"ask the queue owner to inspect the result for id {job_id}; "
+                    "never resubmit while unknown")
         if job_id:
             return (f"re-read the SAME id {job_id} with "
                     "scripts/readiness/selected.py --job-id; never resubmit "
