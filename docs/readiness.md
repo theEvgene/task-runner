@@ -6,6 +6,11 @@ signed LAN command (`lan-bridge`) or the full Dell-to-Lenovo publication loop
 Lenovo probe. It does not install, configure, publish, contact a corporate
 service, or prove more than the named checks.
 
+For exactly one short command on an explicit host after readiness, use
+`docs/selected-check.md` (`scripts/readiness/selected.py`); it reuses this
+environment model and the same signed queue, adds the command/cwd/revision and
+real-exit receipt, and is not a second runner.
+
 ## Choose the scenario
 
 - `lan-bridge` proves that the Dell queue and key are usable and that a

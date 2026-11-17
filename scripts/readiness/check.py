@@ -308,6 +308,21 @@ def _validate_submitted_checklist(config: dict, key: bytes, job_id: str) -> None
             "existing job is not bound to the exact selected readiness checklist")
 
 
+def probe_command(config: dict) -> str:
+    """Public handle: the exact signed readiness probe command."""
+    return _remote_command(config)
+
+
+def validate_submitted_checklist(config: dict, key: bytes, job_id: str) -> None:
+    """Public handle: bind a same-ID readiness job to this configuration."""
+    _validate_submitted_checklist(config, key, job_id)
+
+
+def worker_components(payload: dict, config: dict) -> list[dict]:
+    """Public handle: validate one MAC-bound readiness result."""
+    return _validate_worker(payload, config)
+
+
 def _local_observations(config: dict, components: list[dict]) -> dict:
     state = {item["name"]: item["state"] for item in components}
 
