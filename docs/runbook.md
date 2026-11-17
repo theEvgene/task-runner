@@ -28,9 +28,10 @@ No Lenovo host was observed while writing this document, so every live-process
 row stays `NOT_VERIFIED` until that host's own readback is recorded.
 
 `lenovo-launch/1` exists only as the launcher's stdout for that run; the
-launcher writes no receipt file. The only persisted launch state is the
-launch-lock owner file `<stateDir>/.launch.lock/owner.json`, which records the
-current lock owner's `pid` and `started` and is removed when the run ends. A
+launcher writes no receipt file. The launch-lock owner file
+`<stateDir>/.launch.lock/owner.json` records the current lock owner's `pid` and
+`started` and is removed when the run ends. Role PID files also persist under
+`<stateDir>`. A
 resumed thread therefore reads the stdout capture the owner kept with the
 handoff; without that capture the launcher facts stay `NOT_VERIFIED` and are
 never reconstructed from memory.
