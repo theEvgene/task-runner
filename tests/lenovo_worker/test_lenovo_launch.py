@@ -509,7 +509,7 @@ class LaunchTests(unittest.TestCase):
                       "--shared", str(shared), "--poll", "5"]
         record = {"pid": foreign.pid, "marker": "worker.py", "started": "t",
                   "command": worker_cmd,
-                  "binding": {"queue": str(queue), "key_file": str(key)}}
+                  "binding": {"queue": str(queue), "key_file": str(key), "cwd": ""}}
         pid_file = state / "worker.pid"
         original = json.dumps(record)
         pid_file.write_text(original, encoding="utf-8")

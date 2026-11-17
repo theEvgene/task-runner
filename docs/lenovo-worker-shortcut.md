@@ -195,8 +195,8 @@ local directory that must already exist for both spawned roles.
   verify no such process runs (`tasklist /FI "PID eq N"`), then remove
   `stateDir\<role>.pid`.
 - Process identity is bound to the full command array plus its configuration
-  (`queue`/`keyFile` and the effective launch cwd for the worker,
-  `shared`/`trash` and the same cwd for the cleaner). A live pid recorded
+  (`queue`/`keyFile` and configured `workerCwd` for the worker,
+  `shared`/`trash` and configured `workerCwd` for the cleaner). A live pid recorded
   under a different command or binding refuses instead of being adopted, so
   editing `workerCwd` under a live worker refuses once: verify the process,
   remove that pid file, and re-run. A worker started before this key existed

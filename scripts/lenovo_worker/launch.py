@@ -401,8 +401,11 @@ def main(argv: list[str] | None = None) -> int:
             for role, command, marker, binding in planned:
                 _inspect_role(state, role, command, marker, binding)
             for role, command, marker, binding in planned:
-                summary["roles"].append(
-                    _ensure_role(state, role, command, marker, binding, worker_cwd))
+                try:
+                    summary["roles"].append(
+                        _ensure_role(state, role, command, marker, binding, worker_cwd))
+                except OSError as error:
+                    raise reasons.Refusal("role-start-failed", "role start failed") from error
         finally:
             _release_launch_lock(lock)
         summary.update({"outcome": "ready", "reason": "none", "nextAction": "none"})
