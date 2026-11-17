@@ -22,6 +22,16 @@ sys.path.insert(0, str(BRIDGE_DIR))
 import lan_bridge as bridge  # noqa: E402
 
 
+def _revision(path: str) -> str | None:
+    try:
+        value = subprocess.check_output(
+            ["git", "-C", path, "rev-parse", "HEAD"],
+            text=True, stderr=subprocess.DEVNULL).strip().lower()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return value if len(value) == 40 else None
+
+
 class ReadinessTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = Path(tempfile.mkdtemp(prefix="readiness-fixture-"))
@@ -57,21 +67,29 @@ class ReadinessTests(unittest.TestCase):
         return [sys.executable, str(SCRIPT), "--config", str(self.config_path),
                 "--wait", "0.35", "--poll", "0.03", *extra]
 
-    def _result(self, job_id: str, state: str = "confirmed") -> dict:
-        names = [item["name"] for item in self.config["lenovo"]["components"]]
+    def _result(self, job_id: str, state: str = "confirmed",
+                schema: str = "lenovo-readiness-probe/2") -> dict:
+        definitions = {item["name"]: item
+                       for item in self.config["lenovo"]["components"]}
+        names = list(definitions)
         names.extend(item["name"] for item in self.config["lenovo"]["tools"])
+        components = []
+        for name in names:
+            item = {"name": name, "location": "lenovo", "state": state,
+                    "reason": "fixture component result",
+                    "nextAction": "none" if state == "confirmed"
+                    else f"update {name}"}
+            definition = definitions.get(name)
+            if schema == "lenovo-readiness-probe/2" \
+                    and definition is not None \
+                    and definition["type"] == "directory":
+                item["observedRevision"] = _revision(definition["path"])
+                item["cwdDigest"] = hashlib.sha256(
+                    definition["path"].encode("utf-8")).hexdigest()
+            components.append(item)
         # Legacy revision pins are ignored by the probe and never expected here.
-        body = {
-            "schema": "lenovo-readiness-probe/1",
-            "scenario": self.config["scenario"],
-            "components": [
-                {"name": name, "location": "lenovo", "state": state,
-                 "reason": "fixture component result",
-                 "nextAction": "none" if state == "confirmed"
-                 else f"update {name}"}
-                for name in names
-            ],
-        }
+        body = {"schema": schema, "scenario": self.config["scenario"],
+                "components": components}
         return bridge.build_result_payload(
             job_id, "completed", exit_code=0,
             stdout=json.dumps(body, separators=(",", ":")))
@@ -88,12 +106,13 @@ class ReadinessTests(unittest.TestCase):
 
     def _worker(self, state: str = "confirmed", tamper: bool = False,
                 count: int = 1, result_changes: dict | None = None,
-                result_removals: tuple[str, ...] = ()) -> threading.Thread:
+                result_removals: tuple[str, ...] = (),
+                schema: str = "lenovo-readiness-probe/2") -> threading.Thread:
         def run() -> None:
             for job_id in self._wait_job_ids(count):
                 raw = bridge.read(self.queue / "jobs", job_id)
                 bridge.open_envelope(raw, self.key, "job", job_id)
-                result = self._result(job_id, state)
+                result = self._result(job_id, state, schema=schema)
                 result.update(result_changes or {})
                 for field in result_removals:
                     result.pop(field, None)
@@ -371,6 +390,16 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(report["scenario"], "dell-lan")
         self.assertEqual(report["outcome"], "not-ready")
         self.assertEqual(corporate["state"], "unconfirmed")
+
+    def test_legacy_probe_evidence_keeps_readiness_modes_working(self):
+        # /1 evidence predates the revision field: readiness presence stays
+        # valid, while the selected check refuses it as unverified evidence.
+        worker = self._worker(schema="lenovo-readiness-probe/1")
+        proc = subprocess.run(self._command("--authorize-lenovo-check"),
+                              capture_output=True, text=True, check=False)
+        worker.join(2)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["outcome"], "ready")
 
     def test_legacy_revision_field_is_ignored_not_blocking(self):
         self.config["lenovo"]["revision"] = {

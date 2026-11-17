@@ -33,6 +33,7 @@ from remote_probe import PROGRAM as REMOTE_PROBE  # noqa: E402
 
 SCHEMA = "lan-readiness-config/1"
 REPORT_SCHEMA = "lan-readiness-report/1"
+PROBE_SCHEMAS = ("lenovo-readiness-probe/1", "lenovo-readiness-probe/2")
 SCENARIOS = ("lan-bridge", "dell-lan")
 
 
@@ -218,6 +219,28 @@ def _report(config: dict, job_id: str, components: list[dict],
     return report
 
 
+def _revision_evidence(schema: str, item: dict, definition: dict) -> dict:
+    """Bind a directory component's observed SHA to its exact cwd.
+
+    ``/1`` evidence predates the revision field and is legacy, never verified
+    revision evidence.  A malformed SHA or a cwd digest for another path is
+    untrusted.  This field is evidence for the selected check only; it never
+    changes this readiness report's outcome.
+    """
+    if schema != "lenovo-readiness-probe/2":
+        return {"observedRevision": None, "revisionEvidence": "legacy"}
+    digest = hashlib.sha256(definition["path"].encode("utf-8")).hexdigest()
+    observed = item.get("observedRevision")
+    readable = observed is None or (
+        isinstance(observed, str) and len(observed) == 40
+        and all(char in "0123456789abcdef" for char in observed))
+    if item.get("cwdDigest") != digest or not readable:
+        return {"observedRevision": None, "revisionEvidence": "untrusted"}
+    if observed is None:
+        return {"observedRevision": None, "revisionEvidence": "unconfirmed"}
+    return {"observedRevision": observed, "revisionEvidence": "verified"}
+
+
 def _validate_worker(payload: dict, config: dict) -> list[dict]:
     for field in ("timed_out", "output_truncated"):
         if field not in payload or type(payload[field]) is not bool:
@@ -240,7 +263,7 @@ def _validate_worker(payload: dict, config: dict) -> list[dict]:
         body = json.loads(payload.get("stdout", ""))
     except (TypeError, json.JSONDecodeError) as error:
         raise Refusal("verified worker result has invalid readiness JSON") from error
-    if not isinstance(body, dict) or body.get("schema") != "lenovo-readiness-probe/1" \
+    if not isinstance(body, dict) or body.get("schema") not in PROBE_SCHEMAS \
             or body.get("scenario") != config["scenario"] \
             or not isinstance(body.get("components"), list):
         raise Refusal("verified worker result is not bound to the selected readiness scenario")
@@ -266,12 +289,16 @@ def _validate_worker(payload: dict, config: dict) -> list[dict]:
         "unconfirmed": ("required condition could not be confirmed",
                         "repair or separately verify the required condition"),
     }
-    components = [
-        _component(item["name"], "lenovo", item["state"],
-                   state_messages[item["state"]][0],
-                   state_messages[item["state"]][1])
-        for item in raw_components
-    ]
+    definitions = {item["name"]: item for item in config["lenovo"]["components"]}
+    components = []
+    for item in raw_components:
+        entry = _component(item["name"], "lenovo", item["state"],
+                           state_messages[item["state"]][0],
+                           state_messages[item["state"]][1])
+        definition = definitions.get(item["name"])
+        if definition is not None and definition["type"] == "directory":
+            entry.update(_revision_evidence(body["schema"], item, definition))
+        components.append(entry)
     return [_component("lenovo-worker", "lenovo", "confirmed",
                        "MAC-bound worker result verified", "none"), *components]
 
@@ -306,6 +333,21 @@ def _validate_submitted_checklist(config: dict, key: bytes, job_id: str) -> None
             or payload.get("dialect") != "cmd"):
         raise Refusal(
             "existing job is not bound to the exact selected readiness checklist")
+
+
+def probe_command(config: dict) -> str:
+    """Public handle: the exact signed readiness probe command."""
+    return _remote_command(config)
+
+
+def validate_submitted_checklist(config: dict, key: bytes, job_id: str) -> None:
+    """Public handle: bind a same-ID readiness job to this configuration."""
+    _validate_submitted_checklist(config, key, job_id)
+
+
+def worker_components(payload: dict, config: dict) -> list[dict]:
+    """Public handle: validate one MAC-bound readiness result."""
+    return _validate_worker(payload, config)
 
 
 def _local_observations(config: dict, components: list[dict]) -> dict:

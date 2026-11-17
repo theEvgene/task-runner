@@ -10,9 +10,10 @@
 
 This is the single diagnostics entry for worker, queue, SMB, and thread state.
 Scenario documents keep their own exact commands (`docs/lan-bridge.md`,
-`docs/readiness.md`, `docs/lenovo-worker-shortcut.md`, `docs/dell-lan.md`);
-this runbook replaces the scattered memo-style facts and creates no metadata
-registry, cache, installer, queue, or worker.
+`docs/readiness.md`, `docs/selected-check.md`,
+`docs/lenovo-worker-shortcut.md`, `docs/dell-lan.md`); this runbook replaces
+the scattered memo-style facts and creates no metadata registry, cache,
+installer, queue, or worker.
 
 ## Entry facts
 
@@ -43,7 +44,8 @@ never reconstructed from memory.
 | worker-process    | Lenovo      | `scripts/lenovo_worker/worker.py`         | launcher `scripts/lenovo_worker/launch.py`; readback `lenovo-launch/1` roles | NOT_VERIFIED   |
 | cleaner-process   | Lenovo      | `scripts/lenovo_worker/cleaner.py`        | launcher `scripts/lenovo_worker/launch.py`; readback `roles[].state`         | NOT_VERIFIED   |
 | launcher-shortcut | Lenovo      | `scripts/lenovo_worker/Launch-Worker.bat` | exit 0 `ready` / exit 2 refused; readback stdout JSON `lenovo-launch/1`      | NOT_VERIFIED   |
-| readiness-report  | Dell+Lenovo | `scripts/readiness/check.py`              | report `lan-readiness-report/1`; readback `jobId` and `outcome`              | NOT_VERIFIED   |
+| readiness-report  | Dell+Lenovo | `scripts/readiness/check.py`              | report `lan-readiness-report/1`; readback `jobId`, `outcome`, and a directory component's `observedRevision`/`revisionEvidence` | NOT_VERIFIED   |
+| selected-check    | Dell+Lenovo | `scripts/readiness/selected.py`           | readback `lan-selected-check-receipt/1` `outcome`, `hostBound`, `hostEvidence`, `revision.state`, `revision.source`, `execution.jobId` and `execution.exitCode`; re-read a known id with `--job-id`; `git rev-parse HEAD` for the local revision | NOT_VERIFIED   |
 
 ## Diagnose path
 

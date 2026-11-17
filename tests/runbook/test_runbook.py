@@ -90,6 +90,7 @@ THREAD_FORBIDDEN = (
 RECEIPT_FACTS = (
     ("lenovo-launch/1", "scripts/lenovo_worker/launch.py"),
     ("lan-readiness-report/1", "scripts/readiness/check.py"),
+    ("lan-selected-check-receipt/1", "scripts/readiness/selected_model.py"),
     ("launch ready (", "scripts/lenovo_worker/launch.py"),
     ("already-running", "scripts/lenovo_worker/launch.py"),
     ("queue unavailable", "scripts/lenovo_worker/reasons.py"),
@@ -198,6 +199,7 @@ class RunbookTests(unittest.TestCase):
                 "cleaner-process",
                 "launcher-shortcut",
                 "readiness-report",
+                "selected-check",
             },
         )
 
