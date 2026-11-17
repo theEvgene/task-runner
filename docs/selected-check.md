@@ -165,7 +165,7 @@ One JSON object is printed (and optionally written by `--receipt-out`):
 - `outcome`: `PASS`, `FAIL`, `NOT_RUN` or `UNKNOWN`.
 - `revision`: the expected SHA, the observed SHA when readable, its state
   (`confirmed`, `stale`, `unconfirmed`) and the evidence source
-  (`local-git`, `readiness-evidence`, or `signed-target-preamble`).
+  (`local-git`, `readiness-evidence`, `signed-target-preamble`, or `unknown`).
   `readiness-evidence` appears on a pre-submit revision refusal from the
   earlier readiness evidence; `signed-target-preamble` appears on a result
   from the submitted job. `confirmed` requires the observed

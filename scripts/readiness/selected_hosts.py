@@ -162,6 +162,8 @@ def preflight_lenovo(desc: dict) -> tuple[dict, bytes | None]:
         return _refused("worker-unproven"), key
     cwd_evidence = next((item for item in components
                          if item["name"] == required["cwd"]), None)
+    if cwd_evidence is not None and cwd_evidence.get("revisionEvidence") == "unconfirmed":
+        return _refused("revision-unconfirmed"), key
     if (cwd_evidence is None
             or cwd_evidence.get("revisionEvidence") != "verified"):
         return _refused("evidence-untrusted"), key

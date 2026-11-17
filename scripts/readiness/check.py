@@ -236,6 +236,8 @@ def _revision_evidence(schema: str, item: dict, definition: dict) -> dict:
         and all(char in "0123456789abcdef" for char in observed))
     if item.get("cwdDigest") != digest or not readable:
         return {"observedRevision": None, "revisionEvidence": "untrusted"}
+    if observed is None:
+        return {"observedRevision": None, "revisionEvidence": "unconfirmed"}
     return {"observedRevision": observed, "revisionEvidence": "verified"}
 
 

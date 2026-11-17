@@ -97,7 +97,7 @@ def _revision_source(host: str, preflight: dict,
     if preflight.get("reason") in ("revision-stale", "revision-unconfirmed",
                                    "evidence-untrusted"):
         return "readiness-evidence"
-    return "signed-target-preamble"
+    return "unknown"
 
 
 def build_receipt(desc: dict, preflight: dict,
