@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -58,6 +59,29 @@ def _tool_available(command: str) -> bool:
     return path.is_file() if path.is_absolute() else shutil.which(command) is not None
 
 
+def _checkout_toplevel(git: str, path: str) -> str | None:
+    try:
+        run = subprocess.run([git, "-C", path, "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=15,
+                             check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = (run.stdout or "").strip()
+    if run.returncode != 0 or not value:
+        return None
+    try:
+        return os.path.normcase(str(Path(value).resolve()))
+    except OSError:
+        return None
+
+
+def _same_checkout(git: str, repository: str, cwd: str) -> bool:
+    """The revision repository must be the checkout that contains the cwd."""
+    expected = _checkout_toplevel(git, repository)
+    executed = _checkout_toplevel(git, cwd)
+    return expected is not None and expected == executed
+
+
 def preflight_dell(desc: dict) -> dict:
     check = desc["check"]
     if not Path(check["cwd"]).is_dir():
@@ -67,6 +91,8 @@ def preflight_dell(desc: dict) -> dict:
     repository = desc["dell"]["revisionRepository"]
     if not Path(repository).is_dir():
         return _refused("revision-unconfirmed")
+    if not _same_checkout(desc["dell"]["git"], repository, check["cwd"]):
+        return _refused("revision-unbound")
     observed = _git_head(desc["dell"]["git"], repository)
     if observed is None:
         return _refused("revision-unconfirmed")
@@ -145,7 +171,8 @@ def execute_dell(desc: dict) -> dict:
     base = {"kind": "local-child", "jobId": None, "verified": True,
             "exitCode": None, "timedOut": False, "truncated": False,
             "observedHost": "dell", "observedRevision": None,
-            "revisionState": None, "reason": "completed"}
+            "revisionState": None, "hostEvidence": "local-child",
+            "reason": "completed"}
     try:
         proc = subprocess.run(check["argv"], cwd=check["cwd"],
                               stdout=subprocess.DEVNULL,
@@ -155,7 +182,7 @@ def execute_dell(desc: dict) -> dict:
         return {**base, "state": "fail", "timedOut": True, "reason": "timeout"}
     except OSError:
         return {**base, "state": "not_run", "observedHost": None,
-                "reason": "command-unavailable"}
+                "hostEvidence": None, "reason": "command-unavailable"}
     code = proc.returncode
     if not isinstance(code, int) or isinstance(code, bool) or code < 0:
         return {**base, "state": "fail", "reason": "abnormal-exit"}
@@ -167,13 +194,64 @@ def execute_dell(desc: dict) -> dict:
             "reason": "completed" if code == 0 else "nonzero-exit"}
 
 
-def execute_lenovo(desc: dict, key: bytes) -> dict:
+def _job_timeout(check: dict) -> int:
+    return min(3600, check["timeoutSeconds"] + 60)
+
+
+def _validate_submitted_job(desc: dict, key: bytes, job_id: str) -> None:
+    """Bind a same-id readback to the exact job this descriptor would submit."""
     block = desc["lenovo"]
     check = desc["check"]
-    job_id = bridge.submit_job(
-        block["queue"], key, remote_command(desc), check["cwd"],
-        timeout_seconds=min(3600, check["timeoutSeconds"] + 60),
-        max_output_bytes=check["maxOutputBytes"], dialect="cmd")
+    raw = bridge.read(Path(block["queue"]) / "jobs", job_id)
+    payload = bridge.open_envelope(raw, key, "job", job_id)
+    try:
+        canonical = bridge.build_job_payload(
+            payload.get("id"), payload.get("command"),
+            payload.get("working_directory"),
+            timeout_seconds=payload.get("timeout_seconds"),
+            max_output_bytes=payload.get("max_output_bytes"),
+            return_files=payload.get("return_files"),
+            dialect=payload.get("dialect"))
+    except (TypeError, ValueError) as error:
+        raise Refusal("existing job is not the exact selected check") from error
+    expected_shape = {"kind", "id", "command", "working_directory",
+                      "timeout_seconds", "max_output_bytes", "return_files",
+                      "dialect"}
+    if (payload != canonical or set(payload) != expected_shape
+            or payload.get("command") != remote_command(desc)
+            or payload.get("working_directory") != check["cwd"]
+            or payload.get("timeout_seconds") != _job_timeout(check)
+            or payload.get("max_output_bytes") != check["maxOutputBytes"]
+            or payload.get("return_files") != []
+            or payload.get("dialect") != "cmd"):
+        raise Refusal("existing job is not the exact selected check")
+
+
+def resume_lenovo(desc: dict, job_id: str) -> tuple[dict, bytes | None]:
+    """Preflight a same-id readback; this path never submits a job."""
+    block = desc["lenovo"]
+    if not Path(block["queue"]).is_dir():
+        return _refused("queue-missing"), None
+    try:
+        key = bridge.load_key(block["keyFile"], block["keyFormat"],
+                              block["queue"])
+    except bridge.BridgeError:
+        return _refused("key-unusable"), None
+    try:
+        _validate_submitted_job(desc, key, job_id)
+    except (bridge.BridgeError, Refusal):
+        return _refused("job-unbound"), key
+    return _confirmed(None), key
+
+
+def execute_lenovo(desc: dict, key: bytes, job_id: str | None = None) -> dict:
+    block = desc["lenovo"]
+    check = desc["check"]
+    if job_id is None:
+        job_id = bridge.submit_job(
+            block["queue"], key, remote_command(desc), check["cwd"],
+            timeout_seconds=_job_timeout(check),
+            max_output_bytes=check["maxOutputBytes"], dialect="cmd")
     try:
         payload = bridge.fetch_result(block["queue"], key, job_id,
                                       timeout_seconds=block["waitSeconds"],
@@ -183,11 +261,19 @@ def execute_lenovo(desc: dict, key: bytes) -> dict:
                 "state": "unknown", "exitCode": None, "timedOut": False,
                 "truncated": False, "observedHost": None,
                 "observedRevision": None, "revisionState": None,
-                "reason": "no-verified-result"}
-    return lenovo_result(job_id, payload)
+                "hostEvidence": None, "reason": "no-verified-result"}
+    except bridge.BridgeError:
+        # The job is already published; keep the id so the caller can re-read
+        # the same id instead of submitting a second job.
+        return {"kind": "signed-queue", "jobId": job_id, "verified": False,
+                "state": "unknown", "exitCode": None, "timedOut": False,
+                "truncated": False, "observedHost": None,
+                "observedRevision": None, "revisionState": None,
+                "hostEvidence": None, "reason": "unverifiable-result"}
+    return lenovo_result(job_id, payload, check["expectedRevision"])
 
 
-def lenovo_result(job_id: str, payload: dict) -> dict:
+def lenovo_result(job_id: str, payload: dict, expected_revision: str) -> dict:
     for field in ("timed_out", "output_truncated"):
         if field not in payload or type(payload[field]) is not bool:
             raise Refusal(f"verified worker result field {field!r} must be a boolean")
@@ -196,22 +282,24 @@ def lenovo_result(job_id: str, payload: dict) -> dict:
             "timedOut": payload["timed_out"],
             "truncated": payload["output_truncated"],
             "observedHost": "lenovo", "observedRevision": None,
-            "revisionState": None, "reason": "unknown"}
+            "revisionState": None, "hostEvidence": "signed-queue-result",
+            "reason": "unknown"}
     if payload["timed_out"] or payload["output_truncated"]:
         return {**base, "verified": False, "state": "unknown",
+                "hostEvidence": None,
                 "reason": "worker-timeout" if payload["timed_out"]
                 else "output-truncated"}
     if payload.get("status") not in ("ok", "completed", "error"):
         return {**base, "verified": False, "state": "unknown",
-                "reason": "unrecognized-status"}
+                "hostEvidence": None, "reason": "unrecognized-status"}
     try:
         receipt = json.loads(payload.get("stdout", ""))
     except (TypeError, json.JSONDecodeError):
         return {**base, "state": "not_run", "exitCode": None,
-                "reason": "worker-refused"}
+                "hostEvidence": None, "reason": "worker-refused"}
     if not isinstance(receipt, dict) or receipt.get("schema") != PROBE_SCHEMA:
         return {**base, "state": "not_run", "exitCode": None,
-                "reason": "worker-refused"}
+                "hostEvidence": None, "reason": "worker-refused"}
     state = receipt.get("state")
     reason = receipt.get("reason")
     code = receipt.get("exitCode")
@@ -221,10 +309,21 @@ def lenovo_result(job_id: str, payload: dict) -> dict:
             or any(char not in "0123456789abcdef" for char in observed)):
         return {**base, "state": "unknown", "reason": "unreadable-receipt"}
     base["observedRevision"] = observed
-    base["revisionState"] = (
-        "stale" if reason == "revision-stale"
-        else "confirmed" if observed is not None else "unconfirmed")
+    if observed is None:
+        base["revisionState"] = "unconfirmed"
+    elif observed == expected_revision:
+        base["revisionState"] = "confirmed"
+    else:
+        base["revisionState"] = "stale"
+    if reason == "revision-stale":
+        base["revisionState"] = "stale"
     if state == "RUN":
+        if observed is None:
+            return {**base, "state": "unknown", "reason": "unreadable-receipt"}
+        if observed != expected_revision:
+            # A run receipt for a different SHA cannot be the selected check.
+            return {**base, "state": "not_run", "exitCode": None,
+                    "reason": "revision-stale"}
         if (type(code) is not int or code < 0
                 or payload.get("exit_code") != code):
             return {**base, "state": "unknown", "reason": "exit-disagreement"}
@@ -243,4 +342,5 @@ def lenovo_result(job_id: str, payload: dict) -> dict:
                 "timedOut": reason == "timeout",
                 "reason": reason if reason in ("timeout", "abnormal-exit")
                 else "abnormal-exit"}
-    return {**base, "state": "unknown", "reason": "unreadable-receipt"}
+    return {**base, "state": "unknown", "hostEvidence": None,
+            "reason": "unreadable-receipt"}

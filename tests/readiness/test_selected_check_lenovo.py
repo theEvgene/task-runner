@@ -21,6 +21,7 @@ sys.path.insert(0, str(READINESS_DIR))
 import check as readiness  # noqa: E402
 import lan_bridge as bridge  # noqa: E402
 import selected  # noqa: E402
+import selected_hosts  # noqa: E402
 
 
 def _head() -> str:
@@ -100,35 +101,39 @@ class SelectedCheckLenovoTests(unittest.TestCase):
         return sorted(path.stem for path in jobs.glob("*.json")) \
             if jobs.exists() else []
 
-    def _run(self, descriptor: dict | None = None) -> subprocess.CompletedProcess:
+    def _run(self, descriptor: dict | None = None,
+             extra: tuple[str, ...] = ()) -> subprocess.CompletedProcess:
         self.descriptor_path.write_text(
             json.dumps(descriptor or self.descriptor), encoding="utf-8")
         return subprocess.run(
             [sys.executable, str(SCRIPT), "--descriptor",
-             str(self.descriptor_path)],
+             str(self.descriptor_path), *extra],
             capture_output=True, text=True, check=False)
 
     def _fake_worker(self, receipt: dict, status: str = "completed",
                      exit_code: int | None = 0, tamper: bool = False,
-                     timed_out: bool = False) -> threading.Thread:
+                     timed_out: bool = False,
+                     job_id: str | None = None) -> threading.Thread:
         def run() -> None:
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 pending = [job for job in self._job_ids()
-                           if job != self.evidence_job]
+                           if job != self.evidence_job
+                           and (job_id is None or job == job_id)]
                 if pending:
-                    job_id = pending[0]
+                    job_id_found = pending[0]
                     bridge.open_envelope(
-                        bridge.read(self.queue / "jobs", job_id),
-                        self.key, "job", job_id)
+                        bridge.read(self.queue / "jobs", job_id_found),
+                        self.key, "job", job_id_found)
                     payload = bridge.build_result_payload(
-                        job_id, status, exit_code=exit_code,
+                        job_id_found, status, exit_code=exit_code,
                         timed_out=timed_out,
                         stdout=json.dumps(receipt, separators=(",", ":")))
                     sealed = bytearray(bridge.seal(payload, self.key))
                     if tamper:
                         sealed[-3] ^= 1
-                    bridge.publish(self.queue / "results", job_id, bytes(sealed))
+                    bridge.publish(self.queue / "results", job_id_found,
+                                   bytes(sealed))
                     return
                 time.sleep(0.01)
 
@@ -156,6 +161,7 @@ class SelectedCheckLenovoTests(unittest.TestCase):
         self.assertEqual(receipt["requestedHost"], "lenovo")
         self.assertEqual(receipt["observedHost"], "lenovo")
         self.assertTrue(receipt["hostBound"])
+        self.assertEqual(receipt["hostEvidence"], "signed-queue-result")
         self.assertEqual(receipt["revision"]["state"], "confirmed")
         self.assertEqual(receipt["execution"]["kind"], "signed-queue")
         self.assertRegex(self._check_job_id(receipt), r"^[0-9a-f]{32}$")
@@ -224,6 +230,63 @@ class SelectedCheckLenovoTests(unittest.TestCase):
         self.assertRegex(job_id, r"^[0-9a-f]{32}$")
         self.assertIn(job_id, receipt["nextAction"])
         self.assertEqual(len(self._job_ids()), 2, "unknown must not resubmit")
+
+    def test_lenovo_run_receipt_with_a_foreign_revision_is_not_pass(self) -> None:
+        payload = bridge.build_result_payload(
+            "c" * 32, "completed", exit_code=0,
+            stdout=json.dumps({"schema": "lenovo-selected-check/1",
+                               "state": "RUN", "reason": "completed",
+                               "exitCode": 0,
+                               "observedRevision": "0" * 40},
+                              separators=(",", ":")))
+        execution = selected_hosts.lenovo_result("c" * 32, payload, self.head)
+        self.assertEqual(execution["revisionState"], "stale")
+        self.assertEqual(execution["state"], "not_run")
+        self.assertIsNone(execution["exitCode"])
+        self.assertEqual(
+            selected.decide("lenovo", selected_hosts._confirmed(self.head),
+                            execution),
+            "NOT_RUN")
+
+    def test_unknown_result_recovers_by_same_job_id_without_resubmitting(
+            self) -> None:
+        self.descriptor["lenovo"]["waitSeconds"] = 0.5
+        first = self._run()
+        self.assertEqual(first.returncode, 3, first.stderr)
+        receipt = self._receipt(first)
+        self.assertEqual(receipt["outcome"], "UNKNOWN")
+        job_id = self._check_job_id(receipt)
+        self.assertEqual(len(self._job_ids()), 2)
+        worker = self._fake_worker({
+            "schema": "lenovo-selected-check/1", "state": "RUN",
+            "reason": "completed", "exitCode": 0,
+            "observedRevision": self.head}, job_id=job_id)
+        second = self._run(extra=("--job-id", job_id, "--wait", "15"))
+        worker.join(20)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        receipt = self._receipt(second)
+        self.assertEqual(receipt["outcome"], "PASS")
+        self.assertEqual(receipt["execution"]["jobId"], job_id)
+        self.assertEqual(len(self._job_ids()), 2,
+                         "same-id recovery submitted another job")
+
+    def test_unverifiable_result_keeps_the_job_id_in_the_receipt(self) -> None:
+        worker = self._fake_worker({
+            "schema": "lenovo-selected-check/1", "state": "RUN",
+            "reason": "completed", "exitCode": 0,
+            "observedRevision": self.head}, tamper=True)
+        proc = self._run()
+        worker.join(20)
+        self.assertEqual(proc.returncode, 3, proc.stderr)
+        receipt = self._receipt(proc)
+        self.assertEqual(receipt["outcome"], "UNKNOWN")
+        self.assertFalse(receipt["execution"]["verified"])
+        self.assertFalse(receipt["hostBound"])
+        job_id = self._check_job_id(receipt)
+        self.assertRegex(job_id, r"^[0-9a-f]{32}$")
+        self.assertIn(job_id, receipt["nextAction"])
+        self.assertEqual(len(self._job_ids()), 2)
+        self.assertNotIn(self.key.hex(), proc.stdout + proc.stderr)
 
     def test_lenovo_evidence_refusals_publish_nothing(self) -> None:
         mismatch = json.loads(json.dumps(self.descriptor))

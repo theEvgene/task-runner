@@ -32,7 +32,7 @@ sys.path[:0] = [str(item) for item in (BRIDGE_DIR, HERE)
 import lan_bridge as bridge  # noqa: E402
 import syntax  # noqa: E402
 from selected_hosts import (execute_dell, execute_lenovo, preflight_dell,  # noqa: E402
-                            preflight_lenovo)
+                            preflight_lenovo, resume_lenovo)
 from selected_model import (NEXT_ACTIONS, RECEIPT_SCHEMA, Refusal,  # noqa: E402
                             inside, read_object, validate_descriptor)
 
@@ -46,7 +46,8 @@ def _digest(value: object) -> str:
 def decide(requested: str, preflight: dict, execution: dict | None) -> str:
     if preflight["state"] != "confirmed" or execution is None:
         return "NOT_RUN"
-    if not execution["verified"] or execution["observedHost"] != requested:
+    if (not execution["verified"] or execution["observedHost"] != requested
+            or execution.get("hostEvidence") is None):
         return "UNKNOWN"
     if execution["state"] == "unknown":
         return "UNKNOWN"
@@ -75,7 +76,7 @@ def _next_action(outcome: str, preflight: dict, execution: dict | None) -> str:
         job_id = execution["jobId"] if execution else None
         if job_id:
             return (f"re-read the SAME id {job_id} with "
-                    "scripts/lan_bridge/lan_bridge.py fetch; never resubmit "
+                    "scripts/readiness/selected.py --job-id; never resubmit "
                     "while unknown")
         return "stop and report the unknown selected-check state to the owner"
     reason = (execution["reason"] if execution
@@ -90,6 +91,7 @@ def build_receipt(desc: dict, preflight: dict,
     host = check["host"]
     outcome = decide(host, preflight, execution)
     observed_host = execution["observedHost"] if execution else None
+    host_evidence = execution["hostEvidence"] if execution else None
     if execution is not None and execution["revisionState"]:
         revision_state = execution["revisionState"]
         observed_revision = execution["observedRevision"]
@@ -110,7 +112,9 @@ def build_receipt(desc: dict, preflight: dict,
                   "cwdDigest": _digest(check["cwd"])},
         "requestedHost": host,
         "observedHost": observed_host,
-        "hostBound": observed_host is not None and observed_host == host,
+        "hostBound": (bool(execution and execution["verified"])
+                      and observed_host == host and host_evidence is not None),
+        "hostEvidence": host_evidence,
         "outcome": outcome,
         "revision": {"expected": check["expectedRevision"],
                      "observed": observed_revision,
@@ -147,6 +151,8 @@ def run(args: argparse.Namespace) -> int:
     if desc["check"]["host"] == "dell":
         if args.wait is not None or args.poll is not None:
             raise Refusal("--wait/--poll apply only to a lenovo descriptor")
+        if args.job_id is not None:
+            raise Refusal("--job-id applies only to a lenovo descriptor")
         preflight = preflight_dell(desc)
         execution = execute_dell(desc) if preflight["state"] == "confirmed" else None
     else:
@@ -160,8 +166,15 @@ def run(args: argparse.Namespace) -> int:
                 raise Refusal(f"{name} override must be a positive finite number of seconds")
         if desc["lenovo"]["pollSeconds"] > desc["lenovo"]["waitSeconds"]:
             raise Refusal("poll override must not exceed the wait")
-        preflight, key = preflight_lenovo(desc)
-        execution = (execute_lenovo(desc, key)
+        if args.job_id is not None:
+            if (len(args.job_id) != 32
+                    or any(char not in "0123456789abcdef"
+                           for char in args.job_id)):
+                raise Refusal("--job-id must be 32 lowercase hex characters")
+            preflight, key = resume_lenovo(desc, args.job_id)
+        else:
+            preflight, key = preflight_lenovo(desc)
+        execution = (execute_lenovo(desc, key, args.job_id)
                      if preflight["state"] == "confirmed" else None)
     receipt = build_receipt(desc, preflight, execution)
     text = json.dumps(receipt, ensure_ascii=False, separators=(",", ":"))
@@ -185,6 +198,8 @@ def parser() -> argparse.ArgumentParser:
                         help="override the lenovo result wait in seconds")
     result.add_argument("--poll", type=float, default=None,
                         help="override the lenovo poll interval in seconds")
+    result.add_argument("--job-id", default=None,
+                        help="re-read this existing lenovo job id; never submit another")
     return result
 
 

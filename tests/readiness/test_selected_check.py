@@ -28,8 +28,9 @@ class SelectedCheckDellTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = Path(tempfile.mkdtemp(prefix="selected-check-"))
         self.addCleanup(shutil.rmtree, self.temp, True)
-        self.cwd = self.temp / "target"
-        self.cwd.mkdir()
+        self.cwd = ROOT
+        self.outside = self.temp / "target"
+        self.outside.mkdir()
         self.marker = self.temp / "spawned.txt"
         self.head = _head()
         self.descriptor_path = self.temp / "descriptor.json"
@@ -113,6 +114,20 @@ class SelectedCheckDellTests(unittest.TestCase):
                 self.assertIsNone(receipt["execution"]["exitCode"])
                 self.assertFalse(self.marker.exists())
 
+    def test_revision_repository_outside_the_check_cwd_is_not_run(self) -> None:
+        # The revision must come from the checkout that contains check.cwd,
+        # never from a different checkout on the same host.
+        proc = self._run(self._descriptor(self._marker_argv(),
+                                          cwd=self.outside))
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        receipt = json.loads(proc.stdout)
+        self.assertEqual(receipt["outcome"], "NOT_RUN")
+        self.assertEqual(receipt["preflight"]["reason"], "revision-unbound")
+        self.assertEqual(receipt["revision"]["state"], "unconfirmed")
+        self.assertIsNone(receipt["observedHost"])
+        self.assertFalse(self.marker.exists(),
+                         "a foreign checkout revision was trusted")
+
     def test_nonzero_exit_is_fail_and_never_pass(self) -> None:
         proc = self._run(self._descriptor(
             [sys.executable, "-c", "raise SystemExit(7)"]))
@@ -141,13 +156,36 @@ class SelectedCheckDellTests(unittest.TestCase):
         execution = {"verified": True, "observedHost": "dell",
                      "revisionState": "confirmed", "state": "run",
                      "exitCode": 0, "timedOut": False, "truncated": False,
-                     "jobId": "b" * 32, "kind": "signed-queue"}
+                     "jobId": "b" * 32, "kind": "signed-queue",
+                     "hostEvidence": "signed-queue-result"}
         self.assertEqual(selected.decide("lenovo", preflight, execution),
                          "UNKNOWN")
         execution["observedHost"] = "lenovo"
         execution["exitCode"] = 0.0
         self.assertNotEqual(selected.decide("lenovo", preflight, execution),
                             "PASS")
+
+    def test_host_bound_requires_verified_result_evidence(self) -> None:
+        desc = {"check": {"name": "fixture", "host": "lenovo",
+                          "effect": "read-only", "argv": ["check"],
+                          "cwd": "cwd", "expectedRevision": "a" * 40}}
+        preflight = selected_hosts._confirmed(None)
+        execution = {"kind": "signed-queue", "jobId": "b" * 32,
+                     "verified": True, "state": "run", "exitCode": 0,
+                     "timedOut": False, "truncated": False,
+                     "observedHost": "lenovo", "observedRevision": "a" * 40,
+                     "revisionState": "confirmed",
+                     "hostEvidence": "signed-queue-result", "reason": "completed"}
+        receipt = selected.build_receipt(desc, preflight, execution)
+        self.assertTrue(receipt["hostBound"])
+        self.assertEqual(receipt["hostEvidence"], "signed-queue-result")
+        self.assertEqual(receipt["outcome"], "PASS")
+        for field, value in (("verified", False), ("hostEvidence", None)):
+            with self.subTest(missing=field):
+                weaker = {**execution, field: value}
+                receipt = selected.build_receipt(desc, preflight, weaker)
+                self.assertFalse(receipt["hostBound"])
+                self.assertNotEqual(receipt["outcome"], "PASS")
 
     def _wrapper(self, cfg: dict) -> subprocess.CompletedProcess:
         data = base64.b64encode(json.dumps(cfg).encode("utf-8")).decode("ascii")

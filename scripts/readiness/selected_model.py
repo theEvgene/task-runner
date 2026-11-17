@@ -19,12 +19,14 @@ INCOMPLETE_EXIT = 79
 MAX_TIMEOUT_SECONDS = 600
 MAX_COMMAND_CHARS = 7000
 NOT_RUN_REASONS = ("cwd-missing", "tool-missing", "revision-stale",
-                   "revision-unconfirmed", "command-unavailable")
+                   "revision-unconfirmed", "revision-unbound",
+                   "command-unavailable", "job-unbound")
 NEXT_ACTIONS = {
     "cwd-missing": "fix the selected check working directory on the target host",
     "tool-missing": "install or select the required executable on the target host",
     "revision-stale": "check out the expected revision on the target host",
     "revision-unconfirmed": "make the target checkout revision readable",
+    "revision-unbound": "point dell.revisionRepository at the checkout that contains check.cwd",
     "command-unavailable": "install or select the check executable on the target host",
     "command-refused": "fix the selected check command for the target transport",
     "queue-missing": "restore the owner-provided queue mount",
@@ -35,6 +37,7 @@ NEXT_ACTIONS = {
     "evidence-unbound": "re-run the existing readiness check and use its new job id",
     "worker-unproven": "run the existing readiness check for this Lenovo worker first",
     "worker-refused": "fix the target host selected-check environment",
+    "job-unbound": "use the job id printed by the original selected-check receipt",
 }
 
 
