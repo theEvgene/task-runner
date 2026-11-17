@@ -106,7 +106,10 @@ runs have independent random IDs and the canonical queue's immutable,
 no-clobber files; no shared receipt or observer state is used.
 
 A local failure report also carries one `reason` code and one bounded
-`nextAction` from the same classifier the Lenovo launcher uses. That path
+`nextAction` from the same classifier the Lenovo launcher uses. Only local
+codes can appear here (`queue-missing`, `key-unusable`, `tool-missing`,
+`component-unconfirmed`, `preflight-incomplete`, `unknown`); no SMB or launch
+code is emitted by this path. That path
 publishes no signed job: an uncertain preflight never submits. A generic
 share/path failure is never reported as bad credentials, and contradictory
 observations are `unknown` with one next action.

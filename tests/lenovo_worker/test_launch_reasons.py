@@ -24,16 +24,13 @@ class ClassifyTests(unittest.TestCase):
              "smb-auth-refused", "refused"),
             ("credential file", {"shareStatus": "BAD-CREDENTIAL-FILE"},
              "smb-credential-file-invalid", "refused"),
-            ("network unreachable", {"shareStatus": "MAP-FAILED", "shareVisible": False,
-                                     "networkReachable": False},
-             "smb-network-unreachable", "refused"),
-            ("share unavailable", {"shareStatus": "MAP-FAILED", "shareVisible": False,
-                                   "networkReachable": True},
-             "smb-share-unavailable", "refused"),
             ("generic map failure", {"shareStatus": "MAP-FAILED", "shareVisible": False},
              "smb-share-unconfirmed", "refused"),
-            ("mapped but absent", {"shareStatus": "MAPPED", "shareVisible": False},
+            ("mapped but not visible", {"shareStatus": "MAPPED", "shareVisible": False},
              reasons.UNKNOWN, "unknown"),
+            ("mapped but sharedDir absent",
+             {"shareStatus": "MAPPED", "shareVisible": True, "sharePathPresent": False},
+             "shared-dir-invalid", "refused"),
             ("auth while visible", {"shareStatus": "AUTH-DENIED", "shareVisible": True},
              reasons.UNKNOWN, "unknown"),
             ("no observation", {}, reasons.UNKNOWN, "unknown"),
@@ -48,6 +45,11 @@ class ClassifyTests(unittest.TestCase):
             ("relative cwd", {"cwd": "relative"}, "launch-cwd-relative", "refused"),
             ("unprovable cwd", {"cwd": "unverifiable"},
              "launch-cwd-unverifiable", "refused"),
+            ("local cwd absent", {"cwd": "local", "cwdPresent": False},
+             "launch-cwd-invalid", "refused"),
+            ("worker cwd not a directory",
+             {"cwd": "local", "workerCwd": "local", "workerCwdPresent": False},
+             "launch-cwd-invalid", "refused"),
         )
         for label, observations, code, state in cases:
             with self.subTest(label=label):
@@ -67,6 +69,18 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(verdict.reason, "smb-share-unconfirmed")
         self.assertIn("not proof of bad credentials",
                       reasons.describe(verdict)["nextAction"])
+
+    def test_no_reason_without_a_producing_observation(self) -> None:
+        # A host-vs-share distinction needs an observation this bounded probe
+        # does not produce, so no such code is advertised nor concluded, even
+        # when the probe text happens to say "unreachable".
+        for code in ("smb-network-unreachable", "smb-share-unavailable"):
+            self.assertNotIn(code, reasons.REASONS)
+        verdict = reasons.classify({"shareStatus": "MAP-FAILED",
+                                    "shareVisible": False,
+                                    "shareDetail": "MAP-FAILED:unreachable after mapping"})
+        self.assertEqual(verdict.reason, "smb-share-unconfirmed")
+        self.assertEqual(reasons.describe(verdict)["state"], "refused")
 
     def test_local_classification_uses_only_local_facts(self) -> None:
         self.assertEqual(reasons.classify_local({"queuePresent": False}).reason,

@@ -6,8 +6,10 @@ existing queue/key/share, then starts the worker (sibling ``worker.py``)
 and the cleaner (sibling ``cleaner.py``) as detached processes.
 
 Refuses without side effects when: the launcher cwd (or a configured
-``workerCwd``) is a UNC path, a mapped network drive, or cannot be proven
-local, config/password missing, SMB unreachable or credentials wrong, queue or
+``workerCwd``) is a UNC path, a mapped network drive, cannot be proven
+local, or is not an existing local directory, config/password missing, SMB
+unreachable or credentials wrong, the configured ``sharedDir`` is not the
+mapped share directory, queue or
 key unusable, the worker delivery is missing, trash/state misplaced, a pid
 file is corrupt/foreign/unprovable or a live pid runs under a changed
 command/binding, another launch holds the lock, or a second launch races.
@@ -316,19 +318,29 @@ def main(argv: list[str] | None = None) -> int:
         trash = _abs(str(config.get("trashDir", "") or ""), "trashDir")
         state = _abs(str(config.get("stateDir", "") or ""), "stateDir")
         # A remote/unprovable cwd refuses before any layout, SMB, lock, or spawn
-        # work: the SMB ``unc`` names a share, never a working directory.
+        # work: the SMB ``unc`` names a share, never a working directory. A
+        # local absolute path must also exist as a directory, or the spawn
+        # would escape as an unclassified OSError.
         worker_cwd: Path | None = None
-        observations = {"cwd": reasons.cwd_safety(_launcher_cwd())}
+        launcher_cwd = _launcher_cwd()
+        observations = {"cwd": reasons.cwd_safety(launcher_cwd)}
+        if observations["cwd"] == "local":
+            observations["cwdPresent"] = Path(str(launcher_cwd)).is_dir()
         if config.get("workerCwd"):
-            worker_cwd = _abs(str(config["workerCwd"]), "workerCwd")
-            observations["workerCwd"] = reasons.cwd_safety(worker_cwd)
+            raw_cwd = str(config["workerCwd"])
+            observations["workerCwd"] = reasons.cwd_safety(raw_cwd)
+            if observations["workerCwd"] == "local":
+                observations["workerCwdPresent"] = Path(raw_cwd).is_dir()
+            worker_cwd = Path(raw_cwd)
         verdict = reasons.classify_cwd(observations)
         if verdict is not None:
             raise verdict
         _check_layout(queue, shared, trash, state)
         observations.update(share_probe.connect_share(config.get("smb") or {}))
-        if observations.get("shareVisible") is True and not shared.is_dir():
-            observations["shareVisible"] = False
+        # Two separate facts: the probe's own visibility token and the
+        # configured sharedDir. Overwriting one with the other would label a
+        # wrong sharedDir as a contradiction and state something untrue.
+        observations["sharePathPresent"] = shared.is_dir()
         observations["queuePresent"] = (
             queue.is_dir() and (queue / "jobs").is_dir() and (queue / "results").is_dir())
         python = str(config.get("python") or proc.python_executable())
@@ -374,8 +386,14 @@ def main(argv: list[str] | None = None) -> int:
             trash.mkdir(parents=True, exist_ok=True)
             worker_marker = str(config.get("workerMarker") or (worker_dir / "worker.py").name)
             cleaner_marker = str(config.get("cleanerMarker") or "cleaner.py")
-            worker_binding = {"queue": str(queue), "key_file": str(key_file)}
-            cleaner_binding = {"shared": str(shared), "trash_dir": str(trash)}
+            # The effective spawn cwd is part of the recorded identity: a live
+            # pid recorded under another cwd refuses like any other binding
+            # change instead of being silently adopted.
+            cwd_binding = str(worker_cwd) if worker_cwd is not None else ""
+            worker_binding = {"queue": str(queue), "key_file": str(key_file),
+                              "cwd": cwd_binding}
+            cleaner_binding = {"shared": str(shared), "trash_dir": str(trash),
+                               "cwd": cwd_binding}
             # Inspect BOTH roles before spawning either: an ambiguous role
             # anywhere refuses with nothing started or duplicated.
             planned = (("worker", worker_cmd, worker_marker, worker_binding),
@@ -390,7 +408,9 @@ def main(argv: list[str] | None = None) -> int:
         summary.update({"outcome": "ready", "reason": "none", "nextAction": "none"})
     except reasons.Refusal as error:
         return _refuse(summary, error)
-    except (ValueError, KeyError, RuntimeError) as error:
+    except (ValueError, KeyError, RuntimeError, OSError) as error:
+        # Residual environment failure (for example a spawn cwd that vanished
+        # after the preflight): still one sanitized receipt, never a traceback.
         return _refuse(summary, reasons.Refusal(reasons.UNKNOWN, str(error)))
     print(json.dumps(summary, ensure_ascii=False))
     states = ", ".join(f'{r["role"]}:{r["state"]}:{r["pid"]}' for r in summary["roles"])

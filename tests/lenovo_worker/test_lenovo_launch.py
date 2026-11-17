@@ -373,6 +373,115 @@ class LaunchTests(unittest.TestCase):
         self.assertFalse((state / "worker.pid").exists())
         self.assertFalse((state / "cleaner.pid").exists())
 
+    def test_missing_worker_cwd_refuses_with_one_receipt(self) -> None:
+        """Regression: an absent workerCwd must not escape as an OSError traceback."""
+        root = self.tmp.root
+        shared = root / "share"
+        shared.mkdir()
+        queue = make_queue(shared)
+        key = root / "key.bin"
+        make_key(key)
+        state, trash = root / "state", root / "trash"
+        config = base_config(root, queue, shared, key, state, trash)
+        missing = root / "does-not-exist"
+        config["workerCwd"] = os.fspath(missing)
+        completed = self._launch(config)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(len(completed.stdout.strip().splitlines()), 1, completed.stdout)
+        summary = json.loads(completed.stdout)
+        self.assertEqual(summary["outcome"], "refused")
+        self.assertEqual(summary["reason"], "launch-cwd-invalid")
+        self.assertEqual(summary["scope"], "worker-launch")
+        self.assertEqual(summary["jobOutcome"], "not-evaluated")
+        self.assertTrue(summary["nextAction"])
+        # The classifier is fed by the real observation, not by a guess.
+        self.assertIn("workerCwdPresent=False", summary["evidence"])
+        self.assertIn("launch refused:", completed.stderr)
+        self.assertNotIn("Traceback", completed.stderr)
+        self.assertNotIn(str(root), completed.stdout + completed.stderr)
+        self.assertFalse(missing.exists())
+        self.assertFalse(state.exists())  # nothing was created before the refusal
+        self.assertFalse(trash.exists())
+
+    def test_relative_worker_cwd_refuses_as_launch_cwd(self) -> None:
+        """The documented launch-cwd-relative code is reachable from the config."""
+        root = self.tmp.root
+        shared = root / "share"
+        shared.mkdir()
+        queue = make_queue(shared)
+        key = root / "key.bin"
+        make_key(key)
+        state, trash = root / "state", root / "trash"
+        config = base_config(root, queue, shared, key, state, trash)
+        config["workerCwd"] = os.path.join("relative-dir", "work")
+        completed = self._launch(config)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        summary = json.loads(completed.stdout)
+        self.assertEqual(summary["reason"], "launch-cwd-relative")
+        self.assertIn("worker cwd", summary["detail"])
+        self.assertNotIn(str(root), completed.stdout + completed.stderr)
+        self.assertFalse((state / "worker.pid").exists())
+
+    def test_worker_cwd_change_under_live_pid_refuses(self) -> None:
+        """The effective cwd is part of the recorded role identity."""
+        root = self.tmp.root
+        shared = root / "share"
+        shared.mkdir()
+        queue = make_queue(shared)
+        key = root / "key.bin"
+        make_key(key)
+        state, trash = root / "state", root / "trash"
+        first_cwd, second_cwd = root / "cwd-a", root / "cwd-b"
+        first_cwd.mkdir()
+        second_cwd.mkdir()
+        stub = self._stub()
+        config = base_config(root, queue, shared, key, state, trash)
+        config.update({"workerCommand": stub, "cleanerCommand": stub,
+                       "workerMarker": "time.sleep(60)", "cleanerMarker": "time.sleep(60)",
+                       "workerCwd": os.fspath(first_cwd)})
+        first = self._launch(config)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.tmp.track_pids(state)
+        pids = [r["pid"] for r in json.loads(first.stdout)["roles"]]
+        changed = dict(config)
+        changed["workerCwd"] = os.fspath(second_cwd)
+        second = self._launch(changed)
+        self.assertEqual(second.returncode, 2, second.stderr)
+        summary = json.loads(second.stdout)
+        self.assertEqual(summary["reason"], "role-ambiguous")
+        self.assertIn("ambiguous worker state", second.stderr)
+        for pid in pids:
+            self.assertTrue(launch_proc.is_alive(pid))  # never killed
+        recorded = [int(json.loads((state / f"{role}.pid").read_text())["pid"])
+                    for role in ("worker", "cleaner")]
+        self.assertEqual(recorded, pids)  # never replaced or duplicated
+        self.assertNotIn(str(first_cwd), second.stdout + second.stderr)
+
+    def test_mapped_share_with_wrong_shared_dir_refuses(self) -> None:
+        """A wrong sharedDir is a config fact, not a share contradiction."""
+        root = self.tmp.root
+        shared = root / "share"
+        shared.mkdir()
+        queue = make_queue(shared)
+        key = root / "key.bin"
+        make_key(key)
+        state, trash = root / "state", root / "trash"
+        wrong_shared = root / "not-the-share"
+        config = base_config(root, queue, shared, key, state, trash)
+        config["sharedDir"] = os.fspath(wrong_shared)  # smb fixture still maps `shared`
+        completed = self._launch(config)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        summary = json.loads(completed.stdout)
+        self.assertEqual(summary["reason"], "shared-dir-invalid")
+        # Real probe token plus real filesystem fact, both kept separate.
+        self.assertIn("shareStatus=MAPPED", summary["evidence"])
+        self.assertIn("sharePathPresent=False", summary["evidence"])
+        self.assertNotIn("its path is absent", summary["detail"])
+        self.assertIn("sharedDir", summary["nextAction"])
+        self.assertNotIn(str(root), completed.stdout + completed.stderr)
+        self.assertFalse((state / "worker.pid").exists())
+        self.assertFalse((state / "cleaner.pid").exists())
+
     def test_foreign_command_line_refuses_without_killing(self) -> None:
         root = self.tmp.root
         shared = root / "share"

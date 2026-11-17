@@ -39,6 +39,14 @@ REASONS: dict[str, dict] = {
     "launch-cwd-unverifiable": {
         "state": "refused", "detail": "launch cwd cannot be proven local",
         "nextAction": "start the launcher from an absolute local fixed-disk directory"},
+    "launch-cwd-invalid": {
+        "state": "refused", "detail": "launch directory is absent or not a directory",
+        "nextAction": "create that directory or point workerCwd at an existing local "
+                      "directory; nothing was started"},
+    "shared-dir-invalid": {
+        "state": "refused", "detail": "the share is mapped but sharedDir is not a directory",
+        "nextAction": "point sharedDir at the existing mapped share directory; "
+                      "nothing was created"},
     "smb-auth-refused": {
         "state": "refused",
         "detail": "bad credentials: SMB refused the username/password (check credential file)",
@@ -47,16 +55,6 @@ REASONS: dict[str, dict] = {
     "smb-credential-file-invalid": {
         "state": "refused", "detail": "bad credentials: credential file is empty or malformed",
         "nextAction": "write one single-line password into the local credential file"},
-    "smb-network-unreachable": {
-        "state": "refused",
-        "detail": "share unavailable: the observed host is not reachable on the network",
-        "nextAction": "restore network or VPN reachability, then re-run; "
-                      "no automatic firewall change"},
-    "smb-share-unavailable": {
-        "state": "refused",
-        "detail": "share unavailable: the host answered but the share name is absent or refused",
-        "nextAction": "confirm the share name with the owner, then re-run; "
-                      "no automatic share change"},
     "smb-share-unconfirmed": {
         "state": "refused", "detail": "share unavailable: check path/mount",
         "nextAction": "check host, share name, cable or VPN, then re-run; a generic "
@@ -167,7 +165,9 @@ def share_status(first_line: str, exit_code: int | None) -> str:
 
 
 def classify_cwd(observations: dict) -> Refusal | None:
-    for key, label in (("cwd", "launcher cwd"), ("workerCwd", "worker cwd")):
+    for key, presence_key, label in (
+            ("cwd", "cwdPresent", "launcher cwd"),
+            ("workerCwd", "workerCwdPresent", "worker cwd")):
         kind = observations.get(key)
         if kind in REMOTE_CWD:
             return Refusal("launch-cwd-remote", f"{label} is remote; refusing before spawn",
@@ -176,6 +176,13 @@ def classify_cwd(observations: dict) -> Refusal | None:
             return Refusal("launch-cwd-relative", f"{label} is not absolute", observations)
         if kind == "unverifiable":
             return Refusal("launch-cwd-unverifiable", f"{label} cannot be proven local",
+                           observations)
+        # A local absolute path still has to be a usable directory: a missing,
+        # file-typed, or inaccessible one would otherwise escape as an OSError
+        # from the spawn instead of a classified receipt.
+        if observations.get(presence_key) is False:
+            return Refusal("launch-cwd-invalid",
+                           f"{label} is absent or not a directory; nothing was started",
                            observations)
     return None
 
@@ -188,7 +195,6 @@ def classify(observations: dict) -> Refusal | None:
         return verdict
     status = observations.get("shareStatus")
     visible = observations.get("shareVisible")
-    network = observations.get("networkReachable")
     if status == "BAD-CREDENTIAL-FILE" or status == "AUTH-DENIED":
         if visible is True:
             return Refusal(UNKNOWN, "auth was refused while the share path is visible",
@@ -199,13 +205,18 @@ def classify(observations: dict) -> Refusal | None:
         if visible is True:
             return Refusal(UNKNOWN, "mapping failed while the share path is visible",
                            observations)
-        if network is False:
-            return Refusal("smb-network-unreachable", observations=observations)
-        if network is True:
-            return Refusal("smb-share-unavailable", observations=observations)
+        # A generic mapping failure supports neither "host unreachable" nor
+        # "share name absent": both need an observation this bounded probe does
+        # not produce, so the reason stays unconfirmed instead of guessed.
         return Refusal("smb-share-unconfirmed", observations=observations)
-    if status == "MAPPED" and visible is False:
-        return Refusal(UNKNOWN, "share reported mapped but its path is absent", observations)
+    if status == "MAPPED":
+        if visible is True and observations.get("sharePathPresent") is False:
+            # The share itself is mapped; only the configured sharedDir is
+            # wrong. Keep the two facts separate so the receipt stays true.
+            return Refusal("shared-dir-invalid", observations=observations)
+        if visible is False:
+            return Refusal(UNKNOWN, "share reported mapped but its path is not visible",
+                           observations)
     if observations.get("queuePresent") is False:
         return Refusal("queue-missing", observations=observations)
     if observations.get("workerPresent") is False:
