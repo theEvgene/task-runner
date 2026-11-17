@@ -55,8 +55,6 @@ RECEIPT_TOKENS = (
 class StartHereTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        if not PAGE.is_file():
-            raise unittest.SkipTest(f"start-here page not present: {PAGE}")
         cls.text = PAGE.read_text(encoding="utf-8")
 
     def test_page_is_linked_from_agents(self) -> None:

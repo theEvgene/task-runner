@@ -34,6 +34,7 @@ or button label.
 
 `scripts/readiness/check.py` performs the Dell checks, publishes exactly one
 signed test job, and verifies one MAC-bound result. It never creates a queue.
+Run the following command from the checkout root on Dell.
 
 ```text
 <python-on-dell> scripts/readiness/check.py --config <readiness-config.json> --authorize-lenovo-check --wait 600 --poll 30
@@ -59,6 +60,7 @@ completion.
 Prerequisite: the one-time local config and password file from
 `docs/lenovo-worker-shortcut.md` already exist outside the checkout, the share,
 and the queue. This page creates neither.
+The shortcut also requires `python` to be available on Lenovo's `PATH`.
 
 Normal step: double-click `<shortcut>`.
 
@@ -66,11 +68,11 @@ Success: exit `0`, one JSON line with `"schema":"lenovo-launch/1"`,
 `"outcome":"ready"`, `"scope":"worker-launch"`, `"jobOutcome":"not-evaluated"`,
 and stderr `launch ready (worker:... cleaner:...)`.
 
-| Printed result                    | What it means                     | The only next action                                                                       |
-| --------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------ |
-| exit `0`, `outcome: ready`        | worker and cleaner report started | none; a second click is `already-running` with the same pids, not a new worker             |
-| exit `2`, `outcome: refused`      | nothing new was started           | read the single `reason` and `nextAction`; change no credential, share, pid file, or queue |
-| an ambiguous or unexplained state | evidence is incomplete            | stop and hand the agent `docs/runbook.md`                                                  |
+| Printed result                    | What it means                     | The only next action                                                                     |
+| --------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------- |
+| exit `0`, `outcome: ready`        | worker and cleaner report started | none; a second click is `already-running` with the same pids, not a new worker           |
+| exit `2`, `outcome: refused`      | a role may already have started   | read `roles`, `reason` and `nextAction`; change no credential, share, pid file, or queue |
+| an ambiguous or unexplained state | evidence is incomplete            | stop and hand the agent `docs/runbook.md`                                                |
 
 The typical first failure is `outcome: refused` with `queue-missing`,
 `smb-share-unconfirmed`, or `role-ambiguous`. Report the reason; do not repair.
