@@ -389,10 +389,15 @@ def run(args: argparse.Namespace) -> int:
                                       timeout_seconds=float(args.wait),
                                       poll_seconds=float(args.poll))
     except bridge.FetchTimeout:
+        # The timeout report carries the one verified job readback, so its
+        # overall outcome is that job state (waiting/unknown/refused), never
+        # a second, contradicting projection.
         status = waitmod.status_for_absence(config["queue"], key, job_id)
-        report = _report(config, job_id, local, "unknown", status=status)
+        report = _report(config, job_id, local, status["outcome"], status=status)
         print(json.dumps(report, ensure_ascii=False))
-        return 3
+        if report["outcome"] in (waitmod.WAITING, waitmod.UNKNOWN):
+            return 3
+        return 2
     components = [*local, *_validate_worker(payload, config)]
     if config["scenario"] == "dell-lan":
         components.append(_component(

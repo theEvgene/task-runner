@@ -23,6 +23,7 @@ if str(BRIDGE_DIR) not in sys.path:
     sys.path.insert(0, str(BRIDGE_DIR))
 
 import lan_bridge as bridge  # noqa: E402
+import job_claim  # noqa: E402
 import wait as waitmod  # noqa: E402
 
 _PY_CANDIDATE = r"C:\Users\rb199787\AppData\Local\Programs\Python\Python313\python.exe"
@@ -242,6 +243,70 @@ class RefusalTests(StatusCase):
         self.assertNotIn(missing, message)
         self.assertNotIn(self.key_hex, message)
 
+    def test_tampered_request_is_refused_not_unknown(self):
+        job_id = self.submit()
+        raw_path = Path(self.queue) / "jobs" / f"{job_id}.json"
+        raw = bytearray(raw_path.read_bytes())
+        raw[-3] ^= 0x01
+        raw_path.write_bytes(bytes(raw))
+        status = waitmod.job_status(self.queue, self.key, job_id)
+        self.assert_single_shape(status)
+        self.assert_hygiene(status)
+        self.assertEqual(status["outcome"], "refused")
+        self.assertEqual(status["proof"]["job"], "unverifiable")
+        self.assertNotIn("observedOwner", status)
+        action = status["nextAction"].lower()
+        self.assertIn("queue owner", action)
+        self.assertNotIn("re-read", action)
+        self.assertNotIn("resubmit", action)
+        _, report = waitmod.get_result(
+            self.queue, self.key, job_id, window_timeout=0.2,
+            poll_seconds=0.05, max_windows=1)
+        self.assertEqual(report["outcome"], "refused")
+        self.assertEqual(report["outcome"], report["status"]["outcome"])
+
+    def test_foreign_request_file_is_refused(self):
+        job_id = self.submit()
+        other = self.submit()
+        source = Path(self.queue) / "jobs" / f"{other}.json"
+        (Path(self.queue) / "jobs" / f"{job_id}.json").write_bytes(
+            source.read_bytes())
+        status = waitmod.job_status(self.queue, self.key, job_id)
+        self._assert_one_action(status)
+        self.assertEqual(status["proof"]["job"], "unverifiable")
+
+    def test_wait_cli_refuses_unverifiable_request(self):
+        job_id = self.submit()
+        raw_path = Path(self.queue) / "jobs" / f"{job_id}.json"
+        raw = bytearray(raw_path.read_bytes())
+        raw[40] ^= 0x01
+        raw_path.write_bytes(bytes(raw))
+        proc = run_cli("--queue", self.queue, "--key-file",
+                       str(self.key_file), "--id", job_id,
+                       "--window", "0.2", "--poll", "0.05",
+                       "--max-windows", "1")
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["outcome"], "refused")
+        self.assertIn("REFUSED", proc.stderr)
+        self.assertNotIn("TIMEOUT", proc.stderr)
+        self.assertNotIn(self.key_hex, proc.stdout + proc.stderr)
+
+    def test_lease_with_released_state_is_not_an_owner(self):
+        # Mirrors the review case: a correctly signed claim whose state,
+        # generation and resources the owning worker would refuse must not
+        # be reported as this job's observed owner.
+        job_id = self.submit()
+        claim = claim_record(job_id, job_digest(self.queue, job_id))
+        claim.update(state="released", generation="zz",
+                     resources=["file:C:\\out\\x.csv"])
+        bridge.publish(os.path.join(self.queue, "claims"), job_id,
+                       bridge.seal(claim, self.key))
+        status = waitmod.job_status(self.queue, self.key, job_id)
+        self.assertEqual(status["outcome"], "unknown")
+        self.assertEqual(status["proof"]["lease"], "unverifiable")
+        self.assertNotIn("observedOwner", status)
+        self.assertNotIn("occupied", status)
+
 
 class ReportReuseTests(StatusCase):
     def test_waiter_reports_carry_the_same_shape(self):
@@ -254,12 +319,17 @@ class ReportReuseTests(StatusCase):
         self.assert_single_shape(status)
         self.assert_hygiene(status)
         self.assertEqual(status["outcome"], "waiting")
+        # One job state per report: the top-level outcome mirrors the status.
+        self.assertEqual(report["outcome"], status["outcome"])
         self.assertEqual(report["action"], status["nextAction"])
+        self.assertNotIn("not evidence", report["detail"])
+        self.assertIn("signed lease", report["detail"])
         self.assertNotIn("summary", report)  # one job-state object only
         _, windows_report = waitmod.wait_many_windows(
             self.queue, self.key, job_id, total_timeout=0.2,
             window_timeout=0.1, poll_seconds=0.05)
         self.assertEqual(set(windows_report["status"]), set(status))
+        self.assertEqual(windows_report["outcome"], status["outcome"])
         self.publish_result(job_id, exit_code=0, stdout="late")
         payload, found = waitmod.get_result(
             self.queue, self.key, job_id, window_timeout=2,
@@ -268,6 +338,15 @@ class ReportReuseTests(StatusCase):
         self.assertEqual(found["status"], waitmod.status_from_result(payload))
         self.assertEqual(found["status"]["outcome"], "finished")
         self.assertNotIn("summary", found)
+
+    def test_absent_lease_report_is_unknown_with_one_outcome(self):
+        job_id = self.submit()
+        _, report = waitmod.get_result(
+            self.queue, self.key, job_id, window_timeout=0.2,
+            poll_seconds=0.05, max_windows=1)
+        self.assertEqual(report["outcome"], "unknown")
+        self.assertEqual(report["status"]["outcome"], "unknown")
+        self.assertIn("not evidence the job is running", report["detail"])
 
     def test_status_cli_exit_codes_and_no_secret(self):
         job_id = self.submit()
@@ -288,6 +367,60 @@ class ReportReuseTests(StatusCase):
         self.assertEqual(refused.returncode, 2, refused.stderr)
         self.assertEqual(json.loads(refused.stdout)["outcome"], "refused")
         self.assertNotIn(self.key_hex, refused.stdout + refused.stderr)
+
+
+class SharedClaimShapeTests(StatusCase):
+    """F2: one claim predicate for the worker and the observer."""
+
+    def setUp(self):
+        super().setUp()
+        worker_dir = HERE.parents[1] / "scripts" / "lenovo_worker"
+        if str(worker_dir) not in sys.path:
+            sys.path.insert(0, str(worker_dir))
+        import job_ownership
+        self.worker = job_ownership
+
+    def prepared(self, job_id: str, digest: str, resources=()) -> object:
+        return self.worker.PreparedJob(
+            job_id=job_id, command="cmd", workdir="C:\\s",
+            timeout_seconds=300, output_limit=65536, dialect=None,
+            return_files=[], return_files_invalid=False,
+            resources=resources, envelope_sha256=digest)
+
+    def test_worker_and_observer_reject_the_same_bad_claims(self):
+        job_id = self.submit()
+        digest = job_digest(self.queue, job_id)
+        good = claim_record(job_id, digest)
+        prepared = self.prepared(job_id, digest)
+        self.assertTrue(self.worker.validate_claim(good, prepared))
+        bad = [
+            ("released state", {**good, "state": "released"}),
+            ("short generation", {**good, "generation": "zz"}),
+            ("uppercase generation", {**good, "generation": "AB" * 16}),
+            ("foreign id", {**good, "id": "d" * 32}),
+            ("foreign digest", {**good, "job_envelope_sha256": "f" * 64}),
+            ("boolean pid", {**good, "owner": {"instance": "w", "pid": True}}),
+            ("empty instance", {**good, "owner": {"instance": "", "pid": 1}}),
+        ]
+        for label, claim in bad:
+            with self.subTest(label):
+                self.assertFalse(self.worker.validate_claim(claim, prepared))
+                self.assertFalse(job_claim.claim_matches(
+                    claim, job_id=job_id, job_envelope_sha256=digest))
+
+    def test_resource_set_is_the_only_unverifiable_claim_field(self):
+        # The worker derives its resource set from Lenovo-side workdir
+        # resolution (and an optional signed reservation); the observer
+        # cannot, so it passes resources=None and that check stays with the
+        # owner. Every other field is still checked identically.
+        job_id = self.submit()
+        digest = job_digest(self.queue, job_id)
+        claim = claim_record(job_id, digest)
+        prepared = self.prepared(
+            job_id, digest, resources=("exclusive:global", "working-directory:c:\\s"))
+        self.assertFalse(self.worker.validate_claim(claim, prepared))
+        self.assertTrue(job_claim.claim_matches(
+            claim, job_id=job_id, job_envelope_sha256=digest))
 
 
 if __name__ == "__main__":

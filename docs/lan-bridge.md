@@ -8,9 +8,11 @@ job id. The queue is immutable: a published id is never replaced.
 Canonical client: `scripts/lan_bridge/lan_bridge.py` (stdlib only; protocol
 v1, no crypto change from the reviewed MVP revision). Recovery helpers with
 no protocol change live in `scripts/lan_bridge/wait.py`: windowed resume
-(`wait_many_windows`), non-blocking verified read (`peek_result`),
-confirmed-state classification (`classify_result`,
-`classify_absence`, `summarize_result`) and stage timings (`stage_timings`).
+(`wait_many_windows`), non-blocking verified read (`peek_result`), the one
+job-state readback (`job_status`, `status_from_result`,
+`status_for_absence`), confirmed-state classification (`classify_result`,
+`classify_absence`) and stage timings (`stage_timings`). The older
+`summarize_result` projection was removed so one job has one state shape.
 Nothing here reimplements the envelope, the MAC, or the queue; scenario docs
 (`docs/fresh-base.md`, `docs/pipeline-observer.md`, `docs/dell-lan.md`)
 build their exact commands and call this client. The second agent operation
@@ -99,14 +101,15 @@ python scripts/lan_bridge/get.py \
 One call holds the validated id/key/queue across windows (a single queue
 resolve however many windows it takes) and returns only when a MAC-verified
 result bound to the id is found or a concrete blocker appears (exit `2`:
-unavailable queue, tampered envelope, bad id). `--window` defaults to 60 s,
-`--poll` to the owner default 30 s; `--max-windows 0` (the default) waits
-without a window bound, otherwise expiry is exit `3` unknown with the same
-same-id resume action. Interruption recovery is re-running the same command
-with the same id: nothing is ever published, so a late result sealed under
-the original id verifies normally. `--status` skips the wait and prints one
-`lan-job-status/1` readback (exit `0` finished, `3` waiting/unknown, `2`
-refused); a bounded timeout prints that same object on stdout.
+unavailable queue, tampered envelope, bad id, unverifiable request). `--window`
+defaults to 60 s, `--poll` to the owner default 30 s; `--max-windows 0` (the
+default) waits without a window bound, otherwise expiry is exit `3`
+`waiting`/`unknown` with the same same-id resume action. Interruption recovery
+is re-running the same command with the same id: nothing is ever published, so
+a late result sealed under the original id verifies normally. `--status` skips
+the wait and prints one `lan-job-status/1` readback (exit `0` finished, `3`
+waiting/unknown, `2` refused); a bounded timeout prints that same object on
+stdout.
 
 ## Syntax gate (syntax-only, opt-in per submit)
 
@@ -202,7 +205,8 @@ python scripts/lan_bridge/lan_bridge.py submit \
 - A missing queue dir (wrong path, unmounted share) refuses at once with
   exit `2` (`queue unavailable ... check path/mount`): it never waits the
   full timeout and never claims the job is pending. A present queue dir
-  with no result file yet stays pending (exit `3` unknown, re-read SAME id).
+  with no result file yet is `waiting` when a signed lease holds the job,
+  otherwise `unknown`; both are exit `3` with the same-id resume action.
 - No live second host is proven by shipping this client: the fixture suite
   below is local only. A live run is a separate, explicitly authorized step.
 
@@ -222,10 +226,11 @@ and only for what its fields say (`classify_result`):
 - Any other `status` → verified envelope, **unknown meaning**; never treated
   as success.
 
-No verified result yet (bounded wait expired, exit `3`) is **unknown**: not
-evidence the job is running, done, or failed. The timeout message says so and
-points at re-reading the SAME id. There is no "running" outcome anywhere in
-the client or `wait.py`.
+No verified result yet (bounded wait expired, exit `3`) is `waiting` when a
+signed lease holds the job and `unknown` otherwise: neither is evidence the
+job is running, done, or failed. The timeout message says so and points at
+re-reading the SAME id. There is no "running" outcome anywhere in the client
+or `wait.py`.
 
 ## One verified job status (`lan-job-status/1`)
 
@@ -248,15 +253,30 @@ wording. One shape, one id:
   success apart from worker failure, worker timeout, truncation and unknown
   status.
 - `waiting`: no result, but a signed `lenovo-job-claim/1` bound to this exact
-  job envelope. The lease stays held; `nextAction` re-reads the SAME id and
-  never resubmits or releases it. Nothing here frees a lease on a waiter
-  timeout; that stays a separate, unshipped change.
+  job envelope and to the held state. The claim is checked with the same
+  `job_claim.claim_matches` predicate the owning worker applies (schema,
+  kind, id, owner types, 32-hex generation, digest, state), so the observer
+  cannot report an owner the worker would refuse. The worker-derived resource
+  set is not re-derivable on the observing host and stays the owner's final
+  check. The lease stays held; `nextAction` re-reads the SAME id and never
+  resubmits or releases it. Nothing here frees a lease on a waiter timeout;
+  that stays a separate, unshipped change.
 - `unknown`: no result and no signed lease, or no signed request for the id.
   Never "running"; `nextAction` never resubmits.
 - `refused`: a result file exists but fails its MAC, id or format check (a
   result sealed for another id is refused, never reported as this job's
-  completion). The single action asks the queue owner for the sealed result.
-  An unavailable queue still refuses fast and names no host path.
+  completion), or the signed request itself cannot be verified (a tampered
+  or foreign-id request file is untrusted, not the absent-id `unknown`; no
+  re-read can repair it). The single action asks the queue owner for the
+  sealed file. An unavailable queue still refuses fast and names no host
+  path.
+
+The waiter reports (`wait_many_windows`, `get_result`, `get.py`) keep
+`job_id`, `windows_used`, `probes`/`polls_bound`, `elapsed_s` and `action`,
+and carry that same object as `status`; the report's own `outcome` mirrors
+`status.outcome` on a non-found expiry, so one report never states two job
+states. A found result keeps `outcome: found` and `status.outcome:
+finished`.
 
 Executor truth (issues #33/#36): on the worker, a PowerShell launcher
 command is replaced by an already-valid encoded outer program. That program

@@ -4,7 +4,8 @@ Second agent operation: ``lan_bridge.py submit`` returns a job id; this
 command observes that SAME id across short windows until a confirmed
 terminal result or a concrete blocker. It never publishes, so restarting it
 with the same id after any interruption resumes without duplicating the job.
-Bounded expiry (``--max-windows`` reached) is ``unknown``, never "running".
+Bounded expiry (``--max-windows`` reached) is ``waiting`` when a signed
+lease holds the job, otherwise ``unknown`` -- never "running".
 ``--status`` prints one non-blocking ``lan-job-status/1`` readback -- the same
 shape readiness embeds -- and exits without waiting.
 Stdlib only; no protocol, MAC, queue or key change.
@@ -80,10 +81,11 @@ def main(argv: list[str] | None = None) -> int:
     if payload is None:
         # The single verified readback is the only job-state output; the
         # stderr line stays a bounded hint with no path or key material.
+        refused = report["outcome"] == waitmod.REFUSED
         print(json.dumps(report["status"], ensure_ascii=False))
-        print(f"TIMEOUT waiting for {args.id}: "
+        print(f"{'REFUSED' if refused else 'TIMEOUT'} {args.id}: "
               f"{report['detail']} {report['action']}", file=sys.stderr)
-        return 3
+        return 2 if refused else 3
     bridge._report_confirmed_state(payload)
     print(f"elapsed={elapsed:.1f}s windows={report['windows_used']} "
           f"probes={report['probes']} outcome=verified id={args.id}",
