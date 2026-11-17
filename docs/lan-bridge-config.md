@@ -111,13 +111,14 @@ What each binding actually is (do not equate them):
 - Bridge `submit --cwd` is a separate argument: the worker working
   directory for that job. Read it from the selected route document for
   that run (for example `docs/mr-ready.md` uses the Lenovo checkout;
-  other routes name their own working dir). Never copy
-  `--lenovo-checkout` into `--cwd` unless that route says so.
-  `submit --expected-cwd` is the producer's signed declaration of that same
-  working directory: `dell_request.py` emits it as `expectedCwd` (the pinned
-  `--lenovo-checkout`, or an explicit `--expected-cwd`; `first` pins none),
-  and the worker refuses a provable difference before spawning. A route that
-  declares no expectation stays `unverified-target`, not verified.
+  other routes name their own working dir). `submit --expected-cwd` is the
+  producer's signed declaration of that same directory, never a second
+  source: `dell_request.py` emits it as `expectedCwd` (the pinned
+  `--lenovo-checkout`, or an explicit `--expected-cwd`), and the worker
+  refuses a provable difference before spawning. Pass it with the identical
+  path the route names for `--cwd`, and never a path the route does not
+  name; a route that declares no expectation stays `unverified-target`, not
+  verified.
 - Readiness `lenovo.revision.repository` is only the checkout probed
   with `git -C <repository> rev-parse HEAD` by `scripts/readiness/check.py`;
   `lenovo.cwd` there is only the probe's working directory. Neither is a
@@ -159,6 +160,13 @@ Per-route Lenovo flags (only what each driver accepts):
   as probe `--client-dir`).
 - `release/request.py`: `--node`, `--release-tag`, `--lenovo-checkout`
   (submit `--cwd` is that same checkout per `docs/release.md`).
+
+Per-route target expectation (`submit --expected-cwd`), one declaration per
+writer: `dell_request.py` `base`, `publish`, `transfer`, and
+`publish-existing` declare the pinned `--lenovo-checkout` (or an explicit
+`--expected-cwd`); `dell_request.py first` and the `fresh_base`, `mr_ready`,
+`pipeline_observer`, and `release` writers declare none, so those jobs stay
+`unverified-target`. `scripts/readiness/check.py` never seals one either.
 
 Only the managed Jira read has a config fallback: `lenovo_python`,
 `lenovo_jira_working_dir`, and `jira_instance` from this file's

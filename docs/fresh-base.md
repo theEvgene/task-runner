@@ -48,7 +48,9 @@ python <lan_bridge.py> submit --queue <queue> --key-file <key>
 ```
 
 Prints `JOBID=<32hex>`. Only this client seals jobs; nothing here
-reimplements the envelope, MAC, or queue.
+reimplements the envelope, MAC, or queue. This route's writer emits no target
+expectation, so the job stays `unverified-target` (`--expected-cwd` is not
+derived from the documented `--cwd`).
 
 3. Fixture worker (Lenovo; in production the owner-started worker):
 

@@ -34,8 +34,8 @@ from pathlib import Path
 
 from shell_command import ShellDialectError, build_for_transport
 from dell_request_common import (
-    SingleDialect, add_reconcile_argument, flow_args, render_reconcile,
-    require_absolute_lenovo_paths,
+    SingleDialect, add_common_arguments, add_reconcile_argument, flow_args,
+    render_reconcile, require_absolute_lenovo_paths,
 )
 
 from dell_lan_common import (
@@ -112,6 +112,9 @@ def write_request(args, request: dict, driver: str, dialect: str) -> int:
         driver_path = str(Path(driver_dir) / driver)
     else:
         driver_path = str(Path(args.lenovo_skill_dir) / "scripts" / driver)
+    # Resolve the declared target before the first write: a rejected
+    # --expected-cwd must leave neither the request nor the command file.
+    expected_cwd = expected_working_directory(args, request)
     request_path = out_dir / args.request_name
     text = json.dumps(request, ensure_ascii=False, separators=(",", ":")) + "\n"
     digest = sha256_bytes(text.encode("utf-8"))
@@ -142,7 +145,7 @@ def write_request(args, request: dict, driver: str, dialect: str) -> int:
         "reconcileCommand": reconcile_command,
         "dialect": dialect,
         "receiptScriptPath": driver_path,
-        "expectedCwd": expected_working_directory(args, request),
+        "expectedCwd": expected_cwd,
         "returnFile": str(out_dir / request["manifestName"]) if "manifestName" in request else None,
     }
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
@@ -299,40 +302,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dell_request.py", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    def common(item):
-        item.add_argument("--shared", required=True, help="owner-provided LAN share that holds the queue")
-        item.add_argument("--token", required=True, help="16 lowercase hex request token")
-        item.add_argument("--lenovo-skill-dir", required=True, help="absolute installed skill dir on Lenovo")
-        item.add_argument("--lenovo-driver-dir", default=None,
-                          help="absolute dir holding the Lenovo drivers on that machine "
-                               "(default: <lenovo-skill-dir>/scripts)")
-        item.add_argument("--python", required=True,
-                          help="absolute interpreter path on the Lenovo machine")
-        item.add_argument("--out-dir", help="where to write the request (default: the shared dir)")
-        item.add_argument("--request-name", required=True, help="request file name on the shared dir")
-        item.add_argument("--command-file", required=True, help="UTF-8 command file for the bridge")
-        item.add_argument("--expected-cwd", default=None,
-                          help="absolute Lenovo working directory the job must "
-                               "run in; defaults to the pinned --lenovo-checkout "
-                               "when the route has one, otherwise no expectation")
-        item.add_argument("--repo", help="Dell checkout that must not contain the shared dir")
-
     base = sub.add_parser("base", help="ask Lenovo for the published base bundle")
-    common(base)
+    add_common_arguments(base)
     base.add_argument("--lenovo-checkout", required=True, help="Lenovo checkout to export from")
     base.add_argument("--ref-full", required=True, help="refs/heads/<published base branch>")
     base.set_defaults(func=lambda args: write_request(
         args, base_request(args), "lenovo_base_export.py", "cmd"))
 
     first = sub.add_parser("first", help="ask Lenovo for the first verified copy of a remote branch")
-    common(first)
+    add_common_arguments(first)
     first.add_argument("--remote-url", required=True, help="explicit Git remote URL or path on Lenovo")
     first.add_argument("--ref-full", required=True, help="refs/heads/<branch> to import")
     first.set_defaults(func=lambda args: write_request(
         args, first_request(args), "lenovo_first_export.py", "cmd"))
 
     publish = sub.add_parser("publish", help="ask Lenovo to import and publish the task bundle")
-    common(publish)
+    add_common_arguments(publish)
     publish.add_argument("--dialect", required=True, choices=("cmd", "powershell"),
                          action=SingleDialect,
                          help="shell that will execute the generated command file; never inferred")
@@ -372,7 +357,7 @@ def build_parser() -> argparse.ArgumentParser:
             args, publish_request(args), "lenovo_publish.py", args.dialect))
 
     transfer = sub.add_parser("transfer", help="ask Lenovo to import the task bundle only")
-    common(transfer)
+    add_common_arguments(transfer)
     transfer.add_argument("--dialect", required=True, choices=("cmd", "powershell"),
                           action=SingleDialect,
                           help="shell that will execute the generated command file; never inferred")
@@ -394,7 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     existing = sub.add_parser("publish-existing",
                               help="ask Lenovo to publish a branch that already exists there")
-    common(existing)
+    add_common_arguments(existing)
     existing.add_argument("--dialect", required=True, choices=("cmd", "powershell"),
                           action=SingleDialect,
                           help="shell that will execute the generated command file; never inferred")

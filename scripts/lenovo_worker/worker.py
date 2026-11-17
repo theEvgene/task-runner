@@ -25,6 +25,7 @@ import job_reconciliation
 import job_reservations
 import job_resources
 import job_results
+import job_sealing
 
 WORKER_SCHEMA = "lenovo-worker/1"
 _SYSTEM_SUBPROCESS_RUN = subprocess.run
@@ -175,54 +176,7 @@ def _load_key(key_file: Path, key_format: str, queue: Path) -> bytes | None:
 def _seal_result(queue: Path, key: bytes, job_id: str, **fields) -> str:
     """Seal a result. Returns "sealed", "skipped", or "failed"."""
 
-    payload = {
-        "kind": "result", "id": job_id,
-        "status": fields.get("status", "error"),
-        "exit_code": fields.get("exit_code", 2),
-        "stdout": fields.get("stdout", "") or "",
-        "stderr": fields.get("stderr", "") or "",
-        "started_at": fields.get("started_at", "") or "",
-        "finished_at": fields.get("finished_at") or _now(),
-        "timed_out": bool(fields.get("timed_out", False)),
-        "output_truncated": bool(fields.get("output_truncated", False)),
-        "files": fields.get("files", {}) or {},
-    }
-    for name in ("termination", "signal", "process_exit_code"):
-        if fields.get(name) is not None:
-            payload[name] = fields[name]
-    if fields.get("reconciliation") is not None:
-        payload["reconciliation"] = fields["reconciliation"]
-    job_results.fit_payload(payload)
-    try:
-        bridge.publish(str(queue / "results"), job_id, bridge.seal(payload, key))
-        return "sealed"
-    except bridge.JobExistsError:
-        return "skipped"  # another worker sealed it first: safe direction
-    except Exception as error:
-        message = str(error)
-        if "too large" in message or "exceeds" in message or "limit" in message.lower():
-            # Size refusal must not leave the job unsealed to re-execute:
-            # seal one minimal terminal result instead.
-            fallback = {
-                "kind": "result", "id": job_id, "status": "error",
-                "exit_code": 2, "stdout": "",
-                "stderr": job_results.MIN_FALLBACK_STDERR,
-                "started_at": payload.get("started_at", "") or "",
-                "finished_at": _now(), "timed_out": False,
-                "output_truncated": True, "files": {},
-            }
-            try:
-                bridge.publish(str(queue / "results"), job_id,
-                               bridge.seal(fallback, key))
-                return "sealed"
-            except bridge.JobExistsError:
-                return "skipped"
-            except Exception as fallback_error:
-                print(f"worker: cannot seal result for {job_id} ({fallback_error})",
-                      file=sys.stderr)
-                return "failed"
-        print(f"worker: cannot seal result for {job_id} ({error})", file=sys.stderr)
-        return "failed"
+    return job_sealing.seal_result(queue, key, job_id, bridge, _now, **fields)
 
 
 def _execute(command: str, workdir: str, timeout_s: int, limit: int,

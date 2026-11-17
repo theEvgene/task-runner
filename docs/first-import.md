@@ -73,6 +73,10 @@ python scripts/lan_bridge/lan_bridge.py submit \
   --return-file <lan-share>\dell-first-<16hex>.manifest.json
 ```
 
+This route never presents a working-directory expectation: the `first` writer
+emits `expectedCwd: null`, so the job's target stays `unverified-target` and
+is never reported as verified.
+
 Completion: submit printed one `JOBID=<32hex>`. Save the id before
 waiting: while the outcome is unknown, the slot stays occupied and the
 same id is re-fetched — a second submit would be a NEW id, never a retry

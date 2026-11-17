@@ -41,6 +41,10 @@ python scripts/lan_bridge/lan_bridge.py submit \
   --receipt-script-path <request.json receipt_script_path>
 ```
 
+This route's writer emits no target expectation, so the job stays
+`unverified-target`: do not derive `--expected-cwd` from the documented
+`--cwd`.
+
 The command file contains the worker-supported explicit
 `powershell.exe -NoProfile -NonInteractive -Command` launcher. The signed job
 is the authorization boundary: `--dialect powershell` must be present, and

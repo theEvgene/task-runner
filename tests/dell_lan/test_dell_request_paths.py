@@ -163,6 +163,14 @@ class RequestPathTests(unittest.TestCase):
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertIsNone(json.loads(first.stdout)["expectedCwd"])
 
+    def test_a_relative_expected_cwd_refuses_before_either_file_exists(self):
+        request = self.shared / "publish-request.json"
+        proc = run(self.publish_args(**{"--expected-cwd": "worktree"}))
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("--expected-cwd", proc.stderr)
+        self.assertFalse(request.exists())
+        self.assertFalse(self.command_file.exists())
+
     def test_a_safe_publish_request_embeds_the_exact_interpreter(self):
         proc = run(self.publish_args())
         self.assertEqual(proc.returncode, 0, proc.stderr)

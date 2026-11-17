@@ -49,7 +49,8 @@ The command file holds one PowerShell line (`& '...' '...'`:
 single-quoted, apostrophes doubled, so `$`, backticks, and spaces
 stay literal). Submit it with the existing signed bridge client (`&`
 is required: a line starting with a quoted path is not an invocation
-without it), then verify:
+without it). This route's writer emits no target expectation, so the job's
+working directory stays `unverified-target`, never verified. Then verify:
 
 ```text
 python scripts/pipeline_observer/readback.py \

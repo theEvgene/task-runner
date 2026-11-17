@@ -61,8 +61,8 @@ bridge `--receipt-script-path` and its `expectedCwd` as `--expected-cwd`
 (the same absolute path as bridge `--cwd`). The worker refuses a provable
 working-directory difference before spawning; without an expectation the
 target stays `unverified-target`, never verified. Readback authenticates that
-exact path from the signed job envelope; a matching basename elsewhere is not
-accepted.
+exact receipt-script path from the signed job envelope (it reads no expected
+working directory); a matching basename elsewhere is not accepted.
 
 ## 2. Standalone publication of an existing Lenovo branch (#43)
 
