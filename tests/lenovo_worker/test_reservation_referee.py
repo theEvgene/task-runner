@@ -9,6 +9,11 @@ no live queue. Each test is one independent-review reproduction:
 3. A signed result alone never frees a footprint.
 4. Only a release bound to the generation, resources, job, and exact result
    bytes frees a footprint.
+5. Two concurrent producers cannot both hold one worktree or a nested
+   worktree, while independent footprints are admitted.
+6. A configured capacity quota is counted and a denial names the limiting
+   resource; an unknown quota or unprovable path classification fails
+   closed before publication.
 """
 
 from __future__ import annotations
@@ -43,6 +48,8 @@ class ReservationRefereeTests(unittest.TestCase):
         (self.queue / "jobs").mkdir(parents=True)
         (self.queue / "results").mkdir()
         self.key = bytes(range(32))
+        self.key_file = self.root / "key.bin"
+        self.key_file.write_bytes(self.key)
 
     def now(self) -> str:
         return "2026-11-15T00:00:00+00:00"
@@ -56,11 +63,12 @@ class ReservationRefereeTests(unittest.TestCase):
 
     def reserve(self, job_id: str, claims: list[str], name: str,
                 wait_seconds: float = job_reservations.LOCK_WAIT_SECONDS,
+                capacities: dict[str, int] | None = None,
                 ) -> dict:
         return job_reservations.reserve_and_submit(
             self.queue, self.key, lan_bridge, self.payload(job_id, name),
             claims, "test-producer", os.getpid(), self.now,
-            wait_seconds=wait_seconds)
+            wait_seconds=wait_seconds, capacities=capacities)
 
     def live(self) -> set[str]:
         return {record["id"] for record in job_reservations.live_records(
@@ -128,9 +136,12 @@ class ReservationRefereeTests(unittest.TestCase):
         self.assertFalse(job_lifecycle.resources_overlap(
             (normalize("tcp:127.0.0.1:54321"),),
             (normalize("tcp:127.0.0.1:54322"),)))
-        # The referee boundary refuses, not just the normalizer.
+        # The referee boundary refuses, not just the normalizer, and the
+        # refusal names the limiting port.
         self.reserve("71" * 16, ["tcp:0.0.0.0:54321"], "tcp-a")
-        with self.assertRaises(job_reservations.ReservationRefused):
+        with self.assertRaisesRegex(
+                job_reservations.ReservationRefused,
+                r"resource conflict with job [0-9a-f]{32}: tcp:\*:54321"):
             self.reserve("72" * 16, ["tcp:localhost:54321"], "tcp-b")
         self.assertFalse((self.queue / "jobs" / f"{'72' * 16}.json").exists())
         self.reserve("73" * 16, ["tcp:127.0.0.1:54322"], "tcp-c")
@@ -278,6 +289,142 @@ class ReservationRefereeTests(unittest.TestCase):
             independent, [f"file:{self.root / 'independent.out'}"],
             "independent-workdir")
         self.assertIn(independent, self.live())
+
+    def test_concurrent_owners_cannot_share_one_worktree(self) -> None:
+        # Two real producer processes race for one directory and its nested
+        # path. The queue-local referee serializes the check-and-publish, so
+        # exactly one active claim exists; an independent footprint is still
+        # admitted beside it.
+        shared = self.root / "race-shared"
+        shared.mkdir()
+        claims = (f"file:{shared}", f"file:{shared / 'nested' / 'out.txt'}")
+        ids = ("61" * 16, "62" * 16)
+        producer = self.root / "race_producer.py"
+        producer.write_text(
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "sys.path.insert(0, sys.argv[2])\n"
+            "import job_reservations, lan_bridge\n"
+            "queue = Path(sys.argv[3])\n"
+            "key = Path(sys.argv[4]).read_bytes()\n"
+            "workdir = Path(sys.argv[5])\n"
+            "payload = lan_bridge.build_job_payload(\n"
+            "    job_id=sys.argv[7], command='echo hi',\n"
+            "    working_directory=os.fspath(workdir), timeout_seconds=5)\n"
+            "try:\n"
+            "    job_reservations.reserve_and_submit(\n"
+            "        queue, key, lan_bridge, payload, [sys.argv[6]],\n"
+            "        'race-producer', os.getpid(),\n"
+            "        lambda: '2026-11-15T00:00:00+00:00')\n"
+            "except job_reservations.ReservationRefused as error:\n"
+            "    print('REFUSED=' + str(error))\n"
+            "else:\n"
+            "    print('ADMITTED')\n",
+            encoding="utf-8")
+        commands = []
+        for index, (job_id, claim) in enumerate(zip(ids, claims)):
+            workdir = self.root / f"race-{index}"
+            workdir.mkdir(parents=True, exist_ok=True)
+            commands.append([
+                sys.executable, os.fspath(producer), os.fspath(WORKER_DIR),
+                os.fspath(BRIDGE_DIR), os.fspath(self.queue),
+                os.fspath(self.key_file), os.fspath(workdir), claim, job_id])
+        processes = [
+            subprocess.Popen(command, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+            for command in commands]
+        results = [process.communicate(timeout=30) for process in processes]
+        self.assertEqual([process.returncode for process in processes],
+                         [0, 0], results)
+        lines = [stdout.strip() for stdout, _ in results]
+        self.assertEqual(sum(line == "ADMITTED" for line in lines), 1, lines)
+        refused = [line for line in lines if line.startswith("REFUSED=")]
+        self.assertEqual(len(refused), 1, lines)
+        self.assertIn("resource conflict with job", refused[0])
+        self.assertIn("file:", refused[0])
+        job_files = sorted(path.name for path in
+                           (self.queue / "jobs").glob("*.json"))
+        reservation_files = sorted(path.name for path in
+                                   (self.queue / "reservations").glob("*.json"))
+        self.assertEqual(len(job_files), 1, (job_files, lines))
+        self.assertEqual(reservation_files, job_files, lines)
+        independent = self.reserve(
+            "63" * 16,
+            [f"file:{self.root / 'independent-race' / 'out.txt'}"],
+            "race-independent")
+        self.assertIn(independent["id"], self.live())
+
+    def test_configured_capacity_quota_names_the_limiting_resource(self) -> None:
+        limits = {"heavy-build": 2, "batch": 1}
+        heavy = "capacity:heavy-build"
+        first = self.reserve("71" * 16, [heavy], "cap-a", capacities=limits)
+        second = self.reserve("72" * 16, [heavy], "cap-b", capacities=limits)
+        self.assertIn(heavy, first["resources"])
+        self.assertIn(second["id"], self.live())
+        # A configured quota of two admits two owners, but capacity is
+        # shared under the referee, not exclusive in worker admission.
+        self.assertFalse(job_lifecycle.resources_overlap((heavy,), (heavy,)))
+        with self.assertRaisesRegex(
+                job_reservations.ReservationRefused,
+                r"capacity quota exhausted: capacity:heavy-build "
+                r"\(limit 2, held 2\)"):
+            self.reserve("73" * 16, [heavy], "cap-c", capacities=limits)
+        self.assertFalse((self.queue / "jobs" / f"{'73' * 16}.json").exists())
+        # A stale generation frees nothing: the third owner stays refused.
+        record = job_reservations.read(
+            self.queue, self.key, lan_bridge, "71" * 16,
+            self.job_digest("71" * 16))
+        claim = self.publish_claim("71" * 16, list(record["resources"]),
+                                   "ab" * 16)
+        digest = self.publish_result("71" * 16)
+        self.publish_release("71" * 16, list(record["resources"]),
+                             "cd" * 16, claim["owner"], digest)
+        self.assertIn("71" * 16, self.live())
+        with self.assertRaises(job_reservations.ReservationRefused):
+            self.reserve("74" * 16, [heavy], "cap-d", capacities=limits)
+        # A separate quota is independent, and the exact proof-bound
+        # release frees its slot for the next owner.
+        batch = self.reserve("75" * 16, ["capacity:batch"], "batch-a",
+                             capacities=limits)
+        batch_claim = self.publish_claim("75" * 16, list(batch["resources"]),
+                                         "ef" * 16)
+        batch_digest = self.publish_result("75" * 16)
+        self.publish_release("75" * 16, list(batch["resources"]),
+                             batch_claim["generation"], batch_claim["owner"],
+                             batch_digest)
+        self.assertNotIn("75" * 16, self.live())
+        self.reserve("76" * 16, ["capacity:batch"], "batch-b",
+                     capacities=limits)
+
+    def test_unknown_quota_and_unprovable_classification_fail_closed(self) -> None:
+        with self.assertRaisesRegex(
+                job_reservations.ReservationRefused,
+                r"unknown capacity quota: capacity:heavy-build"):
+            self.reserve("81" * 16, ["capacity:heavy-build"], "quota-unknown")
+        # The supported managed-write submit path configures no capacity, so
+        # the same claim is refused there rather than guessed.
+        with self.assertRaises(lan_bridge.BridgeError) as bridge_refused:
+            lan_bridge.submit_job(
+                os.fspath(self.queue), self.key, "echo hi",
+                os.fspath(self.root / "bridge-capacity"), 5,
+                resource_claims=["capacity:heavy-build"])
+        self.assertIn("unknown capacity quota",
+                      str(bridge_refused.exception))
+        for bad in ({"heavy-build": 0}, {"heavy-build": True},
+                    {"bad name!": 1},
+                    {f"k{index}": 1 for index in range(9)}):
+            with self.assertRaises(job_reservations.ReservationRefused):
+                self.reserve("82" * 16, ["capacity:heavy-build"], "bad-quota",
+                             capacities=bad)
+        for claim in ("file:relative/path", "file:", "tcp:host:notaport",
+                      "fixture:declared", "gpu:0"):
+            with self.assertRaises(job_reservations.ReservationRefused):
+                self.reserve("83" * 16, [claim], "bad-class")
+        for job_id in ("81" * 16, "82" * 16, "83" * 16):
+            self.assertFalse((self.queue / "jobs" / f"{job_id}.json").exists())
+            self.assertFalse(
+                (self.queue / "reservations" / f"{job_id}.json").exists())
 
 
 if __name__ == "__main__":

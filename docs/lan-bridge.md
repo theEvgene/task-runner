@@ -221,6 +221,16 @@ python scripts/lan_bridge/lan_bridge.py submit \
 - Claims are normalized: absolute case-folded paths, and one exclusive
   `tcp:*:<port>` token per port. A wildcard bind, `localhost`, and a
   specific address naming the same port are the same claim.
+- `capacity:<name>` is the only shared claim, and it is never inferred:
+  the referee admits it only when the caller supplies an explicit quota
+  through `job_reservations.reserve_and_submit(..., capacities={...})`.
+  Live holders are counted, an over-limit publish is refused by naming
+  the exhausted resource, and a capacity claim without a configured
+  quota is refused before publication. This CLI exposes only `--claim`;
+  capacity quotas require the referee API.
+- A refusal names the limiting resource: an overlapping port or path
+  token appears in the conflict message, and a quota denial names the
+  resource and its limit.
 - Without `--claim` nothing changes: one direct immutable publish, the
   worker's `exclusive:global` fallback, and sequential execution.
 - Admission alone does not free anything. The worker releases a footprint

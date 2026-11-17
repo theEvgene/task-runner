@@ -147,6 +147,10 @@ local directory that must already exist for both spawned roles.
   contender never steals one. Resource identities are normalized paths plus
   one exclusive `tcp:*:<port>` token per port, so a wildcard bind,
   `localhost`, and a specific address naming that port are the same claim.
+  Explicitly configured `capacity:<name>` claims are shared quotas, never
+  exclusive owners: the referee counts live holders against the quota the
+  caller supplies, names the exhausted resource when it refuses, and refuses
+  a capacity claim with no configured quota.
   The worker re-derives every binding and adds its own normalized working
   directory, so a payload cannot omit the directory it runs in. A
   reservation is live until `queue/releases/<job-id>.json` proves this exact
