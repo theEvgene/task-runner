@@ -4,7 +4,10 @@ Second agent operation: ``lan_bridge.py submit`` returns a job id; this
 command observes that SAME id across short windows until a confirmed
 terminal result or a concrete blocker. It never publishes, so restarting it
 with the same id after any interruption resumes without duplicating the job.
-Bounded expiry (``--max-windows`` reached) is ``unknown``, never "running".
+Bounded expiry (``--max-windows`` reached) is ``waiting`` when a signed
+lease holds the job, otherwise ``unknown`` -- never "running".
+``--status`` prints one non-blocking ``lan-job-status/1`` readback -- the same
+shape readiness embeds -- and exits without waiting.
 Stdlib only; no protocol, MAC, queue or key change.
 """
 
@@ -39,8 +42,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="seconds between queue probes (owner default)")
     parser.add_argument("--max-windows", type=int, default=0,
                         help="window bound; 0 waits without a window bound")
+    parser.add_argument("--status", action="store_true",
+                        help="one non-blocking verified readback, then exit")
     parser.add_argument("--receipt-out", default=None)
     return parser
+
+
+def _status_exit(status: dict) -> int:
+    if status["outcome"] == waitmod.FINISHED:
+        return 0
+    if status["outcome"] == waitmod.REFUSED:
+        return 2
+    return 3
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -49,20 +62,35 @@ def main(argv: list[str] | None = None) -> int:
     started = time.monotonic()
     try:
         key = bridge.load_key(args.key_file, args.key_format, args.queue)
-        payload, report = waitmod.get_result(
-            args.queue, key, args.id,
-            window_timeout=float(args.window),
-            poll_seconds=float(args.poll),
-            max_windows=int(args.max_windows))
+        if args.status:
+            status = waitmod.job_status(args.queue, key, args.id)
+        else:
+            payload, report = waitmod.get_result(
+                args.queue, key, args.id,
+                window_timeout=float(args.window),
+                poll_seconds=float(args.poll),
+                max_windows=int(args.max_windows))
     except (bridge.BridgeError, ValueError, bridge.FileQueueError,
             bridge.ProtocolError) as e:
         print(f"get refused: {e}", file=sys.stderr)
         return 2
+    if args.status:
+        text = json.dumps(status, ensure_ascii=False)
+        if args.receipt_out:
+            out = Path(args.receipt_out)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(text + "\n", encoding="utf-8")
+        print(text)
+        return _status_exit(status)
     elapsed = time.monotonic() - started
     if payload is None:
-        print(f"TIMEOUT waiting for {args.id}: "
+        # The single verified readback is the only job-state output; the
+        # stderr line stays a bounded hint with no path or key material.
+        refused = report["outcome"] == waitmod.REFUSED
+        print(json.dumps(report["status"], ensure_ascii=False))
+        print(f"{'REFUSED' if refused else 'TIMEOUT'} {args.id}: "
               f"{report['detail']} {report['action']}", file=sys.stderr)
-        return 3
+        return 2 if refused else 3
     bridge._report_confirmed_state(payload)
     print(f"elapsed={elapsed:.1f}s windows={report['windows_used']} "
           f"probes={report['probes']} outcome=verified id={args.id}",

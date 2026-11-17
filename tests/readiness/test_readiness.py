@@ -60,9 +60,7 @@ class ReadinessTests(unittest.TestCase):
     def _result(self, job_id: str, state: str = "confirmed") -> dict:
         names = [item["name"] for item in self.config["lenovo"]["components"]]
         names.extend(item["name"] for item in self.config["lenovo"]["tools"])
-        revision = self.config["lenovo"].get("revision")
-        if revision:
-            names.append(revision["name"])
+        # Legacy revision pins are ignored by the probe and never expected here.
         body = {
             "schema": "lenovo-readiness-probe/1",
             "scenario": self.config["scenario"],
@@ -107,6 +105,19 @@ class ReadinessTests(unittest.TestCase):
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
         return thread
+
+    def _publish_claim(self, job_id: str) -> None:
+        raw = bridge.read(self.queue / "jobs", job_id)
+        claim = {
+            "schema": "lenovo-job-claim/1", "kind": "claim", "id": job_id,
+            "owner": {"instance": "lenovo-worker-1", "pid": 5150},
+            "generation": "ab" * 16, "claimed_at": "fixture",
+            "resources": ["exclusive:global", "working-directory:c:\\fixture"],
+            "job_envelope_sha256": hashlib.sha256(raw).hexdigest(),
+            "state": "owned-unknown-until-signed-result",
+        }
+        bridge.publish(self.queue / "claims", job_id,
+                       bridge.seal(claim, self.key))
 
     def _publish_completed_job(self, timeout_seconds: object) -> str:
         submitted = subprocess.run(
@@ -223,6 +234,55 @@ class ReadinessTests(unittest.TestCase):
         job = bridge.open_envelope(raw, self.key, "job", job_id)
         self.assertEqual(job["dialect"], "cmd")
 
+    def test_bounded_wait_embeds_one_meaningful_job_status(self):
+        # F1/F5: the timeout report names one job state only, and its status
+        # member is the same lan-job-status/1 object, not a second wording.
+        first = subprocess.run(self._command("--authorize-lenovo-check"),
+                               capture_output=True, text=True, check=False)
+        self.assertEqual(first.returncode, 3, first.stderr)
+        unknown = json.loads(first.stdout)
+        self.assertEqual(unknown["outcome"], "unknown")
+        self.assertEqual(unknown["status"]["schema"], "lan-job-status/1")
+        self.assertEqual(unknown["outcome"], unknown["status"]["outcome"])
+        self.assertEqual(unknown["nextAction"], unknown["status"]["nextAction"])
+        job_id = unknown["jobId"]
+        self.assertEqual(len(self._wait_job_ids()), 1)
+        self._publish_claim(job_id)
+        waiting = subprocess.run(self._command("--job-id", job_id),
+                                 capture_output=True, text=True, check=False)
+        self.assertEqual(waiting.returncode, 3, waiting.stderr)
+        report = json.loads(waiting.stdout)
+        self.assertEqual(report["outcome"], "waiting")
+        self.assertEqual(report["outcome"], report["status"]["outcome"])
+        self.assertEqual(report["status"]["schema"], "lan-job-status/1")
+        self.assertEqual(report["status"]["jobId"], job_id)
+        self.assertTrue(report["status"]["occupied"])
+        self.assertEqual(report["nextAction"], report["status"]["nextAction"])
+        self.assertIn("never resubmit", report["nextAction"])
+        self.assertNotIn("running", json.dumps(report["status"]).lower())
+        self.assertNotIn(self.key.hex(), waiting.stdout + waiting.stderr)
+        # Same-ID recovery never publishes a second job or releases the lease.
+        self.assertEqual(len(self._wait_job_ids()), 1)
+
+    def test_unverifiable_request_is_refused_at_exit_two(self):
+        # F4: the refused arm reuses the one job status; a request failing its
+        # MAC binding is exit 2, never a waiting or unknown guess.
+        pending = subprocess.Popen(self._command("--authorize-lenovo-check"),
+                                   stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True)
+        job_id = self._wait_job_ids()[0]
+        path = self.queue / "jobs" / f"{job_id}.json"
+        sealed = bytearray(path.read_bytes())
+        sealed[-3] ^= 1
+        path.write_bytes(bytes(sealed))
+        out, err = pending.communicate(timeout=10)
+        self.assertEqual(pending.returncode, 2, out + err)
+        report = json.loads(out)
+        self.assertEqual(report["outcome"], "refused")
+        self.assertEqual(report["outcome"], report["status"]["outcome"])
+        self.assertEqual(report["nextAction"], report["status"]["nextAction"])
+        self.assertEqual(len(self._wait_job_ids()), 1)
+
     def test_timeout_then_same_id_retrieval_never_resubmits(self):
         first = subprocess.run(self._command("--authorize-lenovo-check"),
                                capture_output=True, text=True, check=False)
@@ -268,10 +328,6 @@ class ReadinessTests(unittest.TestCase):
             "components": [{"name": "bridge-client", "type": "file",
                             "path": str(self.marker), "sha256": digest}],
             "tools": [{"name": "python-tool", "command": sys.executable}],
-            "git": "git",
-            "revision": {"name": "task-runner-revision",
-                         "repository": str(ROOT),
-                         "expected": "1ae7474222d62e0c8300fc323112e6401f9109c9"},
         })
         self._write_config()
         first = subprocess.run(self._command("--authorize-lenovo-check"),
@@ -284,7 +340,6 @@ class ReadinessTests(unittest.TestCase):
                 path=str(self.temp / "other-component.txt")),
             lambda cfg: cfg["lenovo"]["components"][0].update(sha256="f" * 64),
             lambda cfg: cfg["lenovo"]["tools"][0].update(command="other-python"),
-            lambda cfg: cfg["lenovo"]["revision"].update(expected="f" * 40),
         )
         for mutate in mutations:
             with self.subTest(mutate=mutate):
@@ -304,12 +359,6 @@ class ReadinessTests(unittest.TestCase):
             "local": {"components": [{"name": "dell-driver", "type": "file",
                                       "path": str(self.marker)}], "tools": []},
         })
-        self.config["lenovo"].update({
-            "git": "git",
-            "revision": {"name": "task-runner-revision",
-                         "repository": str(ROOT),
-                         "expected": "1ae7474222d62e0c8300fc323112e6401f9109c9"},
-        })
         self._write_config()
         worker = self._worker()
         proc = subprocess.run(self._command("--authorize-lenovo-check"),
@@ -322,6 +371,20 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(report["scenario"], "dell-lan")
         self.assertEqual(report["outcome"], "not-ready")
         self.assertEqual(corporate["state"], "unconfirmed")
+
+    def test_legacy_revision_field_is_ignored_not_blocking(self):
+        self.config["lenovo"]["revision"] = {
+            "name": "task-runner-revision",
+            "repository": str(ROOT),
+            "expected": "f" * 40,
+        }
+        self._write_config()
+        worker = self._worker()
+        proc = subprocess.run(self._command("--authorize-lenovo-check"),
+                              capture_output=True, text=True, check=False)
+        worker.join(2)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["outcome"], "ready")
 
     def test_parallel_checks_have_distinct_immutable_jobs(self):
         worker = self._worker(count=2)
@@ -339,6 +402,18 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(len(ids), 2)
         self.assertEqual(set(self._wait_job_ids(2)), ids)
         self.assertEqual({path.stem for path in (self.queue / "results").glob("*.json")}, ids)
+
+    def test_uncertain_preflight_reports_one_reason_and_publishes_nothing(self):
+        shutil.rmtree(self.queue)
+        proc = subprocess.run(self._command("--authorize-lenovo-check"),
+                              capture_output=True, text=True, check=False)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        report = json.loads(proc.stdout)
+        self.assertEqual(report["outcome"], "not-ready")
+        self.assertEqual(report["reason"], "queue-missing")
+        self.assertTrue(report["nextAction"])
+        self.assertFalse(self.queue.exists())  # no empty queue, no signed job
+        self.assertNotIn(str(self.temp), proc.stdout + proc.stderr)
 
 
 if __name__ == "__main__":

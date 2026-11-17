@@ -151,6 +151,29 @@ class SubmitGateTests(unittest.TestCase):
             self.key, "job", job_id)
         self.assertEqual(payload["receipt_script_path"], intended)
 
+    def test_expected_working_directory_is_authenticated_exactly(self):
+        gate._ADAPTERS["stub"] = _stub_valid
+        intended = r"C:\lenovo\checkout"
+        job_id = bridge.submit_job(
+            self.queue, self.key, "python x.py", "C:\\s",
+            dialect="stub", expected_working_directory=intended)
+        payload = bridge.open_envelope(
+            bridge.read(str(Path(self.queue) / "jobs"), job_id),
+            self.key, "job", job_id)
+        self.assertEqual(payload["expected_working_directory"], intended)
+        refused = self._cli_submit("dir C:\\x", "--dialect", "cmd",
+                                   "--expected-cwd", "relative-dir")
+        self.assertEqual(refused.returncode, 2, refused.stderr)
+        self.assertNotIn("JOBID=", refused.stdout)
+        cli = self._cli_submit("dir C:\\x", "--dialect", "cmd",
+                               "--expected-cwd", intended)
+        self.assertEqual(cli.returncode, 0, cli.stderr)
+        cli_id = cli.stdout.strip().split("JOBID=", 1)[1].strip()
+        sealed = bridge.open_envelope(
+            bridge.read(str(Path(self.queue) / "jobs"), cli_id),
+            self.key, "job", cli_id)
+        self.assertEqual(sealed["expected_working_directory"], intended)
+
     def test_cli_cmd_refusal_before_write_without_secrets(self):
         secret = "TOPSECRET_ZXCV_9876"
         proc = self._cli_submit(f"& 'C:\\a.py' '{secret}'",

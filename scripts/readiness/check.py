@@ -20,54 +20,20 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 BRIDGE_DIR = HERE.parent / "lan_bridge"
-if str(BRIDGE_DIR) not in sys.path:
-    sys.path.insert(0, str(BRIDGE_DIR))
+WORKER_DIR = HERE.parent / "lenovo_worker"
+sys.path[:0] = [str(item) for item in (BRIDGE_DIR, WORKER_DIR, HERE)
+                if str(item) not in sys.path]
 
 import lan_bridge as bridge  # noqa: E402
+import reasons  # noqa: E402  (single owner of local refusal reasons)
+import wait as waitmod  # noqa: E402  (single owner of job-state wording)
+# Only the Lenovo-side probe program text lives in ``remote_probe``; this
+# Dell-side orchestration keeps one module per job, inside the token guard.
+from remote_probe import PROGRAM as REMOTE_PROBE  # noqa: E402
 
 SCHEMA = "lan-readiness-config/1"
 REPORT_SCHEMA = "lan-readiness-report/1"
 SCENARIOS = ("lan-bridge", "dell-lan")
-
-# Runs only on Lenovo.  The program performs local filesystem/process lookup
-# and git object-database reads.  It has no network operation and writes no
-# file.  Its input contains paths, but its JSON output contains component
-# names and states only.
-REMOTE_PROBE = r'''import hashlib,json,shutil,subprocess,sys
-from pathlib import Path
-cfg=json.loads(__import__("base64").b64decode(sys.argv[1]).decode("utf-8"))
-out=[]
-def add(name,state,reason,next_action):
- out.append({"name":name,"location":"lenovo","state":state,"reason":reason,"nextAction":next_action})
-def path_check(item):
- p=Path(item["path"]); kind=item["type"]
- ok=p.is_file() if kind=="file" else p.is_dir()
- if not ok:
-  add(item["name"],"missing",kind+" is absent","provide the required "+item["name"]); return
- expected=item.get("sha256")
- if expected:
-  try: actual=hashlib.sha256(p.read_bytes()).hexdigest()
-  except OSError:
-   add(item["name"],"unconfirmed","file could not be read","restore readable access"); return
-  if actual!=expected:
-   add(item["name"],"stale","digest differs from the selected revision","update "+item["name"]); return
- add(item["name"],"confirmed",kind+" is present"+(" at the expected digest" if expected else ""),"none")
-for item in cfg.get("components",[]): path_check(item)
-for item in cfg.get("tools",[]):
- command=item["command"]
- found=(Path(command).is_file() if Path(command).is_absolute() else shutil.which(command) is not None)
- add(item["name"],"confirmed" if found else "missing","executable is available" if found else "executable is absent","none" if found else "install or select the required executable")
-revision=cfg.get("revision")
-if revision:
- try:
-  run=subprocess.run([cfg["git"],"-C",revision["repository"],"rev-parse","HEAD"],capture_output=True,text=True,timeout=15,check=False)
-  actual=run.stdout.strip().lower()
-  if run.returncode!=0 or len(actual)!=40: add(revision["name"],"unconfirmed","revision could not be read","repair the local checkout")
-  elif actual!=revision["expected"]: add(revision["name"],"stale","checkout revision differs from expected","update the Lenovo checkout")
-  else: add(revision["name"],"confirmed","checkout is at the expected revision","none")
- except Exception: add(revision["name"],"unconfirmed","revision probe failed","repair the local checkout")
-print(json.dumps({"schema":"lenovo-readiness-probe/1","scenario":cfg["scenario"],"components":out},separators=(",",":")))
-'''
 
 
 class Refusal(Exception):
@@ -144,29 +110,17 @@ def validate_config(raw: dict) -> dict:
     }
     if config["keyFormat"] not in ("raw", "base64"):
         raise Refusal("keyFormat must be raw or base64")
-    revision = lenovo.get("revision")
-    if revision is not None:
-        if not isinstance(revision, dict):
-            raise Refusal("lenovo revision must be an object")
-        expected = _string(revision, "expected").lower()
-        if len(expected) != 40 or any(c not in "0123456789abcdef" for c in expected):
-            raise Refusal("lenovo revision expected value must be 40 hex")
-        config["lenovo"]["revision"] = {
-            "name": _string(revision, "name"),
-            "repository": _string(revision, "repository"),
-            "expected": expected,
-        }
-        config["lenovo"]["git"] = _string(lenovo, "git")
+    if "revision" in (lenovo or {}):
+        # Removed blocker: the stale HEAD-vs-configured Task Runner pin no
+        # longer gates LAN operation. Old configs may still carry the field;
+        # it is ignored and never probed.
+        pass
     if scenario == "dell-lan":
         if not config["local"]["components"] or not config["lenovo"]["components"]:
             raise Refusal("dell-lan requires explicit local and Lenovo components")
-        if revision is None:
-            raise Refusal("dell-lan requires the expected Lenovo checkout revision")
     for side in ("local", "lenovo"):
         names = [item["name"] for item in config[side]["components"]]
         names.extend(item["name"] for item in config[side]["tools"])
-        if side == "lenovo" and "revision" in config[side]:
-            names.append(config[side]["revision"]["name"])
         if len(names) != len(set(names)):
             raise Refusal(f"{side} component names must be unique")
     return config
@@ -242,17 +196,26 @@ def _remote_command(config: dict) -> str:
 
 
 def _report(config: dict, job_id: str, components: list[dict],
-            outcome: str | None = None) -> dict:
+            outcome: str | None = None, status: dict | None = None) -> dict:
     states = [item["state"] for item in components]
     final = outcome or ("ready" if states and all(x == "confirmed" for x in states)
                         else "not-ready")
     failing = next((item for item in components if item["state"] != "confirmed"), None)
-    action = "proceed with the selected scenario" if final == "ready" else (
-        failing["nextAction"] if failing else
-        f"re-read the SAME id {job_id}; never resubmit while outcome is unknown")
-    return {"schema": REPORT_SCHEMA, "scenario": config["scenario"],
-            "jobId": job_id, "outcome": final,
-            "components": components, "nextAction": action}
+    if final == "ready":
+        action = "proceed with the selected scenario"
+    elif failing is not None:
+        action = failing["nextAction"]
+    elif status is not None:
+        # The job-state wording lives in wait.py only; never restated here.
+        action = status["nextAction"]
+    else:
+        action = "stop and report the readiness blocker to the owner"
+    report = {"schema": REPORT_SCHEMA, "scenario": config["scenario"],
+              "jobId": job_id, "outcome": final,
+              "components": components, "nextAction": action}
+    if status is not None:
+        report["status"] = status
+    return report
 
 
 def _validate_worker(payload: dict, config: dict) -> list[dict]:
@@ -283,16 +246,13 @@ def _validate_worker(payload: dict, config: dict) -> list[dict]:
         raise Refusal("verified worker result is not bound to the selected readiness scenario")
     allowed = {item["name"] for item in config["lenovo"]["components"]}
     allowed.update(item["name"] for item in config["lenovo"]["tools"])
-    if "revision" in config["lenovo"]:
-        allowed.add(config["lenovo"]["revision"]["name"])
     raw_components = body["components"]
     if any(not isinstance(item, dict) or item.get("name") not in allowed
            or item.get("state") not in ("confirmed", "missing", "stale", "unconfirmed")
            for item in raw_components):
         raise Refusal("verified worker result contains an unexpected component")
     expected_count = (len(config["lenovo"]["components"])
-                      + len(config["lenovo"]["tools"])
-                      + (1 if "revision" in config["lenovo"] else 0))
+                      + len(config["lenovo"]["tools"]))
     if (len(raw_components) != expected_count
             or len({x["name"] for x in raw_components}) != expected_count):
         raise Refusal("verified worker result omitted or duplicated a required component")
@@ -348,6 +308,18 @@ def _validate_submitted_checklist(config: dict, key: bytes, job_id: str) -> None
             "existing job is not bound to the exact selected readiness checklist")
 
 
+def _local_observations(config: dict, components: list[dict]) -> dict:
+    state = {item["name"]: item["state"] for item in components}
+
+    def confirmed(items: list[dict]) -> bool:
+        return all(state.get(item["name"]) == "confirmed" for item in items)
+
+    return {"queuePresent": state.get("signed-queue") == "confirmed",
+            "keyPresent": state.get("queue-key") == "confirmed",
+            "componentPresent": confirmed(config["local"]["components"]),
+            "toolPresent": confirmed(config["local"]["tools"])}
+
+
 def run(args: argparse.Namespace) -> int:
     config_path = Path(args.config).resolve()
     repo_root = bridge.find_repo_root()
@@ -361,7 +333,15 @@ def run(args: argparse.Namespace) -> int:
     config = validate_config(_object(config_path))
     local = local_checks(config)
     if any(item["state"] != "confirmed" for item in local):
-        print(json.dumps(_report(config, "not-submitted", local), ensure_ascii=False))
+        # An uncertain preflight never submits a signed job.
+        observations = _local_observations(config, local)
+        described = reasons.describe(reasons.classify_local(observations)
+                                     or reasons.Refusal("preflight-incomplete",
+                                                        observations=observations))
+        report = _report(config, "not-submitted", local)
+        report["reason"] = described["reason"]
+        report["nextAction"] = described["nextAction"]
+        print(json.dumps(report, ensure_ascii=False))
         return 1
     key = bridge.load_key(config["keyFile"], config["keyFormat"], config["queue"])
     if args.job_id:
@@ -379,18 +359,24 @@ def run(args: argparse.Namespace) -> int:
                                       timeout_seconds=float(args.wait),
                                       poll_seconds=float(args.poll))
     except bridge.FetchTimeout:
-        report = _report(config, job_id, local, "unknown")
-        report["nextAction"] = (f"re-run with --job-id {job_id}; "
-                                "never resubmit while outcome is unknown")
+        # The timeout report carries the one verified job readback, so its
+        # overall outcome is that job state (waiting/unknown/refused), never a
+        # second, contradicting projection.  `reason` stays a preflight field:
+        # job-state wording lives in wait.py only and is never restated here.
+        status = waitmod.status_for_absence(config["queue"], key, job_id)
+        report = _report(config, job_id, local, status["outcome"], status=status)
         print(json.dumps(report, ensure_ascii=False))
-        return 3
+        if report["outcome"] in (waitmod.WAITING, waitmod.UNKNOWN):
+            return 3
+        return 2
     components = [*local, *_validate_worker(payload, config)]
     if config["scenario"] == "dell-lan":
         components.append(_component(
             "corporate-access", "lenovo", "unconfirmed",
             "filesystem readiness does not prove credentials or service availability",
             "perform the separately authorized live corporate preflight on Lenovo"))
-    report = _report(config, job_id, components)
+    report = _report(config, job_id, components,
+                     status=waitmod.status_from_result(payload))
     print(json.dumps(report, ensure_ascii=False))
     return 0 if report["outcome"] == "ready" else 1
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 import uuid
@@ -14,6 +15,26 @@ import job_lifecycle
 CLAIM_SCHEMA = "lenovo-job-claim/1"
 START_SCHEMA = "lenovo-job-start/1"
 ID_SUFFIX = ".json"
+
+_CLAIM_SHAPE = None
+
+
+def _claim_shape() -> object:
+    """The shared claim predicate from the canonical bridge client.
+
+    Loaded by path (like the bridge itself) so this module never depends on
+    import order or on a copy of the claim fields here. One predicate means
+    the worker and an observer cannot drift into two validators.
+    """
+    global _CLAIM_SHAPE
+    if _CLAIM_SHAPE is None:
+        path = Path(__file__).resolve().parent.parent / "lan_bridge" / "job_claim.py"
+        spec = importlib.util.spec_from_file_location(
+            "lenovo_worker_job_claim", str(path))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _CLAIM_SHAPE = module
+    return _CLAIM_SHAPE
 
 
 @dataclass(frozen=True)
@@ -54,20 +75,10 @@ def batch_exit(counts: dict) -> int:
 
 
 def validate_claim(payload: dict, prepared: PreparedJob) -> bool:
-    owner = payload.get("owner")
-    generation = payload.get("generation")
-    return (
-        payload.get("schema") == CLAIM_SCHEMA
-        and payload.get("kind") == "claim"
-        and payload.get("id") == prepared.job_id
-        and isinstance(owner, dict)
-        and isinstance(owner.get("instance"), str) and owner["instance"]
-        and isinstance(owner.get("pid"), int) and not isinstance(owner["pid"], bool)
-        and isinstance(generation, str) and len(generation) == 32
-        and all(c in "0123456789abcdef" for c in generation)
-        and payload.get("resources") == list(prepared.resources)
-        and payload.get("job_envelope_sha256") == prepared.envelope_sha256
-        and payload.get("state") == "owned-unknown-until-signed-result")
+    return _claim_shape().claim_matches(
+        payload, job_id=prepared.job_id,
+        job_envelope_sha256=prepared.envelope_sha256,
+        resources=prepared.resources)
 
 
 def read_claim(queue: Path, prepared: PreparedJob, bridge: object,

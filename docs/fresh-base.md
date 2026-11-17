@@ -48,7 +48,9 @@ python <lan_bridge.py> submit --queue <queue> --key-file <key>
 ```
 
 Prints `JOBID=<32hex>`. Only this client seals jobs; nothing here
-reimplements the envelope, MAC, or queue.
+reimplements the envelope, MAC, or queue. This route's writer emits no target
+expectation, so the job stays `unverified-target` (`--expected-cwd` is not
+derived from the documented `--cwd`).
 
 3. Fixture worker (Lenovo; in production the owner-started worker):
 
@@ -89,10 +91,11 @@ node scripts/fresh_base/preflight.mjs --queue <queue> --key-file <key>
 
 - `import-base`: `0 imported` (receipt `fresh-base-import/1` binds repo,
   branch, verified SHA, copy HEAD); `1` refused/mismatch (nothing created);
-  `2` usage; `3` unknown — slot stays occupied, re-fetch the SAME job id,
-  never a new one.
+  `2` usage; `3` unknown — slot stays occupied, re-fetch the SAME job id on
+  the same 30 s / 10-minute watch per `docs/lan-bridge.md` "Observation rule",
+  never a new one WHILE the outcome is unknown.
 - `preflight`: `0` fresh; `2` moved/stale (rebase required); `1` verify
-  failure; `3` unknown (re-fetch the SAME job id).
+  failure; `3` unknown (re-fetch the SAME job id per that rule).
 - `create-worktree`: `0` with `HEAD == baseSha` written to the explicit
   `--receipt-out`; `1` otherwise; missing `--receipt-out` is a usage error.
   The input receipt is never modified.

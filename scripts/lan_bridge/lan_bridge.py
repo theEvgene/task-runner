@@ -21,70 +21,36 @@ import hashlib
 import hmac
 import json
 import os
-import re
 import sys
-import tempfile
 import time
 from pathlib import Path
 
 import syntax as _syn
+# The error taxonomy and the immutable file queue live in their own modules.
+# They are imported here too: callers hold this module as the one bridge handle
+# (`bridge.JobExistsError`, `bridge.read`, ...), and the queue keeps raising
+# the same classes the envelope layer raises.
+from bridge_errors import (
+    AtomicPublishNotSupportedError, BridgeError, FetchTimeout, FileQueueError,
+    InvalidJobIdError, JobExistsError, JobNotFoundError, ProtocolError,
+    SizeLimitError, UnsafePathError,
+)
+from file_queue import (
+    DEFAULT_READ_MAX, JOB_ID_RE, _validate_job_id, publish, read,
+)
 from job_payload import build_job_payload
 
 MAX_ENVELOPE_BYTES = 2 * 1024 * 1024
 KEY_BYTES = 32
-PUBLISH_MAX = 2 * 1024 * 1024
-DEFAULT_READ_MAX = 2 * 1024 * 1024
 # Owner wait defaults (#12/#13): fetch waits up to 240 s, checking every
 # 30 s. Explicit --timeout/--poll stay allowed (shorter or longer). This is
 # the *result wait*; `submit --timeout` separately limits remote execution.
 DEFAULT_FETCH_TIMEOUT_SECONDS = 240.0
 DEFAULT_FETCH_POLL_SECONDS = 30.0
 
-_JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
-
-
-class BridgeError(Exception):
-    """Base error for this bridge."""
-
-
-class ProtocolError(BridgeError):
-    pass
-
-
-class FileQueueError(BridgeError):
-    """Base error for the file queue."""
-
-
-class InvalidJobIdError(FileQueueError):
-    pass
-
-
-class JobExistsError(FileQueueError):
-    """Job already exists and is immutable (no duplicate execution)."""
-
-
-class JobNotFoundError(FileQueueError):
-    pass
-
-
-class SizeLimitError(FileQueueError):
-    pass
-
-
-class UnsafePathError(FileQueueError):
-    pass
-
-
-class AtomicPublishNotSupportedError(FileQueueError):
-    pass
-
-
-class FetchTimeout(BridgeError):
-    pass
-
 
 def _is_hex32(value: str) -> bool:
-    return isinstance(value, str) and _JOB_ID_RE.fullmatch(value) is not None
+    return isinstance(value, str) and JOB_ID_RE.fullmatch(value) is not None
 
 
 def _validate_key(key: bytes) -> None:
@@ -208,106 +174,6 @@ def build_result_payload(job_id: str, status: str, exit_code: int | None = None,
             "output_truncated": bool(output_truncated), "files": files}
 
 
-def _validate_job_id(job_id: str) -> None:
-    if not isinstance(job_id, str) or _JOB_ID_RE.fullmatch(job_id) is None:
-        raise InvalidJobIdError("job_id must be exactly 32 lowercase hex")
-    if job_id in (".", ".."):
-        raise UnsafePathError("unsafe job_id")
-
-
-def _safe_join(directory: str | os.PathLike, filename: str) -> Path:
-    base = Path(directory).resolve()
-    target = (base / filename).resolve()
-    try:
-        target.relative_to(base)
-    except ValueError as e:
-        raise UnsafePathError("path traversal detected") from e
-    return target
-
-
-def publish(directory: str | os.PathLike, job_id: str, data: bytes) -> Path:
-    """Publish ``data`` as immutable ``<id>.json``; never replaces (no dup)."""
-    if isinstance(data, bool) or not isinstance(data, (bytes, bytearray)):
-        raise TypeError("data must be bytes")
-    data_b = bytes(data)
-    if len(data_b) > PUBLISH_MAX:
-        raise SizeLimitError("data exceeds publish limit")
-    _validate_job_id(job_id)
-    base = Path(directory)
-    base.mkdir(parents=True, exist_ok=True)
-    base_resolved = base.resolve()
-    final_path = _safe_join(base_resolved, f"{job_id}.json")
-    if final_path.exists():
-        raise JobExistsError(f"job {job_id} already exists")
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{job_id}.",
-                                    suffix=".tmp", dir=str(base_resolved))
-    tmp_path = Path(tmp_name)
-    try:
-        os.close(fd)
-        with tmp_path.open("wb") as fh:
-            fh.write(data_b)
-            fh.flush()
-            try:
-                os.fsync(fh.fileno())
-            except OSError:
-                pass
-        try:
-            if os.name == "nt":
-                try:
-                    os.rename(str(tmp_path), str(final_path))
-                except FileExistsError as e:
-                    raise JobExistsError(f"job {job_id} already exists") from e
-            else:
-                try:
-                    os.link(str(tmp_path), str(final_path))
-                except FileExistsError as e:
-                    raise JobExistsError(f"job {job_id} already exists") from e
-                except OSError as e:
-                    raise AtomicPublishNotSupportedError(
-                        "POSIX atomic no-clobber requires link(2)") from e
-                try:
-                    os.unlink(str(tmp_path))
-                except OSError:
-                    pass
-        except (JobExistsError, AtomicPublishNotSupportedError):
-            raise
-        except OSError as e:
-            raise AtomicPublishNotSupportedError(
-                "atomic no-clobber publish unsupported on this filesystem") from e
-        return final_path
-    finally:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
-
-
-def read(directory: str | os.PathLike, job_id: str,
-         max_bytes: int = DEFAULT_READ_MAX) -> bytes:
-    """Read ``<id>.json`` bytes; never consumes ``.tmp`` files."""
-    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int):
-        raise ValueError("max_bytes must be non-negative int")
-    if max_bytes < 0:
-        raise ValueError("max_bytes must be non-negative int")
-    _validate_job_id(job_id)
-    final_path = _safe_join(Path(directory).resolve(), f"{job_id}.json")
-    try:
-        size = final_path.stat().st_size
-    except OSError as e:
-        raise JobNotFoundError(f"job {job_id} not found") from e
-    if size > max_bytes:
-        raise SizeLimitError("job exceeds max_bytes")
-    try:
-        with final_path.open("rb") as fh:
-            data = fh.read(max_bytes + 1)
-    except OSError as e:
-        raise JobNotFoundError(f"job {job_id} not found") from e
-    if len(data) > max_bytes:
-        raise SizeLimitError("job exceeds max_bytes")
-    return data
-
-
 def find_repo_root(start: str | os.PathLike | None = None) -> Path | None:
     current = Path(start).resolve() if start else Path(__file__).resolve().parent
     for candidate in (current, *current.parents):
@@ -355,12 +221,16 @@ def submit_job(queue_dir: str, key: bytes, command: str,
                max_output_bytes: int = 65536,
                return_files: list | None = None, dialect=None,
                receipt_script_path: str | None = None,
-               resource_claims: list | None = None) -> str:
+               resource_claims: list | None = None,
+               expected_working_directory: str | None = None) -> str:
     """Seal the command payload and publish it immutably; return the job id.
 
     ``resource_claims`` publishes the signed reservation together with the
     job under the queue-local referee; conflicts refuse before publication.
-    Without claims the legacy path is unchanged.
+    ``expected_working_directory`` is the producer's declared target: the
+    worker refuses a job whose signed expectation differs from its working
+    directory before claiming or spawning anything. Without it the target
+    stays unverified rather than "assumed equal".
     """
 
     _syn.enforce(command, dialect, BridgeError)
@@ -370,7 +240,8 @@ def submit_job(queue_dir: str, key: bytes, command: str,
                                 timeout_seconds=timeout_seconds,
                                 max_output_bytes=max_output_bytes,
                                 return_files=return_files, dialect=dialect,
-                                receipt_script_path=receipt_script_path)
+                                receipt_script_path=receipt_script_path,
+                                expected_working_directory=expected_working_directory)
     if resource_claims is None:
         publish(str(Path(queue_dir) / "jobs"), job_id, seal(payload, key))
         return job_id
@@ -394,10 +265,10 @@ def _validate_wait(timeout_seconds: float, poll_seconds: float) -> None:
 def _require_queue(queue_dir: str) -> str:
     q = Path(queue_dir)
     if not q.is_dir():
-        raise BridgeError(f"queue unavailable at {queue_dir}: check path/mount")
+        raise BridgeError("queue unavailable: check path/mount")
     r = q / "results"
     if r.exists() and not r.is_dir():
-        raise BridgeError(f"queue unavailable at {r}: check path/mount")
+        raise BridgeError("queue results path unavailable: check path/mount")
     return str(r.resolve())
 
 
@@ -451,7 +322,8 @@ def cmd_submit(args: argparse.Namespace) -> int:
                             int(args.timeout), int(args.max_output),
                             return_files, args.dialect,
                             args.receipt_script_path,
-                            resource_claims=args.claim)
+                            resource_claims=args.claim,
+                            expected_working_directory=args.expected_cwd)
     except (BridgeError, ValueError, TypeError,
             FileQueueError, ProtocolError) as e:
         print(f"submit refused: {e}", file=sys.stderr)
@@ -523,6 +395,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_submit.add_argument(
         "--receipt-script-path", default=None,
         help="absolute intended receipt-producing script path, sealed into the job",
+    )
+    p_submit.add_argument(
+        "--expected-cwd", default=None,
+        help="absolute expected working directory on the worker, sealed into "
+             "the job; the worker refuses a job whose --cwd differs before "
+             "spawning, and an omitted value leaves the target unverified",
     )
     p_submit.add_argument("--claim", action="append",
                           help="managed-write footprint (repeatable)")

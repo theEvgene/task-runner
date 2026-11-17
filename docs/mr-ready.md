@@ -41,6 +41,10 @@ python scripts/lan_bridge/lan_bridge.py submit \
   --receipt-script-path <request.json receipt_script_path>
 ```
 
+This route's writer emits no target expectation, so the job stays
+`unverified-target`: do not derive `--expected-cwd` from the documented
+`--cwd`.
+
 The command file contains the worker-supported explicit
 `powershell.exe -NoProfile -NonInteractive -Command` launcher. The signed job
 is the authorization boundary: `--dialect powershell` must be present, and
@@ -75,7 +79,9 @@ the readback stays `blocked`: publish that new SHA through the separately
 authorized normal publication flow, then run this scenario again. Old
 pipeline evidence cannot confirm the new head.
 
-For `unknown`, re-fetch the same immutable job id and reconcile the live MR
+For `unknown`, re-fetch the same immutable job id on the same 30 s /
+10-minute watch per `docs/lan-bridge.md` "Observation rule" (short expiry is
+unknown) and reconcile the live MR
 before any new write. A receipt such as `publish_landed_unconfirmed` is never
 reported as confirmed Ready even when readback suggests the write may have
 landed.

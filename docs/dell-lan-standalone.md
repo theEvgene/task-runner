@@ -57,8 +57,12 @@ or unreadable reconciliation remains `unknown`;
 keep the same job slot and never submit a blind duplicate.
 
 Submit the generated command with its returned `receiptScriptPath` as the
-bridge `--receipt-script-path`. Readback authenticates that exact path from
-the signed job envelope; a matching basename elsewhere is not accepted.
+bridge `--receipt-script-path` and its `expectedCwd` as `--expected-cwd`
+(the same absolute path as bridge `--cwd`). The worker refuses a provable
+working-directory difference before spawning; without an expectation the
+target stays `unverified-target`, never verified. Readback authenticates that
+exact receipt-script path from the signed job envelope (it reads no expected
+working directory); a matching basename elsewhere is not accepted.
 
 ## 2. Standalone publication of an existing Lenovo branch (#43)
 
