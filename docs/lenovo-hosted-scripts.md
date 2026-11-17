@@ -88,14 +88,27 @@ python scripts/lan_bridge/get.py --queue <queue-dir> --key-file <key-path> --id 
 Recovery is same-id only (`fetch`/`get.py` with the same JOBID); a second
 submit while the outcome is unknown is a new id, never a retry.
 
-## Acceptance (bridge first, CLI second)
+## Acceptance (transport first, receipt authoritative)
 
-1. Bridge: accept only a MAC-verified result bound to the JOBID with
-   `completed`/`ok`, integer `exit_code == 0`, no `timed_out`, no
-   `output_truncated` (`classify_result` in `docs/lan-bridge.md`). Anything
-   else is worker failure, timeout, truncation, or unknown; an unrecognized
-   `status` is unknown, never success.
-2. CLI: apply the operation's own receipt on top of the verified envelope.
+1. Transport: accept only a MAC-verified result bound to the JOBID with
+   `completed`/`ok`, no `timed_out`, no `output_truncated`
+   (`classify_result` in `docs/lan-bridge.md`). An unrecognized `status`
+   is unknown, never success. The envelope `exit_code` is a transport
+   outcome, not the CLI verdict: `0` means the worker process reported
+   success, nonzero means the worker process reported something else —
+   the exact CLI state always comes from the stdout receipt, never from
+   the envelope code alone.
+2. CLI: the stdout receipt `state` is authoritative for Jira/DCO runs.
+   Parse the receipt JSON first. `Completed` (CLI exit `0`) is the only
+   success; `AwaitingConfirmation` (CLI exit `3`: Jira write plans and
+   DCO `apply` preflight) is an expected non-success plan state, not a
+   transport failure — continue the two-phase flow with `--confirm`
+   instead of treating the envelope as failed. The other stable
+   non-success states are decided by the receipt with the per-operation
+   readback below: `MissingRequiredFields`/`Duplicate` (CLI exit `4`),
+   Jira incomplete extraction (CLI exit `6`), DCO `FailedTest` (CLI exit
+   `6`), DCO `Partial` (CLI exit `7`). Exit tables live in
+   `docs/jira-protocol.md` (Exit states) and `docs/dco-feature-flags.md`.
    Jira writes are two-phase: a read-only plan returning
    `AwaitingConfirmation` (or `MissingRequiredFields`), then a later
    invocation repeating identical inputs with `--confirm <confirmation>`.
@@ -106,12 +119,18 @@ submit while the outcome is unknown is a new id, never a retry.
    preflight only; a later invocation may carry `--confirm <planDigest>`,
    and `--renew-confirm` only after proven absence. Reuse the same plan and
    state paths for recovery.
-3. Unknown writes: exit `5` (`UnknownOutcome` / `AwaitingRenewedConfirmation`
-   / Jira `UnknownOutcome`) is never permission to retry a mutation. Re-read
-   the same JOBID first; then re-run the read-only step on Lenovo (Jira plan
+3. Unknown writes: receipt `state` `UnknownOutcome` /
+   `AwaitingRenewedConfirmation` (CLI exit `5`; Jira `UnknownOutcome`) is
+   never permission to retry a mutation, regardless of the envelope
+   `exit_code`. Re-read the same JOBID first; then re-run the read-only step
+   on Lenovo (Jira plan
    without `--confirm`; DCO `apply` without confirmation for readback-only
    recovery) and verify flag state, comment presence, or exact-path toggle
    readback before deciding. HTTP 401/403 (Jira) is terminal for that route.
+   Envelope caution: one Lenovo smoke run surfaced a CLI exit `2` as
+   envelope `1` with byte-identical stdout, so a nonzero envelope code must
+   never be re-interpreted as a different CLI state and never authorizes a
+   blind replay — always decide from the receipt.
 
 ## DCO same-host files
 
