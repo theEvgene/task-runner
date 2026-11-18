@@ -14,22 +14,33 @@ Contract:
   canonical resource set, resource digest, and the SHA-256 of the exact
   signed job bytes it belongs to. Filename authority is never trusted.
 * Resource identities are normalized here (absolute, case-folded,
-  ``normpath`` paths; and one exclusive ``tcp:*:<port>`` port token per
-  port). The TCP address is deliberately dropped: a wildcard bind, a
-  loopback alias, ``localhost``, and a DNS name can all name one
-  effective port, so two claims naming the same port collide instead of
-  being compared as text. Relative, unparsable, or unknown-type claims
-  are refused: an unprovable footprint is never admitted for parallel
-  execution.
+  ``normpath`` paths; one exclusive ``tcp:*:<port>`` port token per port;
+  and explicitly configured shared ``capacity:<name>`` quotas). The TCP
+  address is deliberately dropped: a wildcard bind, a loopback alias,
+  ``localhost``, and a DNS name can all name one effective port, so two
+  claims naming the same port collide instead of being compared as text.
+  Relative, unparsable, or unknown-type claims are refused: an unprovable
+  footprint is never admitted for parallel execution.
+* A ``capacity:`` claim is shared, never exclusive, and is admitted only
+  against one **queue-local** quota configuration,
+  ``<queue>/capacity-quotas.json`` (configured, never inferred). That file
+  is the single authority: it is read inside the referee lock by every
+  producer behind the queue, so no call can raise a ceiling another call
+  admitted under. A caller-supplied ``capacities`` mapping is only an
+  assertion. Live holders are counted and an over-limit attempt is refused
+  by naming the limiting resource; a capacity claim with no configured
+  quota fails closed.
 * ``referee_publish`` holds one queue-local operating-system advisory
   lock (an exclusive byte-range/file lock held by the producer process)
-  while it scans live reservations and publishes the reservation plus the
-  job envelope, so two producers with the same or nested footprint cannot
-  both publish. The operating system releases the lock when its holder
-  exits, so elapsed age can never break a live lock, and a same-host owner
-  that provably died needs no heuristic takeover. A refused attempt
-  publishes nothing; a failed job publish removes only its own provisional
-  reservation.
+  while it reads the quota authority, scans live reservations, and
+  publishes the reservation plus the job envelope, so two producers with
+  the same or nested footprint cannot both publish. The operating system
+  releases the lock when its holder exits, so elapsed age can never break
+  a live lock, and a same-host owner that provably died needs no
+  heuristic takeover. A refused attempt publishes nothing; a failed job
+  publish removes only its own provisional reservation. An already
+  published job is resolved first, so an idempotent retry stays
+  ``owned`` even after the quota configuration changed.
 * A reservation is live until its exact job has an authenticated release
   record in ``<queue>/releases/<job-id>.json`` bound to the job bytes, the
   reservation resources, the claim generation, and the exact result bytes.
@@ -54,6 +65,7 @@ import os
 import re
 import time
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 
 if os.name == "nt":
@@ -72,6 +84,15 @@ LOCK_WAIT_SECONDS = 5.0
 LOCK_POLL_SECONDS = 0.02
 MAX_RESOURCES = 17
 MAX_CLAIM_LEN = 256
+MAX_CAPACITIES = 8
+MAX_QUOTA = 256
+MAX_CAPACITY_CONFIG_BYTES = 64 * 1024
+CAPACITY_PREFIX = "capacity:"
+# The one authoritative quota configuration for a queue. It lives beside
+# the reservation store, never inside it, so the store keeps its
+# ``<job-id>.json`` shape, and it is plain operator input rather than a
+# second ledger: nothing is derived, cached, or remembered from a call.
+CAPACITY_CONFIG_NAME = "capacity-quotas.json"
 # Only a genuine "somebody holds it" errno is contention. Anything else is
 # an unusable mutex and refuses instead of being retried into a timeout.
 _LOCK_CONTENTION = {
@@ -82,6 +103,7 @@ _LOCK_CONTENTION = {
 _PATH_CLAIM_PREFIXES = ("working-directory", "file")
 _CLAIM_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}:[^\s]{1,200}$")
 _HEX32_RE = re.compile(r"^[0-9a-f]{32}$")
+_CAPACITY_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
 class ReservationRefused(ValueError):
@@ -126,7 +148,111 @@ def normalize_claim(claim: object) -> str:
         # `localhost`, and DNS names cannot be compared reliably, so the
         # address is not part of the authority. Same port means conflict.
         return f"tcp:*:{number}"
+    if kind == "capacity":
+        name = value.casefold()
+        if _CAPACITY_NAME_RE.fullmatch(name) is None:
+            raise ReservationRefused(f"bad capacity claim: {claim}")
+        return f"{CAPACITY_PREFIX}{name}"
     raise ReservationRefused(f"unprovable resource type: {kind}")
+
+
+def capacity_limits(capacities: object) -> dict[str, int]:
+    """Validated explicit quotas for shared ``capacity:`` claims.
+
+    Capacity is never inferred. ``None`` means no capacity claim is
+    admissible, and a malformed or over-bounded configuration refuses
+    instead of being silently narrowed. Configured names go through the
+    same case fold as claims, so one name cannot be bounded under two
+    spellings; a collision after folding is ambiguous and refuses.
+    """
+
+    if capacities is None:
+        return {}
+    if not isinstance(capacities, Mapping):
+        raise ReservationRefused("bad capacity quota configuration")
+    if len(capacities) > MAX_CAPACITIES:
+        raise ReservationRefused("too many configured capacity quotas")
+    limits: dict[str, int] = {}
+    for name, quota in capacities.items():
+        if not isinstance(name, str):
+            raise ReservationRefused("bad configured capacity name")
+        folded = name.casefold()
+        if _CAPACITY_NAME_RE.fullmatch(folded) is None or folded in limits:
+            raise ReservationRefused("bad configured capacity name")
+        if (isinstance(quota, bool) or not isinstance(quota, int)
+                or not 1 <= quota <= MAX_QUOTA):
+            raise ReservationRefused(f"bad configured capacity quota: {name}")
+        limits[folded] = quota
+    return limits
+
+
+def configured_capacity_limits(queue: Path) -> dict[str, int]:
+    """The one authoritative quota configuration for this queue.
+
+    Read inside the referee lock by every producer, so a per-call mapping
+    cannot raise a ceiling. A missing file admits no capacity claim; an
+    unreadable, oversized, or malformed file refuses instead of guessing.
+    """
+
+    path = Path(queue) / CAPACITY_CONFIG_NAME
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return {}
+    except OSError as error:
+        raise ReservationRefused(
+            f"capacity quota configuration unavailable: {error}") from error
+    if stat.st_size > MAX_CAPACITY_CONFIG_BYTES:
+        raise ReservationRefused("capacity quota configuration too large")
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise ReservationRefused(
+            f"capacity quota configuration unreadable: {error}") from error
+    try:
+        document = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ReservationRefused(
+            "bad capacity quota configuration file") from error
+    return capacity_limits(document)
+
+
+def _assert_capacity_assertion(resources: tuple[str, ...], capacities: object,
+                               limits: dict[str, int]) -> None:
+    """A caller-supplied mapping may only confirm the queue authority.
+
+    A producer asserting a larger, stale, or unknown quota for a name it
+    claims is refused by naming that resource, never admitted under its own
+    ceiling. Omitting a name asserts nothing. A reservation that claims no
+    capacity is not checked, since the quota cannot affect it.
+    """
+
+    if capacities is None:
+        return
+    if not any(token.startswith(CAPACITY_PREFIX) for token in resources):
+        return
+    asserted = capacity_limits(capacities)
+    differing = sorted(name for name, quota in asserted.items()
+                       if limits.get(name) != quota)
+    if differing:
+        detail = ", ".join(f"{CAPACITY_PREFIX}{name}" for name in differing)
+        if not limits:
+            raise ReservationRefused(
+                "capacity quota assertion differs from the queue authority: "
+                f"{detail} (no {CAPACITY_CONFIG_NAME} in the queue)")
+        raise ReservationRefused(
+            "capacity quota assertion differs from the queue authority: "
+            + detail)
+
+
+def _require_known_capacities(resources: tuple[str, ...],
+                              limits: dict[str, int]) -> None:
+    """A capacity claim without an explicit quota is refused, not guessed."""
+
+    for token in resources:
+        if (token.startswith(CAPACITY_PREFIX)
+                and token[len(CAPACITY_PREFIX):] not in limits):
+            raise ReservationRefused(f"unknown capacity quota: {token}")
 
 
 def normalize_resources(claims: object,
@@ -144,7 +270,8 @@ def normalize_resources(claims: object,
     if workdir not in normalized:
         normalized.append(workdir)
     if len(normalized) > MAX_RESOURCES:
-        raise ReservationRefused("too many reservation resources")
+        raise ReservationRefused(
+            f"too many reservation resources (limit {MAX_RESOURCES})")
     return tuple(sorted(normalized))
 
 
@@ -440,29 +567,31 @@ def _referee_lock(queue: Path, wait_seconds: float = LOCK_WAIT_SECONDS):
 
 def referee_publish(queue: Path, key: bytes, bridge: object, record: dict,
                     publish_job,
-                    wait_seconds: float = LOCK_WAIT_SECONDS) -> str:
+                    wait_seconds: float = LOCK_WAIT_SECONDS,
+                    capacities: object = None) -> str:
     """Atomically reserve a footprint and publish its signed job.
+
+    ``capacities`` is an optional assertion, never the authority: quotas
+    come from ``<queue>/capacity-quotas.json``, which is read inside the
+    referee lock. Every name the mapping states must equal that authority.
 
     Returns ``"reserved"`` or ``"owned"`` (an identical reservation and
     job already exist). Raises ``ReservationRefused`` on conflict or on
     any unprovable existing record; a refused attempt leaves no claim and
-    publishes no job.
+    publishes no job. A refusal names the limiting resource or quota.
     """
 
     job_id = record["id"]
     resources = tuple(record["resources"])
     with _referee_lock(queue, wait_seconds):
-        for other in live_records(queue, key, bridge):
-            if other["id"] == job_id:
-                continue
-            if job_lifecycle.resources_overlap(
-                    resources, tuple(other["resources"])):
-                raise ReservationRefused(
-                    f"resource conflict with job {other['id']}")
+        limits = configured_capacity_limits(queue)
         job_path = Path(queue) / "jobs" / f"{job_id}.json"
         if job_path.is_file():
-            # A published job is never given a reservation after the
-            # fact: that could admit a new job beside a running one.
+            # An already-published job is resolved before any admission
+            # decision: its reservation is settled, so an idempotent retry
+            # returns ``owned`` even after the quota configuration changed.
+            # A published job is never given a reservation after the fact:
+            # that could admit a new job beside a running one.
             raw_job = _job_bytes(queue, key, bridge, job_id)
             if (raw_job is None
                     or hashlib.sha256(raw_job).hexdigest()
@@ -480,6 +609,29 @@ def referee_publish(queue: Path, key: bytes, bridge: object, record: dict,
                 raise ReservationRefused(
                     "existing reservation has a different footprint")
             return "owned"
+        _assert_capacity_assertion(resources, capacities, limits)
+        _require_known_capacities(resources, limits)
+        records = live_records(queue, key, bridge)
+        for other in records:
+            if other["id"] == job_id:
+                continue
+            conflicts = job_lifecycle.overlapping_resources(
+                resources, tuple(other["resources"]))
+            if conflicts:
+                raise ReservationRefused(
+                    f"resource conflict with job {other['id']}: "
+                    + ", ".join(conflicts))
+        for token in resources:
+            if not token.startswith(CAPACITY_PREFIX):
+                continue
+            limit = limits[token[len(CAPACITY_PREFIX):]]
+            held = sum(1 for other in records
+                       if other["id"] != job_id
+                       and token in other["resources"])
+            if held >= limit:
+                raise ReservationRefused(
+                    f"capacity quota exhausted: {token} "
+                    f"(limit {limit}, held {held})")
         directory = Path(queue) / "reservations"
         bridge.publish(str(directory), job_id, bridge.seal(record, key))
         try:
@@ -497,12 +649,15 @@ def reserve_and_submit(queue: Path, key: bytes, bridge: object,
                        payload: dict, claims: object, owner_instance: str,
                        owner_pid: int, now,
                        generation: str | None = None,
-                       wait_seconds: float = LOCK_WAIT_SECONDS) -> dict:
+                       wait_seconds: float = LOCK_WAIT_SECONDS,
+                       capacities: object = None) -> dict:
     """Producer entry point: reserve the explicit footprint, then publish.
 
     The job envelope bytes are sealed first so the reservation binds the
-    exact bytes a worker will verify. A failed job publish removes this
-    attempt's own provisional reservation only.
+    exact bytes a worker will verify. ``capacities`` is only an assertion
+    of the queue-local quota authority, never a ceiling of its own. A
+    failed job publish removes this attempt's own provisional reservation
+    only.
     """
 
     job_id = payload["id"]
@@ -514,7 +669,7 @@ def reserve_and_submit(queue: Path, key: bytes, bridge: object,
     outcome = referee_publish(
         queue, key, bridge, record,
         lambda: bridge.publish(str(Path(queue) / "jobs"), job_id, job_bytes),
-        wait_seconds)
+        wait_seconds, capacities)
     if outcome == "owned":
         stored = read(queue, key, bridge, job_id,
                       record["job_envelope_sha256"])

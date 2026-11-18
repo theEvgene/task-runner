@@ -221,6 +221,14 @@ python scripts/lan_bridge/lan_bridge.py submit \
 - Claims are normalized: absolute case-folded paths, and one exclusive
   `tcp:*:<port>` token per port. A wildcard bind, `localhost`, and a
   specific address naming the same port are the same claim.
+- `capacity:<name>` is the only shared claim: it is admitted against one
+  queue-local quota file, `queue/capacity-quotas.json` (for example
+  `{"cpu": 2}`), read inside the same referee lock. That file is the only
+  authority: a capacity claim with no entry, an exhausted quota, or an
+  unreadable or malformed file refuses before publication, and the refusal
+  names the limiting resource and its limit. `docs/lenovo-worker-shortcut.md`
+  carries the full contract, including the `capacities=` keyword, which is
+  only an assertion of that file.
 - Without `--claim` nothing changes: one direct immutable publish, the
   worker's `exclusive:global` fallback, and sequential execution.
 - Admission alone does not free anything. The worker releases a footprint

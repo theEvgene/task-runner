@@ -19,34 +19,56 @@ def resource_identity(working_directory: str) -> str:
 
 
 _PATH_CLAIM_PREFIXES = ("working-directory:", "file:")
+_CAPACITY_CLAIM_PREFIX = "capacity:"
 
 
-def _path_claims(resources: tuple[str, ...]) -> list[str]:
-    return [item.split(":", 1)[1] for item in resources
+def _path_claims(resources: tuple[str, ...]) -> list[tuple[str, str]]:
+    return [(item, item.split(":", 1)[1]) for item in resources
             if item.startswith(_PATH_CLAIM_PREFIXES)]
 
 
-def resources_overlap(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
-    """Authenticated resource sets overlap; global fallback overlaps all."""
+def _exclusive(resources: tuple[str, ...]) -> tuple[str, ...]:
+    # A configured ``capacity:`` claim is a shared quota, not an exclusive
+    # owner: the reservation referee counts live holders against the
+    # explicitly configured limit at publish time.
+    return tuple(item for item in resources
+                 if not item.startswith(_CAPACITY_CLAIM_PREFIX))
+
+
+def overlapping_resources(left: tuple[str, ...],
+                          right: tuple[str, ...]) -> list[str]:
+    """Canonical ``left`` tokens that conflict with ``right``.
+
+    The global fallback overlaps everything. Every other claim is
+    exclusive and is compared as an exact token or as a path containment
+    either way round, so one worktree and its nested worktree collide.
+    ``capacity:`` claims are shared quotas and never conflict here.
+    """
 
     if "exclusive:global" in left or "exclusive:global" in right:
-        return True
-    # Non-path claims (including the canonical ``tcp:*:<port>`` port tokens
-    # the reservation normalizer produces) compare as exact strings, which
-    # is the whole authority: wildcard and alias addresses were already
-    # collapsed to one token per port.
-    if set(left).intersection(right):
-        return True
-    for first in _path_claims(left):
-        for second in _path_claims(right):
+        return ["exclusive:global"]
+    exclusive_left = _exclusive(left)
+    exclusive_right = _exclusive(right)
+    right_tokens = set(exclusive_right)
+    conflicts = {item for item in exclusive_left if item in right_tokens}
+    right_paths = _path_claims(exclusive_right)
+    for token, first in _path_claims(exclusive_left):
+        for _, second in right_paths:
             try:
                 common = os.path.commonpath((first, second))
             except (OSError, ValueError):
                 continue
             if os.path.normcase(common) in {
                     os.path.normcase(first), os.path.normcase(second)}:
-                return True
-    return False
+                conflicts.add(token)
+                break
+    return sorted(conflicts)
+
+
+def resources_overlap(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
+    """Authenticated resource sets overlap; global fallback overlaps all."""
+
+    return bool(overlapping_resources(left, right))
 
 
 class OwnedProcess:
