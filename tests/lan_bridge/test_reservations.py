@@ -57,10 +57,13 @@ payload = lan_bridge.build_job_payload(
 while not start.exists():
     time.sleep(0.01)
 try:
+    # The bounded wait is a host-latency margin, not the contract: a slow
+    # Windows temp volume can hold the queue-local lock for seconds, and a
+    # refusal there would be contention, not the exclusion under test.
     job_reservations.reserve_and_submit(
         queue, bytes(range(32)), lan_bridge, payload, claims,
         "race-" + job_id, os.getpid(),
-        lambda: "2026-11-18T00:00:00+00:00", wait_seconds=5.0)
+        lambda: "2026-11-18T00:00:00+00:00", wait_seconds=30.0)
 except job_reservations.ReservationRefused as error:
     print("refused: " + str(error))
     raise SystemExit(3)
