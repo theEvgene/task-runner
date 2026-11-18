@@ -60,14 +60,20 @@ Submit the generated command through `scripts/dell_lan/dell_managed_submit.py`
 (same documented form as `docs/dell-lan.md` section 6): pass the request, its
 `requestSha256`, the `commandFile`, and `receiptScriptPath` from the writer's
 JSON output, and its `expectedCwd` as `--cwd`. The entry claims the request's
-explicit `--lenovo-worktree` footprint and publishes the signed job and its
-reservation together; a request that fails the digest, schema, worktree,
-revision, or command binding refuses before any queue write, and a conflicting
-worktree is refused by the referee (exit `2`). The worker refuses a provable
-working-directory difference before spawning; without an expectation the
-target stays `unverified-target`, never verified. Readback authenticates that
-exact receipt-script path from the signed job envelope (it reads no expected
-working directory); a matching basename elsewhere is not accepted.
+explicit worktree *and* its `lenovoCheckout` (the ref store both routes write)
+and publishes the signed job and its reservation together; a request that
+fails the digest, schema, worktree/checkout, revision, or command binding
+refuses before any queue write, and a conflicting worktree or a shared
+checkout is refused by the referee (exit `2`). A `--cwd` that is not the
+request's checkout refuses (exit `2`, `cwd-unbound`), because the job's real
+target is the digest-bound request, never the operator's directory. The worker
+refuses a provable working-directory difference before spawning; without an
+expectation the target stays `unverified-target`, never verified. Readback
+authenticates that exact receipt-script path from the signed job envelope (it
+reads no expected working directory); a matching basename elsewhere is not
+accepted. A published job whose reservation proof cannot be read exits `3`
+with the same `JOBID` line and an `outcome: unknown` receipt that forbids a
+resubmit.
 
 ## 2. Standalone publication of an existing Lenovo branch (#43)
 

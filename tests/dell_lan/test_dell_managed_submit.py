@@ -1,16 +1,21 @@
-"""Dell managed submit: signed job and its reservation publish together (#89).
+﻿"""Dell managed submit: signed job and its reservation publish together (#89).
 
 Uses the real request writer, the real signed queue and the real queue-side
 referee; no Lenovo host, no worker, no SMB write and no Git repository, so the
-fixture stays fast. Proves the four Dell-side promises: the footprint comes
-from the digest-bound request, a conflicting producer is refused before
-publication, a failed publication leaves no provisional reservation behind,
-and a footprint without a proof-bound release stays held.
+fixture stays fast. Proves the Dell-side promises: the footprint is the
+digest-bound request's worktree *and* checkout, the command is the one
+allowlisted driver invocation for that exact request, a conflicting producer
+is refused before publication, a failed publication leaves no provisional
+reservation behind, a footprint without a proof-bound release stays held, and
+a proof that cannot be read still prints its job id and writes an unknown
+receipt that forbids a resubmit.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -135,7 +140,8 @@ class ManagedSubmitTests(unittest.TestCase):
         self.assertIn(f"JOBID={receipt['jobId']}", output)
         self.assertEqual(receipt["schema"], "dell-lan-managed-submit/1")
         self.assertEqual(receipt["outcome"], "reserved")
-        self.assertEqual(receipt["claims"], [f"file:{fx.worktree}"])
+        self.assertEqual(receipt["claims"],
+                         [f"file:{fx.worktree}", f"file:{fx.lenovo}"])
         self.assertEqual(receipt["revisions"],
                          {"expectedBaseSha": BASE_SHA,
                           "expectedCommit": TASK_SHA,
@@ -143,12 +149,15 @@ class ManagedSubmitTests(unittest.TestCase):
         self.assertEqual(receipt["requestSha256"], request["requestSha256"])
         self.assertEqual(receipt["requestPath"], request["requestPath"])
         self.assertEqual(receipt["worktree"], str(fx.worktree))
+        self.assertEqual(receipt["checkout"], str(fx.lenovo))
         self.assertEqual(receipt["reservation"]["jobEnvelopeSha256"],
                          reservation_of(fx, receipt["jobId"])["job_envelope_sha256"])
-        self.assertEqual(len(receipt["resources"]), 2)
+        self.assertEqual(len(receipt["resources"]), 3)
         self.assertTrue(any(item.startswith("file:")
+                            and "lenovo-checkout" in item
                             for item in receipt["resources"]))
         self.assertTrue(any(item.startswith("working-directory:")
+                            and "lenovo-checkout" in item
                             for item in receipt["resources"]))
         self.assertEqual(reservation_ids(fx), [receipt["jobId"]])
         self.assertEqual(job_ids(fx), [receipt["jobId"]])
@@ -179,13 +188,25 @@ class ManagedSubmitTests(unittest.TestCase):
         self.assertEqual(reservation_ids(fx), reservations_before)
         self.assertEqual(reservations_before, [receipt["jobId"]])
 
-        # An independent worktree and working directory stays admitted.
+        # The ref store is one footprint: another free task worktree inside
+        # the same checkout still writes that checkout's refs, so it refuses.
         other = fx.root / "other-task-worktree"
         other.mkdir(parents=True, exist_ok=True)
         third = transfer_request(fx, "bbbbbbbbbbbbbbb3", worktree=other)
-        code, output, admitted = submit(fx, third, cwd=other)
+        code, output, _ = submit(fx, third)
+        self.assertEqual(code, 2, output)
+        self.assertIn("reservation refused", output)
+        self.assertEqual(job_ids(fx), jobs_before)
+
+        # An independent worktree *and* an independent checkout stays admitted.
+        alt = fx.root / "lenovo-checkout-2"
+        alt.mkdir(parents=True, exist_ok=True)
+        fourth = transfer_request(fx, "bbbbbbbbbbbbbbb4", worktree=other,
+                                  checkout=alt)
+        code, output, admitted = submit(fx, fourth, cwd=alt)
         self.assertEqual(code, 0, output)
-        self.assertEqual(admitted["claims"], [f"file:{other}"])
+        self.assertEqual(admitted["claims"],
+                         [f"file:{other}", f"file:{alt}"])
         self.assertEqual(len(job_ids(fx)), 2)
 
     def test_signed_result_without_release_keeps_the_footprint_held(self):
@@ -215,13 +236,14 @@ class ManagedSubmitTests(unittest.TestCase):
             path = fx.shared / f"request-{index}.json"
             raw = json.dumps({
                 "schema": schema, "lenovoWorktree": str(fx.worktree),
+                "lenovoCheckout": str(fx.lenovo),
                 "expectedBaseSha": BASE_SHA, "expectedCommit": TASK_SHA,
                 "expectedPreviousCommit": None}).encode("utf-8")
             path.write_bytes(raw)
             request, digest = dell_managed_submit.load_request(
                 path, hashlib.sha256(raw).hexdigest())
             self.assertEqual(dell_managed_submit.claims_for(request),
-                             [f"file:{fx.worktree}"])
+                             [f"file:{fx.worktree}", f"file:{fx.lenovo}"])
             self.assertEqual(dell_managed_submit.revisions(request)["expectedCommit"],
                              TASK_SHA)
 
@@ -236,9 +258,21 @@ class ManagedSubmitTests(unittest.TestCase):
                     path, hashlib.sha256(raw).hexdigest())
             self.assertEqual(raised.exception.reason, "request-not-managed")
 
-        relative = {"schema": managed[0], "lenovoWorktree": "task-worktree"}
+        relative = {"schema": managed[0], "lenovoWorktree": "task-worktree",
+                    "lenovoCheckout": str(fx.lenovo)}
         with self.assertRaises(dell_managed_submit.Stop) as raised:
             dell_managed_submit.claims_for(relative)
+        self.assertEqual(raised.exception.reason, "claim-unprovable")
+        # The checkout whose ref store the route writes is part of the claim
+        # set: a request that names no provable checkout is refused.
+        with self.assertRaises(dell_managed_submit.Stop) as raised:
+            dell_managed_submit.claims_for({
+                "schema": managed[0], "lenovoWorktree": str(fx.worktree)})
+        self.assertEqual(raised.exception.reason, "claim-unprovable")
+        with self.assertRaises(dell_managed_submit.Stop) as raised:
+            dell_managed_submit.claims_for({
+                "schema": managed[0], "lenovoWorktree": str(fx.worktree),
+                "lenovoCheckout": str(fx.worktree)})
         self.assertEqual(raised.exception.reason, "claim-unprovable")
         with self.assertRaises(dell_managed_submit.Stop) as raised:
             dell_managed_submit.revisions({"expectedCommit": "b" * 12})
@@ -267,6 +301,109 @@ class ManagedSubmitTests(unittest.TestCase):
         self.assertIn("command-unbound", output)
         self.assertEqual(job_ids(fx), [])
         self.assertEqual(reservation_ids(fx), [])
+
+    def test_forged_or_driver_less_command_is_refused_before_publication(self):
+        fx = self.fx
+        own = transfer_request(fx, "fffffffffffffff1")
+        borrowed = transfer_request(fx, "fffffffffffffff2")
+        # The review's repro: another request's real driver line plus an inert
+        # statement that merely carries this request's path and digest.
+        forged = fx.root / "forged-command.txt"
+        forged.write_text(
+            Path(borrowed["commandFile"]).read_text(encoding="utf-8").strip()
+            + f' & rem "{own["requestPath"]}" {own["requestSha256"]}\n',
+            encoding="utf-8")
+        own["commandFile"] = forged
+        code, output, receipt = submit(fx, own)
+        self.assertEqual(code, 1, output)
+        self.assertIn("command-unbound", output)
+        self.assertIsNone(receipt)
+        self.assertEqual(job_ids(fx), [])
+        self.assertEqual(reservation_ids(fx), [])
+
+        # The same forgery in the PowerShell statement-list form is refused by
+        # the binding itself, with no shell runtime and no queue write.
+        statement = (
+            "powershell.exe -NoProfile -NonInteractive -Command \"& 'C:\\py.exe' "
+            "'C:\\drv\\lenovo_transfer.py' '--request' "
+            f"'{borrowed['requestPath']}' '--request-sha256' "
+            f"'{borrowed['requestSha256']}'; Write-Host "
+            f"'{own['requestPath']} {own['requestSha256']}'\"")
+        with self.assertRaises(dell_managed_submit.Stop) as raised:
+            dell_managed_submit.bind_command(
+                statement, Path(own["requestPath"]), own["requestSha256"],
+                "dell-lan-transfer-request/1", "powershell")
+        self.assertEqual(raised.exception.reason, "command-unbound")
+
+        # A command that runs no driver at all is refused too.
+        noop = fx.root / "noop-command.txt"
+        noop.write_text(f'echo "{own["requestPath"]}" {own["requestSha256"]}\n',
+                        encoding="utf-8")
+        own["commandFile"] = noop
+        code, output, _ = submit(fx, own)
+        self.assertEqual(code, 1, output)
+        self.assertIn("command-unbound", output)
+        self.assertEqual(job_ids(fx), [])
+
+    def test_cwd_outside_the_request_checkout_is_refused(self):
+        fx = self.fx
+        request = transfer_request(fx, "abcd0000000000f1")
+        stray = fx.root / "stray-cwd"
+        stray.mkdir()
+        code, output, receipt = submit(fx, request, cwd=stray)
+        self.assertEqual(code, 2, output)
+        self.assertIn("cwd-unbound", output)
+        self.assertIsNone(receipt)
+        self.assertEqual(job_ids(fx), [])
+        self.assertEqual(reservation_ids(fx), [])
+
+        # The admitted job runs in the request's checkout, not the operator's.
+        code, output, receipt = submit(fx, request)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(receipt["workingDirectory"], str(fx.lenovo))
+        self.assertEqual(receipt["checkout"], str(fx.lenovo))
+
+    def test_unreadable_proof_keeps_the_jobid_and_holds_the_slot(self):
+        fx = self.fx
+        request = transfer_request(fx, "abcd0000000000f2")
+        receipt_path = fx.root / "unknown-receipt.json"
+        original = dell_managed_submit._reservations
+        dell_managed_submit._reservations = lambda: (None, None)
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), \
+                    contextlib.redirect_stderr(err):
+                code = dell_managed_submit.main([
+                    "--queue", str(fx.queue), "--key-file", str(fx.key),
+                    "--request", str(request["requestPath"]),
+                    "--request-sha256", request["requestSha256"],
+                    "--command-file", str(request["commandFile"]),
+                    "--cwd", str(fx.lenovo), "--dialect", "cmd",
+                    "--receipt-script-path", request["receiptScriptPath"],
+                    "--shared", str(fx.shared), "--repo", str(fx.dell),
+                    "--receipt", str(receipt_path)])
+        finally:
+            dell_managed_submit._reservations = original
+
+        published = job_ids(fx)
+        self.assertEqual(len(published), 1)
+        self.assertEqual(code, 3, out.getvalue() + err.getvalue())
+        self.assertIn(f"JOBID={published[0]}", out.getvalue())
+        self.assertIn("never resubmit", err.getvalue())
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        self.assertEqual(receipt["schema"], "dell-lan-managed-submit/1")
+        self.assertEqual(receipt["outcome"], "unknown")
+        self.assertEqual(receipt["jobId"], published[0])
+        self.assertIsNone(receipt["reservation"])
+        self.assertEqual(receipt["resubmit"], "forbidden")
+        self.assertEqual(reservation_ids(fx), published)
+
+        # The slot is held: a blind resubmit for the footprint is refused.
+        repeat = transfer_request(fx, "abcd0000000000f3")
+        code, output, _ = submit(fx, repeat)
+        self.assertEqual(code, 2, output)
+        self.assertIn("reservation refused", output)
+        self.assertEqual(job_ids(fx), published)
 
     def test_failed_publication_removes_only_its_own_reservation(self):
         fx = self.fx
