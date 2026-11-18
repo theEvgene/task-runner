@@ -533,7 +533,13 @@ function restFieldPayload(fieldMeta, suppliedValue) {
   return String(resolved);
 }
 
-export async function getSubtaskCreateMeta(transport) {
+export async function getSubtaskCreateMeta(transport, { issueTypeId } = {}) {
+  const requested =
+    issueTypeId === undefined || issueTypeId === null || String(issueTypeId).trim() === ""
+      ? undefined
+      : String(issueTypeId).trim();
+  if (requested !== undefined && !/^[1-9]\d*$/.test(requested))
+    throw new JiraProtocolError("issue-type-id must be a positive integer");
   const { payload } = await createRequest(transport, "subtask_meta", {
     path: "/rest/api/2/issue/createmeta",
     query: {
@@ -567,13 +573,37 @@ export async function getSubtaskCreateMeta(transport) {
     throw new JiraProtocolError(
       `project ${CONTRACT.projectKey} exposes no subtask issue type in create metadata`
     );
-  if (subtasks.length > 1)
-    throw new JiraProtocolError(
-      `project ${CONTRACT.projectKey} exposes multiple subtask issue types: ${subtasks
-        .map((candidate) => String(candidate.id ?? candidate.name ?? "?"))
-        .join(", ")}`
-    );
-  const subtask = subtasks[0];
+  const availableSubtaskTypes = subtasks
+    .filter(
+      (candidate) =>
+        candidate &&
+        (candidate.id !== undefined &&
+          candidate.id !== null &&
+          String(candidate.id).trim() !== "")
+    )
+    .map((candidate) => ({
+      id: String(candidate.id),
+      name: String(candidate.name ?? ""),
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  let subtask;
+  if (requested !== undefined) {
+    subtask = subtasks.find((candidate) => String(candidate.id) === requested);
+    if (!subtask)
+      throw new JiraProtocolError(
+        `requested issue-type-id ${requested} is not a live LEL subtask issue type; live subtask types: ${availableSubtaskTypes
+          .map((candidate) => candidate.id)
+          .join(", ") || "?"}`
+      );
+  } else {
+    if (subtasks.length > 1)
+      throw new JiraProtocolError(
+        `project ${CONTRACT.projectKey} exposes multiple subtask issue types: ${availableSubtaskTypes
+          .map((candidate) => candidate.id)
+          .join(", ")} (pass --issue-type-id <id> to select one)`
+      );
+    subtask = subtasks[0];
+  }
   if (
     subtask.id === undefined ||
     subtask.id === null ||
@@ -586,6 +616,7 @@ export async function getSubtaskCreateMeta(transport) {
     subtask.fields && typeof subtask.fields === "object" ? subtask.fields : {};
   return {
     subtaskType: { id: String(subtask.id), name: String(subtask.name ?? "") },
+    availableSubtaskTypes,
     fieldsMeta,
     modelFields: Object.entries(fieldsMeta)
       .map(([id, field]) => ({
@@ -599,7 +630,7 @@ export async function getSubtaskCreateMeta(transport) {
 
 export async function createSubtask(
   transport,
-  { parent, summary, description, fields = {}, confirm }
+  { parent, summary, description, fields = {}, confirm, issueTypeId }
 ) {
   if (parent === undefined || parent === null || String(parent).trim() === "")
     throw new JiraProtocolError("parent is required");
@@ -620,7 +651,7 @@ export async function createSubtask(
 
   const buildPlan = async () => {
     const [meta, parentState] = await Promise.all([
-      getSubtaskCreateMeta(transport),
+      getSubtaskCreateMeta(transport, { issueTypeId }),
       createRequest(transport, "subtask_parent", {
         path: `/rest/api/2/issue/${parentKey}`,
         query: { fields: "project,issuetype" },
@@ -647,7 +678,10 @@ export async function createSubtask(
         : "";
     if (!parentTypeId)
       throw new JiraProtocolError("parent issue does not declare an issue type id");
-    if (parentTypeId === meta.subtaskType.id)
+    if (
+      parentTypeId === meta.subtaskType.id ||
+      meta.availableSubtaskTypes.some((candidate) => candidate.id === parentTypeId)
+    )
       throw new JiraProtocolError(
         "parent issue is a subtask; a subtask cannot have a child subtask"
       );
@@ -718,6 +752,7 @@ export async function createSubtask(
         requiredFields,
         missingFields: missing,
         subtaskType: meta.subtaskType,
+        availableSubtaskTypes: meta.availableSubtaskTypes,
         parent: submission.parent,
       },
     };

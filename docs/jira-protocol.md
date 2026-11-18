@@ -239,9 +239,13 @@ invent a separate rank write.
 Subtask creation uses the Jira Server 8.20 REST create contract with live
 create metadata, not the Quick Create form. The CLI first reads
 `GET /rest/api/2/issue/createmeta?projectKeys=LEL&expand=projects.issuetypes.fields`,
-selects the single project-`LEL` subtask issue type declared there, and reads
+selects the project-`LEL` subtask issue type declared there, and reads
 the parent by key (`project`, `issuetype`) to prove it exists in `LEL`/`10848`
-and is not itself a subtask. A subtask cannot have a child subtask.
+and is not itself a subtask. A subtask cannot have a child subtask. When live
+metadata exposes exactly one subtask type, that type is used. When it exposes
+more than one (for example `10340` and `10101`), the CLI stays fail-closed:
+plan without `--issue-type-id` is rejected with the live type list and no
+default is guessed.
 
 ```powershell
 $env:NODE_USE_SYSTEM_CA = '1'
@@ -261,6 +265,24 @@ node scripts/jira-protocol.mjs create-subtask `
   --summary 'Fix validation edge case' `
   --field customfield_10481=SERVICE
 ```
+
+When live metadata exposes multiple subtask types, pass the explicit selection:
+
+```powershell
+$env:NODE_USE_SYSTEM_CA = '1'
+node scripts/jira-protocol.mjs create-subtask `
+  --parent LEL-4122 `
+  --issue-type-id 10101 `
+  --summary 'Fix validation edge case' `
+  --field customfield_10481=SERVICE
+```
+
+The id is validated live: it must be a positive integer and match a
+`subtask: true` entry for project `LEL`. Unknown, non-subtask, or malformed
+ids are rejected before any write. The selected id is part of the confirmation
+digest (`operation.issueTypeId`, `submission.subtaskType`) and of the
+`Completed` readback (`readback.issueTypeId`); changing it invalidates a prior
+confirmation.
 
 For a long, quoted, Unicode, or multiline Summary or Description, write the
 exact UTF-8 bytes to a file and pass `--summary-file` / `--description-file`

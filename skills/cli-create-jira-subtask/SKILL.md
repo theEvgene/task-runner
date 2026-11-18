@@ -34,7 +34,7 @@ Run the command without `--confirm` first:
 ```text
 NODE_USE_SYSTEM_CA=1 node <skill-dir>/scripts/jira-protocol.mjs create-subtask \
   --parent LEL-1234 --summary <summary> --description <description> \
-  [--field <server-field-id>=<value>]...
+  [--issue-type-id <id>] [--field <server-field-id>=<value>]...
 ```
 
 For a long, quoted, Unicode, or multiline Summary or Description, write the
@@ -50,24 +50,33 @@ byte-exact. Do not rely on leading or trailing whitespace in Summary.
 
 The CLI resolves the subtask issue type from live
 `/rest/api/2/issue/createmeta` for project `LEL` and validates the parent by
-direct issue readback before planning. `MissingRequiredFields` names live
+direct issue readback before planning. When live metadata exposes exactly one
+subtask type, that type is used. When it exposes more than one, the CLI stays
+fail-closed: planning without an explicit `--issue-type-id` is rejected with
+the live id list and no default is guessed. When supplied, `--issue-type-id`
+must be a positive integer matching a live `subtask: true` entry; unknown,
+non-subtask, or malformed ids are rejected before any write. `MissingRequiredFields` names live
 required field ids and labels. Ask for or derive only supported values, then
 plan again. Never guess custom-field ids or static defaults. Planning and
 missing-field discovery perform no write. The confirmation digest binds the
-parent key, parent identity, subtask type, every submitted field, and the live
-model; a changed default, parent, or model invalidates it.
+parent key, parent identity, selected subtask type id, every submitted field, and the live
+model; a changed default, parent, selection, or model invalidates it.
 
 For `AwaitingConfirmation`, show the parent key, Summary, Description,
-supplied fields, live required-field model, subtask type, duplicate-search
+supplied fields, live required-field model, selected subtask type id
+(`operation.issueTypeId` / `model.subtaskType`), duplicate-search
 limitation, and `confirmation`. Only after the user confirms that live plan
 may a later invocation repeat the identical inputs with
-`--confirm <confirmation>`. A refreshed server model or default changes the
+`--confirm <confirmation>` (including the same `--issue-type-id` when one was
+used). A refreshed server model or default changes the
 digest and requires a new review; do not reuse the old one.
 
 ## Readback and recovery
 
 Report `Completed` only with the returned issue key and the CLI readback. Its
-contract proves project `LEL`/`10848`, the live subtask issue type id, exact
+contract proves project `LEL`/`10848`, the selected live subtask issue type id
+(`readback.issueTypeId` equals the requested `--issue-type-id`, or the single
+live type when no selection was needed), exact
 parent linkage (`readback.parentKey`), exact persisted Summary and Description,
 and a matching persisted value/id/key/name for every submitted custom field
 (`persistedFields`). Show the `persistedFields` receipt; do not call creation

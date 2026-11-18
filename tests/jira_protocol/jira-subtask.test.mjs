@@ -62,9 +62,9 @@ function parentState(overrides = {}) {
 }
 
 class FakeTransport {
-  constructor({ metaFields, parent = parentState() } = {}) {
+  constructor({ metaFields, parent = parentState(), meta } = {}) {
     this.calls = [];
-    this.meta = createmeta(metaFields);
+    this.meta = meta ? structuredClone(meta) : createmeta(metaFields);
     this.parent = parent;
     this.created = null;
     this.createdState = null;
@@ -82,12 +82,16 @@ class FakeTransport {
       const description =
         typeof fields.description === "string" ? fields.description : fields.description;
       const team = fields.customfield_10481;
+      const createdTypeId =
+        fields.issuetype && fields.issuetype.id !== undefined && fields.issuetype.id !== null
+          ? String(fields.issuetype.id)
+          : "10101";
       this.createdState = {
         key: "LEL-99",
         id: "99",
         fields: {
           project: { id: "10848", key: "LEL" },
-          issuetype: { id: "10101", name: "Sub-task" },
+          issuetype: { id: createdTypeId, name: "Sub-task" },
           parent: { key: "LEL-42", id: "42" },
           summary,
           description,
@@ -418,6 +422,138 @@ test("CLI create-subtask --summary-file/--description-file reach the operation w
   );
   assert.equal(
     requests.some((url) => url.startsWith("POST /rest/api/2/issue ")),
+    false
+  );
+});
+
+function createmetaMulti() {
+  const base = createmeta();
+  base.projects[0].issuetypes.push({
+    id: "10340",
+    name: "Sub-task",
+    subtask: true,
+    fields: {
+      summary: { name: "Summary", required: true },
+      parent: { name: "Parent", required: true },
+      project: { name: "Project", required: false },
+      issuetype: { name: "Issue Type", required: false },
+      description: { name: "Description", required: false },
+      customfield_10481: {
+        name: "Team",
+        required: true,
+        allowedValues: [{ id: "SERVICE", value: "SERVICE", name: "SERVICE" }],
+      },
+    },
+  });
+  return base;
+}
+
+test("subtask with multiple live types stays fail-closed without --issue-type-id", async () => {
+  const transport = new FakeTransport({ meta: createmetaMulti() });
+  await assert.rejects(
+    createSubtask(transport, {
+      parent: "LEL-42",
+      summary: "Fix it",
+      fields: { customfield_10481: "SERVICE" },
+    }),
+    (error) => {
+      assert.match(error.message, /multiple subtask issue types/);
+      assert.match(error.message, /10340/);
+      assert.match(error.message, /10101/);
+      assert.match(error.message, /issue-type-id/);
+      return true;
+    }
+  );
+  assert.equal(
+    transport.calls.some((c) => c.method === "POST" && c.path === "/rest/api/2/issue"),
+    false
+  );
+});
+
+test("subtask --issue-type-id selects one live subtask type and binds confirmation", async () => {
+  const transport = new FakeTransport({ meta: createmetaMulti() });
+  const input = {
+    parent: "LEL-42",
+    summary: "Fix it",
+    fields: { customfield_10481: "SERVICE" },
+    issueTypeId: "10340",
+  };
+  const preview = await createSubtask(transport, input);
+  assert.equal(preview.state, "AwaitingConfirmation");
+  assert.equal(preview.operation.issueTypeId, "10340");
+  assert.equal(preview.model.subtaskType.id, "10340");
+  const other = await createSubtask(transport, { ...input, issueTypeId: "10101" });
+  assert.notEqual(other.confirmation, preview.confirmation);
+  const result = await createSubtask(transport, { ...input, confirm: preview.confirmation });
+  assert.equal(result.state, "Completed");
+  assert.equal(result.readback.issueTypeId, "10340");
+  assert.equal(transport.created.issuetype.id, "10340");
+});
+
+test("subtask rejects an --issue-type-id that is not a live subtask type", async () => {
+  for (const bad of ["10100", "99999"]) {
+    const transport = new FakeTransport({ meta: createmetaMulti() });
+    await assert.rejects(
+      createSubtask(transport, {
+        parent: "LEL-42",
+        summary: "Fix it",
+        fields: { customfield_10481: "SERVICE" },
+        issueTypeId: bad,
+      }),
+      /not a live LEL subtask issue type/
+    );
+    assert.equal(
+      transport.calls.some((c) => c.method === "POST" && c.path === "/rest/api/2/issue"),
+      false
+    );
+  }
+  const single = new FakeTransport();
+  await assert.rejects(
+    createSubtask(single, {
+      parent: "LEL-42",
+      summary: "Fix it",
+      fields: { customfield_10481: "SERVICE" },
+      issueTypeId: "10340",
+    }),
+    /not a live LEL subtask issue type/
+  );
+});
+
+test("subtask rejects a malformed --issue-type-id before any write", async () => {
+  for (const bad of ["abc", "0", "-3", "10.5"]) {
+    const transport = new FakeTransport({ meta: createmetaMulti() });
+    await assert.rejects(
+      createSubtask(transport, {
+        parent: "LEL-42",
+        summary: "Fix it",
+        fields: { customfield_10481: "SERVICE" },
+        issueTypeId: bad,
+      }),
+      /issue-type-id must be a positive integer/
+    );
+    assert.equal(
+      transport.calls.some((c) => c.method === "POST" && c.path === "/rest/api/2/issue"),
+      false
+    );
+  }
+});
+
+test("subtask refuses a parent matching any live subtask type, not only the selected one", async () => {
+  const transport = new FakeTransport({
+    meta: createmetaMulti(),
+    parent: parentState({ issuetype: { id: "10340", name: "Sub-task" } }),
+  });
+  await assert.rejects(
+    createSubtask(transport, {
+      parent: "LEL-42",
+      summary: "Fix it",
+      fields: { customfield_10481: "SERVICE" },
+      issueTypeId: "10101",
+    }),
+    /cannot have a child subtask/
+  );
+  assert.equal(
+    transport.calls.some((c) => c.method === "POST" && c.path === "/rest/api/2/issue"),
     false
   );
 });

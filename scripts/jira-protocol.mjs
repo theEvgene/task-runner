@@ -210,6 +210,7 @@ async function main() {
       "summary-file",
       "description",
       "description-file",
+      "issue-type-id",
       "confirm",
       "field",
     ]);
@@ -223,6 +224,7 @@ async function main() {
       parent: values.parent,
       summary,
       description,
+      issueTypeId: values["issue-type-id"],
       fields: fields(values.field),
       confirm: values.confirm,
     });
