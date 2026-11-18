@@ -227,10 +227,6 @@ python scripts/lan_bridge/lan_bridge.py submit \
   only by publishing `queue/releases/<job-id>.json` bound to the claim
   owner and generation, the exact job bytes, the resource set, and the
   exact result bytes; a signed result alone keeps the footprint held.
-- The Dell managed routes (`transfer`, `publish`, `publish-existing`) use
-  `scripts/dell_lan/dell_managed_submit.py`, which derives the claim from the
-  digest-bound request file and reads the published reservation back as its
-  receipt (`docs/dell-lan.md`).
 
 ## Failure diagnosis
 
