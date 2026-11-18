@@ -229,14 +229,36 @@ changed.
 
 ## 6. Submit and let Lenovo publish; read back the exact SHA and MR
 
-Submit the command file with the standard client, passing the exact
-`--dialect <dialect>`, `--receipt-script-path <receiptScriptPath>`, and
-`--expected-cwd <expectedCwd>` from the writer's JSON output, with the same
-absolute path as `--cwd`: the worker refuses a provable difference before it
-claims or spawns anything, and a route that presents no expectation stays
-`unverified-target`. Do not infer or translate the dialect after the command
-is built. On Lenovo the single command runs `lenovo_publish.py`, which
-re-hashes the request, re-verifies
+`publish` is one of the three Lenovo-writing routes, so it goes through the
+managed-write entry point instead of a bare `submit`: this is the one call
+that reserves the requested footprint and publishes the signed job.
+
+```text
+python scripts/dell_lan/dell_managed_submit.py \
+  --writer-output <writer-json> --queue <queue-dir> \
+  --key-file <key-path> --repo <source-copy>
+```
+
+`<writer-json>` is the exact `dell-lan-request/1` record the writer printed
+(`-` reads it from stdin). The entry point re-reads the request file, requires
+its SHA-256 to equal `requestSha256`, re-derives the claim set from those
+verified bytes, and passes the writer's own `dialect`,
+`--receipt-script-path <receiptScriptPath>`, and
+`--expected-cwd <expectedCwd>` (the same absolute path as `--cwd`): never infer
+or translate the dialect after the command is built, and never pass a target the
+writer did not name. The worker refuses a provable working-directory difference
+before it claims or spawns anything. A request, claim list, or `readOnly` flag
+that disagrees with the verified request is refused.
+
+The claims are the request's own absolute Lenovo checkout and task worktree:
+the queue-local referee reserves them and publishes the job under one lock, so a
+second request for the same or a nested target refuses (exit 1, `reservation
+refused`, naming the limiting resource) before anything is published, and a
+separate check-then-submit can never race it. A refusal leaves no job and no
+reservation behind.
+
+On Lenovo the single command runs `lenovo_publish.py`, which re-hashes the
+request, re-verifies
 the staged bundle, imports the task commit once with a compare-and-swap on
 `refs/heads/<task-branch>` (a repeat names the prior SHA; mismatch, dirty
 tree, or rewrite is refused), runs the external freshness gate, pushes the
@@ -354,6 +376,13 @@ read, when the user explicitly asks for one, stays a separate
   `readback-mismatch`): the same rule as an unknown MR write — the undraft
   may have landed, so reconcile the same job id and let a later publish
   update the same MR. Never a second MR, never a blind retry.
+- **Unknown footprint**: while the outcome is unknown the reservation stays
+  held, so the only admissible Lenovo job for that target is the read-only
+  recovery request above (`--reconcile` declares no claims). Never submit a
+  fresh write for the same checkout or worktree meanwhile: the referee refuses
+  it by naming the held footprint, and a blind duplicate would be a second
+  writer. The footprint frees itself only when the worker's proof-bound release
+  lands under the same job id.
 - **Rejected** (exit 1): read the carried exit code and stderr, fix on the
   anchored base, and submit a new job id. The queue refuses to reuse an id.
 - **Stale**: keep working offline on the anchored base and re-sync before the

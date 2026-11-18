@@ -174,7 +174,10 @@ Claim normalization, the one queue-local quota authority, and the
 proof-bound release are specified in [managed-write claims and the
 reservation referee](lan-bridge-claims.md). Without `--claim` nothing
 changes: one direct immutable publish, the worker's `exclusive:global`
-fallback, and sequential execution.
+fallback, and sequential execution. The Dell publication routes
+(`publish`, `transfer`, `publish-existing`) declare their own footprint
+through `scripts/dell_lan/dell_managed_submit.py` instead of a hand-written
+`--claim` list; see that document's Dell section.
 
 ## Failure diagnosis
 

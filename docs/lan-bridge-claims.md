@@ -53,6 +53,29 @@ python scripts/lan_bridge/lan_bridge.py submit \
   owner and generation, the exact job bytes, the resource set, and the
   exact result bytes; a signed result alone keeps the footprint held.
 
+## Dell publication routes
+
+`dell_request.py publish|transfer|publish-existing` already pin an absolute
+Lenovo checkout and task worktree. `dell_lan/dell_managed_submit.py` submits
+those three routes: it re-hashes the request against the digest the writer
+printed, re-derives the claim set from those verified bytes
+(`dell_lan/dell_managed_claims.py`), and calls this same `submit_job` seam, so
+a claim list edited beside the request cannot be attached to the job. The
+claims are the request's own `working-directory:` checkout and worktree: a
+second request for the same or a nested target refuses before publication, and
+a refused or failed submit leaves no job and no claim of its own.
+
+A read-only request (`--reconcile`) declares no claims. The probe only reads,
+so it must stay admissible while the unknown job it observes still holds the
+footprint; admission alone frees nothing, and only the worker's proof-bound
+release frees it. An unknown outcome therefore keeps the same job id and blocks
+a second writer for that target.
+
+Claims are normalized by the referee on the producer host and re-derived by the
+worker. Pass a literal absolute path (no mapped drive, `subst`, or symlink
+alias): an alias that resolves differently on Lenovo is refused there instead
+of being admitted under the Dell spelling.
+
 The producer referee is `scripts/lenovo_worker/job_reservations.py`: a
 public facade over `job_reservation_claims` (claim identities and record
 validation), `job_reservation_quota` (the queue-local quota authority),

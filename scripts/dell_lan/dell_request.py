@@ -44,6 +44,7 @@ from dell_lan_common import (
     expected_request_name, inside, remote_has_credentials, request_file_token,
     safe_name, sha256_bytes,
 )
+from dell_managed_claims import ClaimRefused, derived_claims
 from dell_standalone_requests import publish_existing_request, transfer_request
 
 TOKEN_RE = re.compile(r"^[0-9a-f]{16}$")
@@ -112,9 +113,14 @@ def write_request(args, request: dict, driver: str, dialect: str) -> int:
         driver_path = str(Path(driver_dir) / driver)
     else:
         driver_path = str(Path(args.lenovo_skill_dir) / "scripts" / driver)
-    # Resolve the declared target before the first write: a rejected
-    # --expected-cwd must leave neither the request nor the command file.
+    # Resolve the declared target and the managed-write footprint before the
+    # first write: a rejected --expected-cwd or an unprovable footprint must
+    # leave neither the request nor the command file.
     expected_cwd = expected_working_directory(args, request)
+    try:
+        claims = derived_claims(request)
+    except ClaimRefused as error:
+        raise Stop("usage", code=2, detail=str(error)) from error
     request_path = out_dir / args.request_name
     text = json.dumps(request, ensure_ascii=False, separators=(",", ":")) + "\n"
     digest = sha256_bytes(text.encode("utf-8"))
@@ -146,6 +152,8 @@ def write_request(args, request: dict, driver: str, dialect: str) -> int:
         "dialect": dialect,
         "receiptScriptPath": driver_path,
         "expectedCwd": expected_cwd,
+        "resourceClaims": claims,
+        "readOnly": request.get("reconcileOnly") is True,
         "returnFile": str(out_dir / request["manifestName"]) if "manifestName" in request else None,
     }
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
@@ -293,7 +301,7 @@ def publish_request(args) -> dict:
         "state": args.state,
         "lenovoCheckout": str(Path(args.lenovo_checkout)),
         "lenovoWorktree": str(Path(args.lenovo_worktree)),
-        "reconcileOnly": False,
+        "reconcileOnly": bool(getattr(args, "reconcile", False)),
         "authorized": authorized,
     }
 

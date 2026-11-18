@@ -56,11 +56,23 @@ at the task commit; the transfer result must report the latter exactly. A dirty
 or unreadable reconciliation remains `unknown`;
 keep the same job slot and never submit a blind duplicate.
 
-Submit the generated command with its returned `receiptScriptPath` as the
-bridge `--receipt-script-path` and its `expectedCwd` as `--expected-cwd`
-(the same absolute path as bridge `--cwd`). The worker refuses a provable
-working-directory difference before spawning; without an expectation the
-target stays `unverified-target`, never verified. Readback authenticates that
+Submit through the managed-write entry point (`docs/dell-lan.md` §6), which is
+the one call that reserves the request's own Lenovo checkout and task worktree
+and publishes the signed job; it carries the writer's `receiptScriptPath` as
+`--receipt-script-path` and its `expectedCwd` as `--expected-cwd` (the same
+absolute path as `--cwd`) itself:
+
+```text
+python scripts/dell_lan/dell_managed_submit.py \
+  --writer-output <writer-json> --queue <queue-dir> \
+  --key-file <key-path> --repo <source-copy>
+```
+
+The worker refuses a provable working-directory difference before spawning;
+without an expectation the target stays `unverified-target`, never verified.
+A second transfer for the same or a nested target refuses while the first
+footprint is held, and while an outcome is unknown only the read-only
+`--reconcile` request (no claims) is admissible. Readback authenticates that
 exact receipt-script path from the signed job envelope (it reads no expected
 working directory); a matching basename elsewhere is not accepted.
 
@@ -118,9 +130,10 @@ task SHA, project, source/target branches, and MR URL. Timeout, truncation, an
 exit-3 result, or a driver `unknown` outcome keeps the same job id for safe
 recovery.
 
-As with transfer, bridge submission must carry the request writer's returned
-`receiptScriptPath`; this binds the sealed result schema to the exact
-standalone publication driver.
+As with transfer, submission goes through `dell_managed_submit.py`: it
+re-verifies the request digest, derives the request's own checkout/worktree
+claims, and carries the writer's `receiptScriptPath`, which binds the sealed
+result schema to the exact standalone publication driver.
 
 ## 3. One-command transfer and publication (#45)
 

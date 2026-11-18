@@ -75,7 +75,7 @@ def transfer_request(args) -> dict:
         "branch": args.branch,
         "lenovoCheckout": str(Path(args.lenovo_checkout)),
         "lenovoWorktree": str(Path(args.lenovo_worktree)),
-        "reconcileOnly": False,
+        "reconcileOnly": bool(getattr(args, "reconcile", False)),
         "authorized": authorized,
     }
 
@@ -149,7 +149,7 @@ def publish_existing_request(args) -> dict:
         "state": args.state or "draft",
         "lenovoCheckout": str(Path(args.lenovo_checkout)),
         "lenovoWorktree": str(Path(args.lenovo_worktree)),
-        "reconcileOnly": False,
+        "reconcileOnly": bool(getattr(args, "reconcile", False)),
         "authorized": authorized,
     }
 

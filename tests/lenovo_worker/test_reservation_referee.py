@@ -24,6 +24,7 @@ import subprocess
 import sys
 import time
 import unittest
+from pathlib import Path
 
 # The fixtures module puts the worker and bridge packages on sys.path, so it
 # is imported before the modules under test.
@@ -267,6 +268,49 @@ class ReservationRefereeTests(ReservationCase):
             [f"file:{self.root / 'independent-race' / 'out.txt'}"],
             "race-independent")
         self.assertIn(independent["id"], self.live())
+
+    def test_failed_job_publish_removes_only_its_own_provisional_claim(
+            self) -> None:
+        # Publication is two immutable writes under one lock. A failed job
+        # write must leave no claim of its own attempt, must not touch a
+        # foreign live claim, and must leave the footprint free for a fresh
+        # attempt instead of a phantom holder.
+        held = self.reserve("21" * 16, [f"file:{self.root / 'held' / 'out.txt'}"],
+                            "held-workdir")
+        self.assertIn(held["id"], self.live())
+        attempt = "22" * 16
+        with self.assertRaises(RuntimeError):
+            job_reservations.reserve_and_submit(
+                self.queue, self.key, _JobPublishFailing(lan_bridge),
+                self.payload(attempt, "attempt-workdir"),
+                [f"file:{self.root / 'attempt' / 'out.txt'}"],
+                "failing-producer", os.getpid(), self.now)
+        self.assertFalse(
+            (self.queue / "reservations" / f"{attempt}.json").exists())
+        self.assertFalse((self.queue / "jobs" / f"{attempt}.json").exists())
+        self.assertIn(held["id"], self.live())
+        self.assertEqual(
+            [path.name for path in (self.queue / "reservations").glob("*.json")],
+            [f"{held['id']}.json"])
+        retry = self.reserve(
+            "23" * 16, [f"file:{self.root / 'attempt' / 'out.txt'}"],
+            "attempt-workdir")
+        self.assertIn(retry["id"], self.live())
+
+
+class _JobPublishFailing:
+    """The reviewed bridge module with one forced job-publish failure."""
+
+    def __init__(self, module) -> None:
+        self._module = module
+
+    def __getattr__(self, name: str):
+        return getattr(self._module, name)
+
+    def publish(self, directory, job_id: str, data: bytes):
+        if Path(directory).name == "jobs":
+            raise RuntimeError("job publish refused")
+        return self._module.publish(directory, job_id, data)
 
 
 if __name__ == "__main__":
