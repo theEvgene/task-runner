@@ -15,6 +15,7 @@ Externally invoked agents start here explicitly; this repo assumes no global aut
 - Run Lenovo-hosted Jira/DCO scripts through the signed queue -> `docs/lenovo-hosted-scripts.md` (generic `lan_bridge` submit/fetch/observe; credentials stay in the Lenovo host environment; DCO plan/state stay Lenovo-local; Jira keeps its two-phase confirm flow).
 - Mute or read the default Windows playback mute state on Lenovo through the signed queue -> `docs/lenovo-audio.md`.
 - Diagnose a stuck/failed signed LAN queue job (same JOBID every 30 s for 10 min; timeout is unknown, never a resubmit) -> `docs/lan-queue-diagnosis.md`.
+- Admit an explicit managed-write footprint or a shared `capacity:<name>` quota (reservation referee, queue-local quota file, release proof) -> `docs/queue-reservations.md`.
 - Check readiness for one selected Dell-to-Lenovo scenario -> `docs/readiness.md` + `scripts/readiness/check.py`.
 - Run exactly one bounded host-bound check (Dell local or consented Lenovo) with a real exit and one receipt -> `docs/selected-check.md` + `scripts/readiness/selected.py`.
 - Start the Lenovo worker and cleaner with one shortcut after a reboot (existing SMB share, local credentials) -> `docs/lenovo-worker-shortcut.md`.

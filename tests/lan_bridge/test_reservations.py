@@ -351,5 +351,61 @@ class LanReservationsTests(unittest.TestCase):
         self.assertEqual(len(self.published()), 1)
 
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_owned_resubmit_ignores_a_broken_quota_authority(self) -> None:
+        # Issue #90 review (B2): a retry publishes nothing, so it is decided
+        # before the quota authority is read. An unreadable, malformed,
+        # oversized, or deleted file keeps the published job ``owned``,
+        # while a *new* footprint still fails closed on the same file.
+        job_id = "b8" * 16
+        claims = [f"file:{self.root / 'owned-broken.out'}", "capacity:heavy"]
+        self.quotas({"heavy": 1})
+        first = self.reserve(job_id, claims, "owned-broken")
+        authority = self.queue / job_reservations.CAPACITY_CONFIG_NAME
+        for content in (
+                "not json",
+                json.dumps({"heavy": 0}),
+                "x" * (job_reservations.MAX_CAPACITY_CONFIG_BYTES + 1)):
+            authority.write_text(content, encoding="utf-8")
+            self.assertEqual(
+                self.reserve(job_id, claims, "owned-broken"), first, content)
+            with self.assertRaises(job_reservations.ReservationRefused):
+                self.reserve("b9" * 16, claims, "owned-broken")
+        authority.unlink()
+        self.assertEqual(self.reserve(job_id, claims, "owned-broken"), first)
+        with self.assertRaisesRegex(job_reservations.ReservationRefused,
+                                    "unknown capacity quota"):
+            self.reserve("b9" * 16, claims, "owned-broken")
+        self.assertEqual(self.published(), [f"{job_id}.json"])
+        self.assertEqual(self.reservations(), [f"{job_id}.json"])
+
+    def test_a_non_canonical_record_is_refused_before_it_is_sealed(self) -> None:
+        # Issue #90 review (N1): a directly supplied record is re-verified
+        # before it becomes store state, so one non-canonical token cannot
+        # wedge every later producer with a foreign binding refusal.
+        job_id = "c1" * 16
+        payload = self.payload(job_id, "canonical")
+        job_bytes = lan_bridge.seal(payload, self.key)
+        record = job_reservations.build(
+            job_id, hashlib.sha256(job_bytes).hexdigest(),
+            [f"file:{self.root / 'canonical.out'}"],
+            job_lifecycle.resource_identity(
+                os.fspath(self.root / "canonical")),
+            "test-producer", os.getpid(), None, self.now)
+        record["resources"] = ["tcp:localhost:60001"]
+        record["resource_digest"] = job_reservations.resource_digest(
+            record["resources"])
+        with self.assertRaisesRegex(job_reservations.ReservationRefused,
+                                    "not canonical"):
+            job_reservations.referee_publish(
+                self.queue, self.key, lan_bridge, record,
+                lambda: lan_bridge.publish(
+                    str(self.queue / "jobs"), job_id, job_bytes))
+        self.assertEqual(self.published(), [])
+        self.assertEqual(self.reservations(), [])
+        # The queue is not wedged: the next canonical footprint is admitted.
+        accepted = self.reserve(
+            "c2" * 16, [f"file:{self.root / 'canonical-2.out'}"],
+            "canonical-2")
+        self.assertIn(accepted["id"], self.live())
+
+

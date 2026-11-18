@@ -137,38 +137,19 @@ local directory that must already exist for both spawned roles.
   a resource digest. The supported managed-write producer entry is
   `lan_bridge.submit_job(..., resource_claims=[...])` (`submit --claim` on
   the bridge CLI); a submit without claims keeps its legacy one-publish,
-  sequential behavior. The producer referee
-  (`scripts/lenovo_worker/job_reservations.py`) holds one queue-local
-  operating-system lock while it refuses the same or nested footprint from
-  a different job and publishes the reservation plus the job; a refused
-  attempt publishes nothing and a failed job publish removes only its own
-  provisional reservation. The operating system owns that lock and drops it
-  when its holder exits, so elapsed age never breaks a live lock and a
-  contender never steals one. Resource identities are normalized paths plus
-  one exclusive `tcp:*:<port>` token per port, so a wildcard bind,
-  `localhost`, and a specific address naming that port are the same claim.
-  Explicitly configured `capacity:<name>` claims are shared quotas, never
-  exclusive owners: one queue-local file, `queue/capacity-quotas.json`
-  (`{"cpu": 2}`, at most 8 names, each quota 1-256), is the only authority,
-  read under the same lock, so no producer can raise a ceiling another
-  producer admitted under. The referee counts live holders against it, names
-  the exhausted resource when it refuses, and refuses a capacity claim with
-  no configured quota or with an unreadable or malformed quota file. The
-  quota bounds that one queue directory. A caller-supplied `capacities=`
-  mapping may only confirm the file, name by name; a different value refuses.
-  An already published job stays `owned` on re-submit even after the file
-  changed.
-  The worker re-derives every binding and adds its own normalized working
-  directory, so a payload cannot omit the directory it runs in. A
-  reservation is live until `queue/releases/<job-id>.json` proves this exact
-  job, resource set, claim generation, and result bytes reached a terminal
-  result: a signed result alone, a missing job (producer aborted under the
-  lock, so the record is inert), age, or a timeout never frees a footprint.
-  Producer `resource_claims` / `resource_scope` in the payload remain
+  sequential behavior. The worker re-derives every binding and adds its own
+  normalized working directory, so a payload cannot omit the directory it
+  runs in, and a payload's `resource_claims` / `resource_scope` remain
   self-attestation: without a verified reservation the job receives the
-  `exclusive:global` fallback and runs sequentially. The
-  production-compatible default is still one active job; `--max-active 2`
-  is an upper bound that only the reservation proof can fill, so two
+  `exclusive:global` fallback and runs sequentially. A reservation is live
+  until `queue/releases/<job-id>.json` proves this exact job, resource set,
+  claim generation, and result bytes reached a terminal result: a signed
+  result alone, a missing job (producer aborted under the lock, so the
+  record is inert), age, or a timeout never frees a footprint.
+  `docs/queue-reservations.md` carries the producer referee, the queue-local
+  `capacity:` quota authority, and the admission limits; the
+  production-compatible default is still one active job, and `--max-active
+  2` is an upper bound that only the reservation proof can fill, so two
   reserved independent jobs run together and a third waits. Unmodelled side
   effects outside the declared footprint remain the producer's documented
   boundary (#88): only explicit managed write footprints are admitted in
