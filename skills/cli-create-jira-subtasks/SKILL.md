@@ -51,10 +51,12 @@ Run the command without `--confirm` first:
 ```text
 NODE_USE_SYSTEM_CA=1 node <skill-dir>/scripts/jira-protocol.mjs create-subtasks \
   --parent LEL-1234 --file <path-to-subtasks.json> \
-  [--issue-type-id <id>] [--allow-duplicate '<summary>']...
+  [--issue-type-id <id>] [--allow-duplicate '<summary>']... \
+  [--journal <path>] [--resolve-unknown <index>=retry|LEL-N]...
 ```
 
-The plan shows every entry with its live match: `new` (will be created),
+Matching normalizes summaries with NFC plus Unicode whitespace collapsing
+(case-sensitive). The plan shows every entry with its live match: `new` (will be created),
 `exists` (exactly one same-summary child; skipped, never rewritten), or
 `ambiguous` (several matching children, or several identical file entries).
 When live metadata exposes more than one subtask type, pass the explicit
@@ -89,6 +91,10 @@ creation readback.
 `UnknownOutcome` stops only the affected entry: its key (when returned) and
 verification are recorded, no automatic retry follows, and the remaining
 entries still complete. Preserve the receipt and investigate that entry
-from its current state before any new run. HTTP 401/403 aborts the batch
-and is terminal for this route; report it without changing clients,
+from its current state before any new run. With `--journal <path>` every
+confirmed result is persisted durably and an interrupted run resumes without
+a second write; a journaled `UnknownOutcome` blocks any rerun of that index
+until `--resolve-unknown <index>=retry|LEL-N` records the operator's explicit
+decision. HTTP 401/403 aborts the batch, preserves partial results, and is
+terminal for this route; report it without changing clients,
 credentials, or protocols.

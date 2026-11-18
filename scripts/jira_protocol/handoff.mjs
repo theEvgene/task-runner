@@ -10,7 +10,9 @@ export const STEP_CATEGORIES = Object.freeze([
 
 const METHODS = new Set(["GET", "POST", "PUT"]);
 
-const SECRET_KEY = /^(?:atl_?token|formtoken|authorization|cookie|set-cookie)$/i;
+const SECRET_KEY = /(?:atl_?token|auth[_-]?token|formtoken|authorization|set-?cookie|cookie|session|secret|passwd|password|credential)/i;
+
+const PATH_SECRET = /(?:atl_?token|auth[_-]?token|formtoken|authorization|set-?cookie|cookie|session|secret|passwd|password|credential)/i;
 
 function nonEmptyString(value, name) {
   const text = String(value ?? "").trim();
@@ -74,6 +76,10 @@ function sanitizePath(value) {
     throw new JiraProtocolError("handoff path must stay on the Jira origin");
   if (/[\s\u0000-\u001f\u007f]/.test(stripped))
     throw new JiraProtocolError("handoff path contains unsafe characters");
+  if (/[&=;%]/.test(stripped))
+    throw new JiraProtocolError("handoff path must not carry query or encoded material");
+  if (PATH_SECRET.test(stripped))
+    throw new JiraProtocolError("handoff path must not expose secret material");
   return stripped;
 }
 

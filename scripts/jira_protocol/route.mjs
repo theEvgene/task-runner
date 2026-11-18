@@ -14,6 +14,28 @@ import { toHandoffEvidence } from "./handoff.mjs";
 
 export const ROUTE_MAX_STEPS = 10;
 
+function observedStatus(result) {
+  const raw = Number(result?.response?.status);
+  return Number.isSafeInteger(raw) && raw >= 100 && raw <= 599 ? raw : "unknown";
+}
+
+function observingTransport(transport, statuses) {
+  return {
+    origin: transport.origin,
+    atlToken: transport.atlToken,
+    request: async (request) => {
+      const result = await transport.request(request);
+      const key = `${String(request.method ?? "GET").toUpperCase()} ${String(request.path ?? "")}`;
+      statuses.set(key, observedStatus(result));
+      return result;
+    },
+  };
+}
+
+function statusFor(statuses, method, path) {
+  return statuses.get(`${method} ${path}`) ?? "unknown";
+}
+
 async function boardColumns(transport) {
   const { payload } = await transport.request({
     path: "/rest/greenhopper/1.0/xboard/work/allData.json",
@@ -65,10 +87,12 @@ export async function planTransitionRoute(transport, { issueKey, status }) {
   const target = String(status ?? "").trim();
   if (!/^[1-9]\d*$/.test(target))
     throw new JiraProtocolError("status must be a Jira status id");
+  const observed = new Map();
+  const watched = observingTransport(transport, observed);
   const [state, discovered, columns] = await Promise.all([
-    getIssueState(transport, key),
-    getIssueTransitions(transport, key),
-    boardColumns(transport),
+    getIssueState(watched, key),
+    getIssueTransitions(watched, key),
+    boardColumns(watched),
   ]);
   const currentStatus = String(state.fields.status?.id ?? "");
   const currentName = String(state.fields.status?.name ?? "");
@@ -153,9 +177,40 @@ export async function planTransitionRoute(transport, { issueKey, status }) {
     available: compactTransitions(discovered.transitions),
     handoff: [
       toHandoffEvidence({
-        stage: "route_plan",
+        stage: "route_state",
         method: "GET",
-        path: `/rest/greenhopper/1.0/xboard/issue/transitions.json`,
+        path: `/rest/api/2/issue/${key}`,
+        httpStatus: statusFor(observed, "GET", `/rest/api/2/issue/${key}`),
+      }),
+      toHandoffEvidence({
+        stage: "route_detail",
+        method: "GET",
+        path: "/rest/greenhopper/1.0/xboard/issue/details.json",
+        httpStatus: statusFor(
+          observed,
+          "GET",
+          "/rest/greenhopper/1.0/xboard/issue/details.json"
+        ),
+      }),
+      toHandoffEvidence({
+        stage: "route_transitions",
+        method: "GET",
+        path: "/rest/greenhopper/1.0/xboard/issue/transitions.json",
+        httpStatus: statusFor(
+          observed,
+          "GET",
+          "/rest/greenhopper/1.0/xboard/issue/transitions.json"
+        ),
+      }),
+      toHandoffEvidence({
+        stage: "route_board",
+        method: "GET",
+        path: "/rest/greenhopper/1.0/xboard/work/allData.json",
+        httpStatus: statusFor(
+          observed,
+          "GET",
+          "/rest/greenhopper/1.0/xboard/work/allData.json"
+        ),
         note: "read-only discovery; no write performed",
       }),
     ],
@@ -207,8 +262,10 @@ export async function transitionToStatus(
     );
   const steps = [];
   const visited = new Set([planned.current.statusId]);
+  const stepObserved = new Map();
+  const watched = observingTransport(transport, stepObserved);
   for (let index = 0; index < limit; index += 1) {
-    const live = await getIssueState(transport, planned.operation.issueKey);
+    const live = await getIssueState(watched, planned.operation.issueKey);
     const current = String(live.fields.status?.id ?? "");
     if (current === planned.target.statusId) {
       return {
@@ -227,7 +284,7 @@ export async function transitionToStatus(
       );
     visited.add(current);
     const discovered = await getIssueTransitions(
-      transport,
+      watched,
       planned.operation.issueKey
     );
     const usable = usableTransitions(discovered.transitions);
@@ -249,19 +306,19 @@ export async function transitionToStatus(
       throw new JiraProtocolError(
         `route stalled: ambiguous next step from status ${current}`
       );
-    const columns = await boardColumns(transport);
+    const columns = await boardColumns(watched);
     const step = describeStep(columns, next);
     const from = current;
     let done;
     try {
-      const preview = await transitionIssue(transport, {
+      const preview = await transitionIssue(watched, {
         issueKey: planned.operation.issueKey,
         transitionId: step.transitionId,
         targetColumn: step.targetColumn,
       });
       if (preview.state !== "AwaitingConfirmation")
         throw new JiraProtocolError("single-step transition refused to plan");
-      done = await transitionIssue(transport, {
+      done = await transitionIssue(watched, {
         issueKey: planned.operation.issueKey,
         transitionId: step.transitionId,
         targetColumn: step.targetColumn,
@@ -287,16 +344,26 @@ export async function transitionToStatus(
           stage: "route_step",
           method: "PUT",
           path: "/rest/greenhopper/1.0/xboard/transitionAndRank",
+          httpStatus: statusFor(
+            stepObserved,
+            "PUT",
+            "/rest/greenhopper/1.0/xboard/transitionAndRank"
+          ),
         }),
         toHandoffEvidence({
           stage: "route_step_readback",
           method: "GET",
           path: `/rest/api/2/issue/${planned.operation.issueKey}`,
+          httpStatus: statusFor(
+            stepObserved,
+            "GET",
+            `/rest/api/2/issue/${planned.operation.issueKey}`
+          ),
         }),
       ],
     });
   }
-  const live = await getIssueState(transport, planned.operation.issueKey);
+  const live = await getIssueState(watched, planned.operation.issueKey);
   if (String(live.fields.status?.id ?? "") === planned.target.statusId) {
     return {
       state: "Completed",

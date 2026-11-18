@@ -35,8 +35,8 @@ function usage(message) {
 function parse(argv) {
   const [command, ...tokens] = argv;
   if (!command) usage();
-  const repeatable = new Set(["field", "allow-duplicate"]);
-  const values = { field: [], "allow-duplicate": [] };
+  const repeatable = new Set(["field", "allow-duplicate", "resolve-unknown"]);
+  const values = { field: [], "allow-duplicate": [], "resolve-unknown": [] };
   const boolean = new Set(["--help"]);
   for (let index = 0; index < tokens.length; index += 1) {
     const name = tokens[index];
@@ -79,7 +79,7 @@ function only(values, allowed) {
   const accepted = new Set([...allowed, "help"]);
   for (const key of Object.keys(values)) {
     if (
-      (key === "field" || key === "allow-duplicate") &&
+      (key === "field" || key === "allow-duplicate" || key === "resolve-unknown") &&
       values[key].length === 0
     )
       continue;
@@ -260,6 +260,8 @@ async function main() {
       "issue-type-id",
       "allow-duplicate",
       "confirm",
+      "journal",
+      "resolve-unknown",
     ]);
     if (values.file === undefined)
       throw new JiraProtocolError("--file is required");
@@ -270,6 +272,8 @@ async function main() {
       issueTypeId: values["issue-type-id"],
       allowDuplicates: values["allow-duplicate"],
       confirm: values.confirm,
+      journalPath: values.journal,
+      resolveUnknown: values["resolve-unknown"],
     });
     emit({ schema: "jira-protocol-result/1", ...result });
     if (result.state === "Completed") return 0;
@@ -303,6 +307,7 @@ export function errorReceipt(error) {
       "subtask_parent",
       "subtask_submission",
       "batch_existing",
+      "batch_journal",
     ].includes(error.stage)
       ? { stage: error.stage }
       : {}),

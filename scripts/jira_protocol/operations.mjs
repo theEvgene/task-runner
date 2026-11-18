@@ -3,6 +3,7 @@ import {
   JiraProtocolError,
   confirmationDigest,
 } from "./protocol.mjs";
+import { toHandoffEvidence } from "./handoff.mjs";
 import { createFormFromModel, defaultsFromEditHtml } from "./html-form.mjs";
 
 export const CONTRACT = Object.freeze({
@@ -265,6 +266,28 @@ async function createRequest(transport, stage, request) {
       error.stage = stage;
     throw error;
   }
+}
+
+function observedStatus(result) {
+  const raw = Number(result?.response?.status);
+  return Number.isSafeInteger(raw) && raw >= 100 && raw <= 599 ? raw : "unknown";
+}
+
+function observingTransport(transport, statuses) {
+  return {
+    origin: transport.origin,
+    atlToken: transport.atlToken,
+    request: async (request) => {
+      const result = await transport.request(request);
+      const key = `${String(request.method ?? "GET").toUpperCase()} ${String(request.path ?? "")}`;
+      statuses.set(key, observedStatus(result));
+      return result;
+    },
+  };
+}
+
+function statusFor(statuses, method, path) {
+  return statuses.get(`${method} ${path}`) ?? "unknown";
 }
 
 export async function createEpic(
@@ -648,11 +671,13 @@ export async function createSubtask(
     summary: title,
     ...(description !== undefined ? { description: String(description) } : {}),
   };
+  const observed = new Map();
+  const watched = observingTransport(transport, observed);
 
   const buildPlan = async () => {
     const [meta, parentState] = await Promise.all([
-      getSubtaskCreateMeta(transport, { issueTypeId }),
-      createRequest(transport, "subtask_parent", {
+      getSubtaskCreateMeta(watched, { issueTypeId }),
+      createRequest(watched, "subtask_parent", {
         path: `/rest/api/2/issue/${parentKey}`,
         query: { fields: "project,issuetype" },
       }).then(({ payload }) => payload),
@@ -782,7 +807,7 @@ export async function createSubtask(
     parent: { key: parentKey },
     issuetype: { id: refreshed.meta.subtaskType.id },
   };
-  const { payload } = await createRequest(transport, "subtask_submission", {
+  const { payload } = await createRequest(watched, "subtask_submission", {
     method: "POST",
     path: "/rest/api/2/issue",
     json: { fields: createFields },
@@ -797,13 +822,43 @@ export async function createSubtask(
       "subtask create did not return a confirmed LEL issue key"
     );
   const verified = await verifyCreatedSubtask(
-    transport,
+    watched,
     payload.key,
     parentKey,
     refreshed.meta.subtaskType,
     suppliedFields
   );
-  return { ...plan, ...verified };
+  const handoff = [
+    toHandoffEvidence({
+      stage: "subtask_meta",
+      method: "GET",
+      path: "/rest/api/2/issue/createmeta",
+      httpStatus: statusFor(observed, "GET", "/rest/api/2/issue/createmeta"),
+    }),
+    toHandoffEvidence({
+      stage: "subtask_parent",
+      method: "GET",
+      path: `/rest/api/2/issue/${parentKey}`,
+      httpStatus: statusFor(observed, "GET", `/rest/api/2/issue/${parentKey}`),
+    }),
+    toHandoffEvidence({
+      stage: "subtask_submission",
+      method: "POST",
+      path: "/rest/api/2/issue",
+      httpStatus: statusFor(observed, "POST", "/rest/api/2/issue"),
+    }),
+    toHandoffEvidence({
+      stage: "subtask_readback",
+      method: "GET",
+      path: `/rest/api/2/issue/${payload.key}`,
+      httpStatus: statusFor(
+        observed,
+        "GET",
+        `/rest/api/2/issue/${payload.key}`
+      ),
+    }),
+  ];
+  return { ...plan, ...verified, handoff };
 }
 
 export async function verifyCreatedSubtask(

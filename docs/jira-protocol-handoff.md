@@ -50,18 +50,26 @@ sanitized record per executed step:
 Rules:
 
 - `stage` is a fixed token (`subtask_meta`, `subtask_parent`,
-  `subtask_submission`, `batch_existing`, `batch_item_submission`,
-  `batch_item_readback`, `route_plan`, `route_step`,
+  `subtask_submission`, `subtask_readback`, `batch_existing`,
+  `batch_item_submission`, `batch_item_readback`, `route_state`,
+  `route_detail`, `route_transitions`, `route_board`, `route_step`,
   `route_step_readback`). The stage of a refusal names the step that
   refused, never a guessed cause.
 - `method` is `GET`, `POST`, or `PUT`. The `path` never carries a query
-  string, fragment, credential, header, or body.
-- `httpStatus` is the observed status or `"unknown"`. Unknowns are not
-  estimated from surrounding steps.
+  string, fragment, credential, header, or body; paths carrying `=`, `&`,
+  `;`, `%`, or secret-like segments are rejected.
+- `httpStatus` is the observed status or `"unknown"`. Transports that expose
+  `response.status` (the real CLI transport does; minimal fixtures may not)
+  emit the observed status; unknowns are not estimated from surrounding
+  steps. Single-subtask `Completed` receipts carry four entries
+  (meta, parent, submission, separate readback); route plans carry the
+  observed discovery reads; batch steps carry per-item submission plus
+  separate readback.
 - `assertHandoffClean` rejects secret-bearing keys unless redacted and
   rejects any extra key on evidence objects, so request/response bodies
-  cannot ride along. Receipts are additionally serialized through
-  `redactSecrets`.
+  cannot ride along. Secret matching is substring-based, so prefixed names
+  (`my_cookie`, `X-Auth-Token`, `session_id`) are caught. Receipts are
+  additionally serialized through `redactSecrets`.
 
 ## Moving the protocol between machines
 
