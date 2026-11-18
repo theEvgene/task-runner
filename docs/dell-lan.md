@@ -229,22 +229,24 @@ changed.
 
 ## 6. Submit and let Lenovo publish; read back the exact SHA and MR
 
-Submit the command file with the standard client, passing the exact
-`--dialect <dialect>`, `--receipt-script-path <receiptScriptPath>`, and
-`--expected-cwd <expectedCwd>` from the writer's JSON output, with the same
-absolute path as `--cwd`: the worker refuses a provable difference before it
-claims or spawns anything, and a route that presents no expectation stays
-`unverified-target`. Do not infer or translate the dialect after the command
-is built. On Lenovo the single command runs `lenovo_publish.py`, which
-re-hashes the request, re-verifies
-the staged bundle, imports the task commit once with a compare-and-swap on
-`refs/heads/<task-branch>` (a repeat names the prior SHA; mismatch, dirty
-tree, or rewrite is refused), runs the external freshness gate, pushes the
-branch, creates or updates the Draft MR (never a second MR for one branch),
-and reads the identity back. A `ready` request then runs the Ready route
-below: the external `remove_draft.py` marks the same MR Ready, and the
-driver re-captures the identity and proves the title and description still
-match the request input. Completion: submit printed one `JOBID=<32hex>`.
+Submit through `scripts/dell_lan/dell_managed_submit.py` with the request,
+`requestSha256`, `commandFile`, `receiptScriptPath`, and `--cwd
+<expectedCwd>` (contract: `docs/dell-managed-submit.md`).
+
+The footprint is the request's task worktree *and* the checkout whose ref
+store the route writes; job and reservation publish together. A digest,
+schema, path, revision, or command-binding failure refuses before any queue
+write (exit `1`, `command-unbound`); a conflicting footprint refuses with exit
+`2`. `--cwd` must be the request's `lenovoCheckout` (exit `2`, `cwd-unbound`)
+and becomes the job's `--cwd` and signed expectation.
+
+Completion: one `JOBID=<32hex>` is printed as soon as the job is published,
+with a `dell-lan-managed-submit/1` receipt (`outcome: reserved`) naming the
+job and its reservation (generation, resource digest, claims, revisions,
+owner). An unreadable proof keeps that `JOBID`, exits `3`, and writes
+`outcome: unknown` with `resubmit: forbidden`: re-read that id and never
+resubmit the footprint (the slot stays held until a proof-bound release). A
+submit without a claim keeps the legacy sequential fallback.
 
 For a metadata stop, do not treat the non-zero result as if transfer failed:
 retain its `import.worktree`, `import.branch`, `import.commit`, and
