@@ -12,6 +12,7 @@ import {
   assignIssue,
   flagIssue,
   createEpic,
+  createSubtask,
   getIssue,
   getIssueTransitions,
   transitionIssue,
@@ -21,7 +22,7 @@ import { extractIssue } from "./jira_protocol/extract.mjs";
 function usage(message) {
   throw new JiraProtocolError(
     message ??
-      "usage: jira-protocol <extract|detail-view|transitions|transition|assign|flag|create-epic> [options]"
+      "usage: jira-protocol <extract|detail-view|transitions|transition|assign|flag|create-epic|create-subtask> [options]"
   );
 }
 
@@ -202,6 +203,33 @@ async function main() {
     if (result.state === "Completed") return 0;
     return result.state === "MissingRequiredFields" ? 4 : 3;
   }
+  if (command === "create-subtask") {
+    only(values, [
+      "parent",
+      "summary",
+      "summary-file",
+      "description",
+      "description-file",
+      "confirm",
+      "field",
+    ]);
+    const summary = await resolveFileBackedText(values, "summary", "summary-file");
+    const description = await resolveFileBackedText(
+      values,
+      "description",
+      "description-file"
+    );
+    const result = await createSubtask(transport(), {
+      parent: values.parent,
+      summary,
+      description,
+      fields: fields(values.field),
+      confirm: values.confirm,
+    });
+    emit({ schema: "jira-protocol-result/1", ...result });
+    if (result.state === "Completed") return 0;
+    return result.state === "MissingRequiredFields" ? 4 : 3;
+  }
   usage(`unknown command ${command}`);
 }
 
@@ -220,7 +248,13 @@ export function errorReceipt(error) {
       ? { httpStatus: error.status }
       : {}),
     ...(expected &&
-    ["create_form_model", "create_submission"].includes(error.stage)
+    [
+      "create_form_model",
+      "create_submission",
+      "subtask_meta",
+      "subtask_parent",
+      "subtask_submission",
+    ].includes(error.stage)
       ? { stage: error.stage }
       : {}),
     ...(error instanceof JiraProtocolError && error.details

@@ -1,6 +1,6 @@
 # Jira protocol agent skills
 
-Five model-invoked, `cli-`-prefixed skills package the Jira protocol CLI by
+Six model-invoked, `cli-`-prefixed skills package the Jira protocol CLI by
 operation:
 
 - `cli-create-lel-service-backlog-issue`
@@ -8,6 +8,7 @@ operation:
 - `cli-transition-jira-issue`
 - `cli-extract-jira-content`
 - `cli-flag-jira-issue`
+- `cli-create-jira-subtask`
 
 Each skill runs the installed CLI on the host that holds the authorized
 session: locally, or on Lenovo through the generic signed queue as
@@ -47,6 +48,7 @@ The skills use only the documented commands:
 | Skill      | Commands                              | Proven successful readback                                               |
 | ---------- | ------------------------------------- | ------------------------------------------------------------------------ |
 | create     | `create-epic`, optional `detail-view` | returned key is a field-verified LEL Epic on rapid view 298290's board or backlog |
+| subtask    | `create-subtask`                      | returned key is a field-verified LEL subtask whose parent key equals the requested parent |
 | assign     | `assign`                              | direct issue read reports the exact assignee login                       |
 | transition | `transitions`, `transition`           | direct issue read reports the planned target status id                   |
 | extract    | `extract`                             | REST-visible issue, comments, metadata inventories, and immediate parent |
@@ -62,7 +64,8 @@ Important limitations:
   stops on any already-known likely duplicate.
 - Creation readback requires exact persisted Summary and Description plus a
   matching persisted value/id/key/name for every submitted custom field, as
-  well as project, issue type, and confirmed board or backlog placement.
+  well as project and issue type. Epics additionally require confirmed board
+  or backlog placement; subtasks additionally require exact parent linkage.
 - Transition is one currently available transition, not automatic pathfinding.
   The CLI validates but does not expose discovery of target board column ids.
 - `extract` proves completeness only for its declared caller-visible REST

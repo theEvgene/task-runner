@@ -18,6 +18,7 @@ const names = [
   "cli-transition-jira-issue",
   "cli-extract-jira-content",
   "cli-flag-jira-issue",
+  "cli-create-jira-subtask",
 ];
 
 test("all Jira protocol skills are CLI-prefixed and use the installed runtime", async () => {
@@ -82,6 +83,17 @@ test("flag binds the required comment, refusal replay, and recovery boundary", a
   assert.match(text, /UnknownOutcome/);
   assert.match(text, /never repeat the mutation/);
   assert.match(text, /lenovo-hosted-scripts\.md/);
+});
+
+test("subtask binds parent linkage, confirmation, readback, and recovery boundary", async () => {
+  const text = await readFile(skill(names[5]), "utf8");
+  assert.match(text, /duplicate search: unavailable in this CLI/);
+  assert.match(text, /MissingRequiredFields/);
+  assert.match(text, /--confirm <confirmation>/);
+  assert.match(text, /persistedFields/);
+  assert.match(text, /parentKey/);
+  assert.match(text, /UnknownOutcome/);
+  assert.match(text, /stop without another create/);
 });
 
 test("installer source names the actual runtime and records its hashes", async () => {

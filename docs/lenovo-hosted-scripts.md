@@ -6,8 +6,8 @@ signed queue. No Jira- or DCO-specific wrapper exists; every run below uses
 exactly as `docs/lan-bridge.md` states. Local execution stays intact: use a
 skill's local command when its credentials already live on the calling host.
 
-Scope: the five `cli-` Jira operations (`extract`, `transitions`,
-`transition`, `assign`, `flag`, `create-epic` in
+Scope: the seven `cli-` Jira operations (`extract`, `transitions`,
+`transition`, `assign`, `flag`, `create-epic`, `create-subtask` in
 `scripts/jira-protocol.mjs`) and the DCO protocol CLI
 (`scripts/dco-feature-flags.mjs` `plan`/`apply`). The managed Nessy
 `dp jira` read keeps its own route in `docs/lan-bridge-config.md` and is not
@@ -54,13 +54,15 @@ checked-in generic renderer `scripts/dell_lan/shell_command.py`
 - Refusals (fail closed before submit): NUL/CR/LF in any part, `"` in any
   part under the `powershell` transport, `%`/`!`/`"` under `cmd`. The
   `powershell` dialect is mandatory here; there is no `cmd` form in this doc.
-- Free text (`flag --comment`, `create-epic --summary/--description`,
-  `--field` values, DCO `--description`) with `"`, newlines, or other
+- Free text (`flag --comment`, `create-epic` / `create-subtask`
+  `--summary/--description`, `--field` values, DCO `--description`) with `"`,
+  newlines, or other
   unsafe shapes never travels inline. Write the exact UTF-8 bytes to a file
   on the existing owner-provided LAN share (the same share that already hosts
   the queue, readable and writable from both hosts; not a new mount) and pass
   the Lenovo-side absolute share path through the new
-  file-backed options: `flag --comment-file`, `create-epic --summary-file` /
+  file-backed options: `flag --comment-file`, `create-epic` /
+  `create-subtask --summary-file` /
   `--description-file`. Staging uses only that share: write the UTF-8 file
   locally, copy it to the share over the existing SMB mount (Explorer or copy),
   and pass the Lenovo-side absolute path of that same file; the queue carries
@@ -75,6 +77,7 @@ Jira examples (Lenovo argv before transport rendering; read plus file-backed wri
 <node-on-lenovo> <checkout>\scripts\jira-protocol.mjs extract --issue LEL-1234
 <node-on-lenovo> <checkout>\scripts\jira-protocol.mjs flag --issue LEL-1234 --action add --comment-file <lenovo-share-path>\comment.md
 <node-on-lenovo> <checkout>\scripts\jira-protocol.mjs create-epic --summary-file <lenovo-share-path>\summary.txt --description-file <lenovo-share-path>\description.md
+<node-on-lenovo> <checkout>\scripts\jira-protocol.mjs create-subtask --parent LEL-1234 --summary-file <lenovo-share-path>\summary.txt --description-file <lenovo-share-path>\description.md
 ```
 
 DCO example (plan bytes staged to the share first, then referenced on Lenovo;

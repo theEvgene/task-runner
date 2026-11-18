@@ -234,6 +234,67 @@ board data was not queried because backlog membership already proved placement.
 The CLI does not equate an initial workflow state with placement and does not
 invent a separate rank write.
 
+## Create an LEL subtask under an explicit parent
+
+Subtask creation uses the Jira Server 8.20 REST create contract with live
+create metadata, not the Quick Create form. The CLI first reads
+`GET /rest/api/2/issue/createmeta?projectKeys=LEL&expand=projects.issuetypes.fields`,
+selects the single project-`LEL` subtask issue type declared there, and reads
+the parent by key (`project`, `issuetype`) to prove it exists in `LEL`/`10848`
+and is not itself a subtask. A subtask cannot have a child subtask.
+
+```powershell
+$env:NODE_USE_SYSTEM_CA = '1'
+node scripts/jira-protocol.mjs create-subtask `
+  --parent LEL-4122 `
+  --summary 'Fix validation edge case' `
+  --description 'Context and acceptance notes'
+```
+
+If the live subtask metadata declares other required fields, the result is
+`MissingRequiredFields` with safe field ids and labels. Supply them explicitly:
+
+```powershell
+$env:NODE_USE_SYSTEM_CA = '1'
+node scripts/jira-protocol.mjs create-subtask `
+  --parent LEL-4122 `
+  --summary 'Fix validation edge case' `
+  --field customfield_10481=SERVICE
+```
+
+For a long, quoted, Unicode, or multiline Summary or Description, write the
+exact UTF-8 bytes to a file and pass `--summary-file` / `--description-file`
+instead of the inline form; the pairs are mutually exclusive and the file is
+read as UTF-8. Summary is trimmed outer-whitespace-exact; Description is
+byte-exact.
+
+When all required fields are present, the result is `AwaitingConfirmation`.
+Its digest binds the parent key and identity, the live subtask type, every
+submitted field and resolved select value, and the safe live model. Repeat the
+identical inputs with `--confirm '<confirmation>'`. The CLI refetches metadata
+and the parent; any change produces a new digest and no write.
+
+After a confirmed write, `Completed` requires all of the following readback by
+key-specific `GET /rest/api/2/issue/{key}`:
+
+- the returned key resolves to project `LEL` / `10848`;
+- its issue type id equals the live subtask type id selected at plan time;
+- its `parent.key` equals the requested parent key;
+- every submitted field is returned with the submitted value. Summary and
+  Description are exact strings; structured custom fields must expose the
+  submitted value, id, key, or name unambiguously.
+
+Fields absent from the live create metadata are rejected before writing. If any
+readback invariant is absent or mismatched, the result is `UnknownOutcome`.
+When the REST create returned a valid issue key, an `UnknownOutcome` receipt
+retains that `issueKey`; invariant failures also report `verification`
+(`isExpectedProject`, `isExpectedType`, `isExpectedParent`,
+`fieldsPersisted`). These fields do not prove completion or authorize a retry.
+HTTP failures during create report a fixed `stage` (`subtask_meta`,
+`subtask_parent`, or `subtask_submission`) without exposing request contents.
+Select-field labels are resolved against live `allowedValues`; ambiguous or
+unknown labels are rejected before submission. The Epic flow is unchanged.
+
 ## Exit states
 
 | Exit | Meaning                                                                |
@@ -241,7 +302,7 @@ invent a separate rank write.
 |  `0` | read succeeded or a write was confirmed by readback                    |
 |  `2` | invalid input, unsupported response, or policy/HTTP failure            |
 |  `3` | exact confirmation is required                                         |
-|  `4` | Quick Create requires more server-declared fields                      |
+|  `4` | Quick Create or subtask create metadata requires more server-declared fields |
 |  `5` | a write may have happened but readback did not prove the outcome       |
 |  `6` | extraction returned evidence but its declared REST scope is incomplete |
 
@@ -250,4 +311,4 @@ digest is supplied. Tests use injected transports and local data only.
 
 ### Flag with a required comment
 
-Run `$env:NODE_USE_SYSTEM_CA='1'; node scripts/jira-protocol.mjs flag --issue LEL-1234 --action add --comment "Reason"` (use `remove` to clear). For a long, quoted, Unicode, or multiline comment, write the exact UTF-8 text to a file and pass `--comment-file <path>` instead; `--comment` and `--comment-file` are mutually exclusive. Repeat with the returned `--confirm` digest to submit. The confirmed operation refuses an already matching flag state to avoid replaying a comment. After a write, both the flag and a new comment ID must be observed; an unknown outcome requires manual readback before retry. `create-epic` offers the same pair as `--summary-file` / `--description-file`. The GreenHopper route and payload derive from browser evidence; the live CLI route and authentication remain unverified. No live write was performed.
+Run `$env:NODE_USE_SYSTEM_CA='1'; node scripts/jira-protocol.mjs flag --issue LEL-1234 --action add --comment "Reason"` (use `remove` to clear). For a long, quoted, Unicode, or multiline comment, write the exact UTF-8 text to a file and pass `--comment-file <path>` instead; `--comment` and `--comment-file` are mutually exclusive. Repeat with the returned `--confirm` digest to submit. The confirmed operation refuses an already matching flag state to avoid replaying a comment. After a write, both the flag and a new comment ID must be observed; an unknown outcome requires manual readback before retry. `create-epic` and `create-subtask` offer the same pair as `--summary-file` / `--description-file`. The GreenHopper route and payload derive from browser evidence; the subtask REST createmeta/create/readback route follows the Jira Server 8.20 REST contract and the live CLI route and authentication remain unverified. No live write was performed.

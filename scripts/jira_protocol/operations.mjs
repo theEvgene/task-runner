@@ -465,6 +465,409 @@ function persistedValueMatches(actual, expected) {
   return false;
 }
 
+function normalizeLabel(value) {
+  return String(value ?? "")
+    .replace(/[\t\n\f\r ]+/g, " ")
+    .trim();
+}
+
+function resolveRestSelectValue(fieldMeta, fieldId, suppliedValue) {
+  const value = String(suppliedValue);
+  const allowed = Array.isArray(fieldMeta?.allowedValues)
+    ? fieldMeta.allowedValues.filter(
+        (option) => option && typeof option === "object"
+      )
+    : [];
+  if (allowed.length === 0) return value;
+  const exact = allowed.filter(
+    (option) =>
+      String(option.id ?? "") === value ||
+      (option.value !== undefined && String(option.value) === value)
+  );
+  if (exact.length === 1) return exact[0];
+  const wanted = normalizeLabel(value);
+  const matched = allowed.filter(
+    (option) =>
+      normalizeLabel(option.name ?? "") === wanted ||
+      normalizeLabel(option.value ?? "") === wanted ||
+      normalizeLabel(option.key ?? "") === wanted
+  );
+  const unique = [...new Map(matched.map((option) => [option, option])).keys()];
+  if (unique.length === 1) return unique[0];
+  throw new JiraProtocolError(
+    `select field ${fieldId} has an unsupported or ambiguous value`
+  );
+}
+
+function restFieldPayload(fieldMeta, suppliedValue) {
+  const allowed = Array.isArray(fieldMeta?.allowedValues)
+    ? fieldMeta.allowedValues
+    : [];
+  if (allowed.length === 0) return String(suppliedValue);
+  const resolved = resolveRestSelectValue(
+    fieldMeta,
+    fieldMeta?.id ?? "field",
+    suppliedValue
+  );
+  if (typeof resolved === "object" && resolved !== null) {
+    if (resolved.id !== undefined && resolved.value !== undefined)
+      return { id: String(resolved.id), value: String(resolved.value) };
+    if (resolved.id !== undefined) return { id: String(resolved.id) };
+    if (resolved.value !== undefined) return { value: String(resolved.value) };
+    if (resolved.name !== undefined) return { value: String(resolved.name) };
+    return String(suppliedValue);
+  }
+  const match = allowed.find(
+    (option) =>
+      option &&
+      typeof option === "object" &&
+      (String(option.id ?? "") === String(resolved) ||
+        (option.value !== undefined && String(option.value) === String(resolved)))
+  );
+  if (match) {
+    if (match.id !== undefined && match.value !== undefined)
+      return { id: String(match.id), value: String(match.value) };
+    if (match.id !== undefined) return { id: String(match.id) };
+    if (match.value !== undefined) return { value: String(match.value) };
+  }
+  return String(resolved);
+}
+
+export async function getSubtaskCreateMeta(transport) {
+  const { payload } = await createRequest(transport, "subtask_meta", {
+    path: "/rest/api/2/issue/createmeta",
+    query: {
+      projectKeys: CONTRACT.projectKey,
+      expand: "projects.issuetypes.fields",
+    },
+  });
+  const projects = payload?.projects;
+  if (!Array.isArray(projects))
+    throw new JiraProtocolError(
+      "create metadata returned an unsupported body"
+    );
+  const project = projects.find(
+    (candidate) =>
+      candidate?.key === CONTRACT.projectKey &&
+      String(candidate?.id) === String(CONTRACT.projectId)
+  );
+  if (!project)
+    throw new JiraProtocolError(
+      `create metadata does not declare project ${CONTRACT.projectKey}`
+    );
+  const issuetypes = project.issuetypes;
+  if (!Array.isArray(issuetypes))
+    throw new JiraProtocolError(
+      "create metadata returned an unsupported issue-type body"
+    );
+  const subtasks = issuetypes.filter(
+    (candidate) => candidate && candidate.subtask === true
+  );
+  if (subtasks.length === 0)
+    throw new JiraProtocolError(
+      `project ${CONTRACT.projectKey} exposes no subtask issue type in create metadata`
+    );
+  if (subtasks.length > 1)
+    throw new JiraProtocolError(
+      `project ${CONTRACT.projectKey} exposes multiple subtask issue types: ${subtasks
+        .map((candidate) => String(candidate.id ?? candidate.name ?? "?"))
+        .join(", ")}`
+    );
+  const subtask = subtasks[0];
+  if (
+    subtask.id === undefined ||
+    subtask.id === null ||
+    String(subtask.id).trim() === ""
+  )
+    throw new JiraProtocolError(
+      "create metadata subtask issue type has no id"
+    );
+  const fieldsMeta =
+    subtask.fields && typeof subtask.fields === "object" ? subtask.fields : {};
+  return {
+    subtaskType: { id: String(subtask.id), name: String(subtask.name ?? "") },
+    fieldsMeta,
+    modelFields: Object.entries(fieldsMeta)
+      .map(([id, field]) => ({
+        id: String(id),
+        label: String(field?.name ?? id),
+        required: Boolean(field?.required),
+      }))
+      .sort((left, right) => left.id.localeCompare(right.id)),
+  };
+}
+
+export async function createSubtask(
+  transport,
+  { parent, summary, description, fields = {}, confirm }
+) {
+  if (parent === undefined || parent === null || String(parent).trim() === "")
+    throw new JiraProtocolError("parent is required");
+  const parentKey = assertIssueKey(parent);
+  const title = String(summary ?? "").trim();
+  if (!title) throw new JiraProtocolError("summary is required");
+  for (const reserved of ["parent", "project", "issuetype"]) {
+    if (fields && Object.hasOwn(fields, reserved))
+      throw new JiraProtocolError(
+        `field '${reserved}' is managed by the subtask CLI and must not be supplied`
+      );
+  }
+  const suppliedFields = {
+    ...fields,
+    summary: title,
+    ...(description !== undefined ? { description: String(description) } : {}),
+  };
+
+  const buildPlan = async () => {
+    const [meta, parentState] = await Promise.all([
+      getSubtaskCreateMeta(transport),
+      createRequest(transport, "subtask_parent", {
+        path: `/rest/api/2/issue/${parentKey}`,
+        query: { fields: "project,issuetype" },
+      }).then(({ payload }) => payload),
+    ]);
+    if (
+      !parentState ||
+      typeof parentState !== "object" ||
+      parentState.key !== parentKey ||
+      !parentState.fields ||
+      typeof parentState.fields !== "object"
+    )
+      throw new JiraProtocolError("parent issue state did not match the key");
+    const parentProject = parentState.fields.project;
+    const isExpectedParentProject =
+      parentProject?.key === CONTRACT.projectKey &&
+      Number(parentProject?.id) === CONTRACT.projectId;
+    if (!isExpectedParentProject)
+      throw new JiraProtocolError("parent issue is not in the LEL project");
+    const parentTypeId =
+      parentState.fields.issuetype?.id !== undefined &&
+      parentState.fields.issuetype?.id !== null
+        ? String(parentState.fields.issuetype.id).trim()
+        : "";
+    if (!parentTypeId)
+      throw new JiraProtocolError("parent issue does not declare an issue type id");
+    if (parentTypeId === meta.subtaskType.id)
+      throw new JiraProtocolError(
+        "parent issue is a subtask; a subtask cannot have a child subtask"
+      );
+    const allowedFields = new Set([
+      ...Object.keys(meta.fieldsMeta),
+      "summary",
+      "description",
+    ]);
+    const unknownFields = Object.keys(suppliedFields).filter(
+      (field) => !allowedFields.has(field)
+    );
+    if (unknownFields.length)
+      throw new JiraProtocolError(
+        `fields are absent from the live create metadata: ${unknownFields.join(", ")}`
+      );
+    const requiredFields = Object.entries(meta.fieldsMeta)
+      .filter(([id, field]) => field?.required && !["parent", "project", "issuetype"].includes(id))
+      .map(([id, field]) => ({ id, label: String(field?.name ?? id) }));
+    const missing = requiredFields.filter(({ id }) => {
+      if (id === "parent" || id === "project" || id === "issuetype")
+        return false;
+      if (!Object.hasOwn(suppliedFields, id)) return true;
+      return String(suppliedFields[id] ?? "").trim() === "";
+    });
+    const resolvedPayloadFields = {};
+    for (const [fieldId, supplied] of Object.entries(suppliedFields)) {
+      if (fieldId === "summary" || fieldId === "description") {
+        resolvedPayloadFields[fieldId] = String(supplied);
+        continue;
+      }
+      const fieldMeta = { ...meta.fieldsMeta[fieldId], id: fieldId };
+      resolvedPayloadFields[fieldId] = restFieldPayload(fieldMeta, supplied);
+    }
+    const operation = {
+      kind: "create-lel-subtask",
+      projectId: CONTRACT.projectId,
+      parentKey,
+      issueTypeId: meta.subtaskType.id,
+      fields: suppliedFields,
+    };
+    const submission = {
+      path: "/rest/api/2/issue",
+      fields: Object.fromEntries(
+        Object.entries(resolvedPayloadFields).sort(([left], [right]) =>
+          left.localeCompare(right)
+        )
+      ),
+      modelFields: meta.modelFields,
+      subtaskType: meta.subtaskType,
+      parent: {
+        key: parentKey,
+        id:
+          parentState.id !== undefined && parentState.id !== null
+            ? String(parentState.id)
+            : null,
+        issuetypeId: parentTypeId || null,
+      },
+    };
+    const confirmation = confirmationDigest({ operation, submission });
+    return {
+      operation,
+      submission,
+      confirmation,
+      meta,
+      parentState,
+      resolvedPayloadFields,
+      model: {
+        requiredFields,
+        missingFields: missing,
+        subtaskType: meta.subtaskType,
+        parent: submission.parent,
+      },
+    };
+  };
+
+  const planned = await buildPlan();
+  const plan = {
+    operation: planned.operation,
+    confirmation: planned.confirmation,
+    model: planned.model,
+  };
+  if (planned.model.missingFields.length)
+    return { state: "MissingRequiredFields", ...plan };
+  if (confirm !== planned.confirmation)
+    return { state: "AwaitingConfirmation", ...plan };
+  const refreshed = await buildPlan();
+  if (refreshed.confirmation !== planned.confirmation)
+    return {
+      state: "AwaitingConfirmation",
+      operation: refreshed.operation,
+      confirmation: refreshed.confirmation,
+      model: refreshed.model,
+    };
+  const createFields = {
+    ...refreshed.resolvedPayloadFields,
+    project: { id: String(CONTRACT.projectId) },
+    parent: { key: parentKey },
+    issuetype: { id: refreshed.meta.subtaskType.id },
+  };
+  const { payload } = await createRequest(transport, "subtask_submission", {
+    method: "POST",
+    path: "/rest/api/2/issue",
+    json: { fields: createFields },
+    mutation: true,
+  });
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    !/^LEL-\d+$/.test(String(payload.key ?? ""))
+  )
+    throw new JiraAmbiguousOutcome(
+      "subtask create did not return a confirmed LEL issue key"
+    );
+  const verified = await verifyCreatedSubtask(
+    transport,
+    payload.key,
+    parentKey,
+    refreshed.meta.subtaskType,
+    suppliedFields
+  );
+  return { ...plan, ...verified };
+}
+
+export async function verifyCreatedSubtask(
+  transport,
+  issueKey,
+  parentKey,
+  subtaskType,
+  suppliedFields
+) {
+  if (typeof issueKey !== "string" || !/^LEL-\d+$/.test(issueKey))
+    throw new JiraProtocolError("a valid LEL issue key is required for readback");
+  const expectedParent = assertIssueKey(parentKey);
+  const expectedTypeId = String(subtaskType?.id ?? "");
+  if (!expectedTypeId)
+    throw new JiraProtocolError("a subtask issue type id is required");
+  let issue;
+  try {
+    const readbackFields = [
+      "project",
+      "issuetype",
+      "parent",
+      ...Object.keys(suppliedFields),
+    ];
+    issue = (
+      await getIssueState(
+        transport,
+        issueKey,
+        [...new Set(readbackFields)]
+      )
+    );
+  } catch (error) {
+    throw new JiraAmbiguousOutcome("created subtask readback failed", {
+      cause: error,
+      issueKey,
+    });
+  }
+  const isExpectedProject =
+    issue.fields.project?.key === CONTRACT.projectKey &&
+    Number(issue.fields.project?.id) === CONTRACT.projectId;
+  const isExpectedType =
+    String(issue.fields.issuetype?.id) === expectedTypeId;
+  const actualParentKey =
+    issue.fields.parent && typeof issue.fields.parent === "object"
+      ? issue.fields.parent.key
+      : undefined;
+  const isExpectedParent = actualParentKey === expectedParent;
+  const persistedFields = Object.fromEntries(
+    Object.entries(suppliedFields).map(([field, expected]) => {
+      const actual = issue.fields[field];
+      return [
+        field,
+        {
+          expected,
+          actual: actual ?? null,
+          matched: persistedValueMatches(actual, expected),
+        },
+      ];
+    })
+  );
+  const fieldsPersisted = Object.values(persistedFields).every(
+    (field) => field.matched
+  );
+  if (
+    !isExpectedProject ||
+    !isExpectedType ||
+    !isExpectedParent ||
+    !fieldsPersisted
+  )
+    throw new JiraAmbiguousOutcome(
+      "created issue could not be confirmed as an LEL subtask of the requested parent",
+      {
+        issueKey,
+        verification: {
+          isExpectedProject,
+          isExpectedType,
+          isExpectedParent,
+          fieldsPersisted,
+        },
+      }
+    );
+  return {
+    state: "Completed",
+    issue: { key: issue.key, id: Number(issue.id) },
+    readback: {
+      projectKey: issue.fields.project.key,
+      projectId: Number(issue.fields.project.id),
+      issueTypeId: String(issue.fields.issuetype.id),
+      issueTypeName: issue.fields.issuetype.name,
+      parentKey: actualParentKey,
+      parentId:
+        issue.fields.parent?.id !== undefined &&
+        issue.fields.parent?.id !== null
+          ? String(issue.fields.parent.id)
+          : null,
+      persistedFields,
+    },
+  };
+}
+
 async function comments(transport, key) {
   const all = [];
   const ids = new Set();
