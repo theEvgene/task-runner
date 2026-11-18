@@ -57,13 +57,19 @@ checked-in generic renderer `scripts/dell_lan/shell_command.py`
 - Free text (`flag --comment`, `create-epic --summary/--description`,
   `--field` values, DCO `--description`) with `"`, newlines, or other
   unsafe shapes never travels inline. Write the exact UTF-8 bytes to a file
-  on the LAN share and pass the Lenovo-side share path through the new
+  on the existing owner-provided LAN share (the same share that already hosts
+  the queue, readable and writable from both hosts; not a new mount) and pass
+  the Lenovo-side absolute share path through the new
   file-backed options: `flag --comment-file`, `create-epic --summary-file` /
-  `--description-file`. Inline and file forms of one field are mutually
-  exclusive; the CLI refuses both together and reads the file as UTF-8.
+  `--description-file`. Staging uses only that share: write the UTF-8 file
+  locally, copy it to the share over the existing SMB mount (Explorer or copy),
+  and pass the Lenovo-side absolute path of that same file; the queue carries
+  only the path and digests, never the text. Inline and file forms of one field
+  are mutually exclusive; the CLI refuses both together and reads the file as
+  UTF-8.
   `--field` has no file form: an unsafe custom-field value stays local.
 
-Jira read example (Lenovo argv before transport rendering):
+Jira examples (Lenovo argv before transport rendering; read plus file-backed writes):
 
 ```text
 <node-on-lenovo> <checkout>\scripts\jira-protocol.mjs extract --issue LEL-1234
