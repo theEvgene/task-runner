@@ -37,7 +37,14 @@ already authorized Jira browser-compatible session through the environment:
 ```powershell
 $env:JIRA_SESSION_COOKIE = '<Cookie header value>'
 $env:JIRA_ATL_TOKEN = '<atl_token from the same session>' # assignment only
+$env:NODE_USE_SYSTEM_CA = '1'
 ```
+
+Launch every Node invocation with `NODE_USE_SYSTEM_CA=1` in the environment
+(POSIX shells: prefix `NODE_USE_SYSTEM_CA=1 node ...`) so the corporate chain
+resolves from the host system store. TLS verification stays enabled:
+`NODE_TLS_REJECT_UNAUTHORIZED` is never set to `0`, `rejectUnauthorized` is
+never disabled, and no error handling is added around it.
 
 Production is pinned to `https://jira3.tcsbank.ru`. `JIRA_BASE_URL` is accepted
 only when `JIRA_PROTOCOL_TEST_MODE=1`, and even then only an HTTP(S) loopback
@@ -52,6 +59,7 @@ request headers, or the Quick Create field HTML that can contain hidden state.
 ## Extract REST-visible issue content
 
 ```powershell
+$env:NODE_USE_SYSTEM_CA = '1'
 node scripts/jira-protocol.mjs extract --issue LEL-4122
 ```
 
@@ -89,6 +97,7 @@ not contact those systems or URLs.
 ## Read GreenHopper detail-view data
 
 ```powershell
+$env:NODE_USE_SYSTEM_CA = '1'
 node scripts/jira-protocol.mjs detail-view --issue LEL-4122
 ```
 
@@ -114,6 +123,7 @@ receipt as if it proved comments, attachments, links, or related-system data.
 Discover transitions for an issue, subtask, or Epic:
 
 ```powershell
+$env:NODE_USE_SYSTEM_CA = '1'
 node scripts/jira-protocol.mjs transitions --issue LEL-4122
 ```
 
@@ -121,6 +131,7 @@ Choose an available transition id and the current board column whose
 `statusIds` contain its `targetStatus`. The first invocation is read-only:
 
 ```powershell
+$env:NODE_USE_SYSTEM_CA = '1'
 node scripts/jira-protocol.mjs transition `
   --issue LEL-4122 `
   --transition-id 41 `
@@ -130,6 +141,7 @@ node scripts/jira-protocol.mjs transition `
 Review the receipt and repeat with its `confirmation` value:
 
 ```powershell
+$env:NODE_USE_SYSTEM_CA = '1'
 node scripts/jira-protocol.mjs transition `
   --issue LEL-4122 `
   --transition-id 41 `
@@ -154,6 +166,7 @@ chosen target column currently contains the transition target status.
 The first invocation is read-only and produces a confirmation digest:
 
 ```powershell
+$env:NODE_USE_SYSTEM_CA = '1'
 node scripts/jira-protocol.mjs assign `
   --issue LEL-4122 `
   --assignee example.user
@@ -174,6 +187,7 @@ it does not prove a universal static create payload. This CLI follows that
 model rather than hardcoding guessed custom fields.
 
 ```powershell
+$env:NODE_USE_SYSTEM_CA = '1'
 node scripts/jira-protocol.mjs create-epic `
   --summary 'Improve service resilience' `
   --description 'Context and acceptance notes'
@@ -183,6 +197,7 @@ If the current server model has other required fields, the result is
 `MissingRequiredFields` with safe field ids and labels. Supply them explicitly:
 
 ```powershell
+$env:NODE_USE_SYSTEM_CA = '1'
 node scripts/jira-protocol.mjs create-epic `
   --summary 'Improve service resilience' `
   --field customfield_10481=SERVICE
@@ -235,4 +250,4 @@ digest is supplied. Tests use injected transports and local data only.
 
 ### Flag with a required comment
 
-Run `node scripts/jira-protocol.mjs flag --issue LEL-1234 --action add --comment "Reason"` (use `remove` to clear). For a long, quoted, Unicode, or multiline comment, write the exact UTF-8 text to a file and pass `--comment-file <path>` instead; `--comment` and `--comment-file` are mutually exclusive. Repeat with the returned `--confirm` digest to submit. The confirmed operation refuses an already matching flag state to avoid replaying a comment. After a write, both the flag and a new comment ID must be observed; an unknown outcome requires manual readback before retry. `create-epic` offers the same pair as `--summary-file` / `--description-file`. The GreenHopper route and payload derive from browser evidence; the live CLI route and authentication remain unverified. No live write was performed.
+Run `$env:NODE_USE_SYSTEM_CA='1'; node scripts/jira-protocol.mjs flag --issue LEL-1234 --action add --comment "Reason"` (use `remove` to clear). For a long, quoted, Unicode, or multiline comment, write the exact UTF-8 text to a file and pass `--comment-file <path>` instead; `--comment` and `--comment-file` are mutually exclusive. Repeat with the returned `--confirm` digest to submit. The confirmed operation refuses an already matching flag state to avoid replaying a comment. After a write, both the flag and a new comment ID must be observed; an unknown outcome requires manual readback before retry. `create-epic` offers the same pair as `--summary-file` / `--description-file`. The GreenHopper route and payload derive from browser evidence; the live CLI route and authentication remain unverified. No live write was performed.

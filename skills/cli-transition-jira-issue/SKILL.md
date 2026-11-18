@@ -11,14 +11,17 @@ available transition; it does not synthesize a path to an arbitrary status.
 Run it on the host that holds the authorized Jira session: locally when the
 session is local, or on Lenovo through the generic signed queue when the
 session lives only there (see `docs/lenovo-hosted-scripts.md`; same
-two-phase flow, no Jira-specific wrapper).
+two-phase flow, no Jira-specific wrapper). Launch every invocation with
+`NODE_USE_SYSTEM_CA=1` in the environment (PowerShell:
+`$env:NODE_USE_SYSTEM_CA='1'`). TLS verification stays enabled; add no error
+handling around it.
 
 ## Discover and select
 
 Discover the issue-specific transitions read-only:
 
 ```text
-node <skill-dir>/scripts/jira-protocol.mjs transitions --issue LEL-1234
+NODE_USE_SYSTEM_CA=1 node <skill-dir>/scripts/jira-protocol.mjs transitions --issue LEL-1234
 ```
 
 Select only a transition actually returned for this issue. Keep the action
@@ -37,7 +40,7 @@ unsupported. Report that boundary rather than submitting an empty form.
 Run without confirmation first:
 
 ```text
-node <skill-dir>/scripts/jira-protocol.mjs transition \
+NODE_USE_SYSTEM_CA=1 node <skill-dir>/scripts/jira-protocol.mjs transition \
   --issue LEL-1234 --transition-id <id> --target-column <column-id>
 ```
 

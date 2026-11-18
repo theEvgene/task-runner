@@ -11,7 +11,10 @@ with this skill; never substitute a similarly named global command. Run it on
 the host that holds the authorized Jira session: locally when the session is
 local, or on Lenovo through the generic signed queue when the session lives
 only there (see `docs/lenovo-hosted-scripts.md` in the pinned task-runner
-checkout; same two-phase flow, no Jira-specific wrapper).
+checkout; same two-phase flow, no Jira-specific wrapper). Launch every
+invocation with `NODE_USE_SYSTEM_CA=1` in the environment (PowerShell:
+`$env:NODE_USE_SYSTEM_CA='1'`). TLS verification stays enabled; add no error
+handling around it.
 
 ## Prepare
 
@@ -33,7 +36,7 @@ confirmation. That disclosure is a known limitation, not evidence of absence.
 Run the command without `--confirm` first:
 
 ```text
-node <skill-dir>/scripts/jira-protocol.mjs create-epic \
+NODE_USE_SYSTEM_CA=1 node <skill-dir>/scripts/jira-protocol.mjs create-epic \
   --summary <summary> --description <description> \
   [--field <server-field-id>=<value>]...
 ```
