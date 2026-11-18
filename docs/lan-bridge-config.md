@@ -196,7 +196,9 @@ Join-Path (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Documents\re
 Run it only where its session already exists, exactly as
 `docs/jira-protocol.md` states: `node scripts/jira-protocol.mjs
 <command> ...` with `JIRA_SESSION_COOKIE` (plus `JIRA_ATL_TOKEN` for
-`assign`) already present in that host's environment. That CLI also has a
+`assign`) already present in that host's environment. Set
+`NODE_USE_SYSTEM_CA=1` in the environment inherited by the Node process and
+keep TLS certificate verification enabled. That CLI also has a
 generic signed-queue route for Dell-started agents: run the identical
 command on Lenovo through `scripts/lan_bridge/lan_bridge.py` as
 `docs/lenovo-hosted-scripts.md` states (same two-phase flow, file-backed

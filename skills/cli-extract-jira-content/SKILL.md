@@ -11,10 +11,13 @@ Use `scripts/jira-protocol.mjs` relative to this `SKILL.md`. Read
 locally when the session is local, or on Lenovo through the generic signed
 queue when the session lives only there (see
 `docs/lenovo-hosted-scripts.md`; same command, no Jira-specific wrapper).
+Launch every invocation with `NODE_USE_SYSTEM_CA=1` in the environment
+(PowerShell: `$env:NODE_USE_SYSTEM_CA='1'`). TLS verification stays enabled;
+add no error handling around it.
 For the run itself:
 
 ```text
-node <skill-dir>/scripts/jira-protocol.mjs extract --issue LEL-1234
+NODE_USE_SYSTEM_CA=1 node <skill-dir>/scripts/jira-protocol.mjs extract --issue LEL-1234
 ```
 
 For an unusually large issue, `--page-size N` changes the requested comment

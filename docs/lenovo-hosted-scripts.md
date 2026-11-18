@@ -33,6 +33,10 @@ this route.
   `DCO_PRODUCTION_ACCESS_TOKEN` (or shared `DCO_ACCESS_TOKEN` fallback). The
   CLIs accept no credential flags and write no credential files. Never place a
   token in argv, a command file, a plan, a receipt, or the queue.
+- Every Jira CLI invocation requires `NODE_USE_SYSTEM_CA=1` in the Lenovo
+  worker process environment inherited by Node. Verify it is present there
+  before submitting; setting it only in the Dell process does not propagate
+  it through the queue. Keep TLS certificate verification enabled.
 
 ## Dell-side command construction (generic transport only)
 

@@ -9,14 +9,17 @@ Use the installed `scripts/jira-protocol.mjs` relative to this `SKILL.md` and
 read `references/jira-protocol.md` before execution. Supply one unambiguous
 `LEL-N` key, one action (`add` or `remove`), and one required comment. The CLI
 has no flag-state discovery command: use a supplied or already verified
-current state, never a guessed one.
+current state, never a guessed one. Launch every invocation with
+`NODE_USE_SYSTEM_CA=1` in the environment (PowerShell:
+`$env:NODE_USE_SYSTEM_CA='1'`). TLS verification stays enabled; add no error
+handling around it.
 
 ## Plan, confirm, and apply
 
 Run without confirmation first:
 
 ```text
-node <skill-dir>/scripts/jira-protocol.mjs flag \
+NODE_USE_SYSTEM_CA=1 node <skill-dir>/scripts/jira-protocol.mjs flag \
   --issue LEL-1234 --action add --comment "Reason"
 ```
 

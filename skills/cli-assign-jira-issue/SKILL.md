@@ -19,10 +19,13 @@ context. Never infer it from an email, display name, or operating-system user.
 
 Place the existing Jira session cookie in `JIRA_SESSION_COOKIE` and the
 same-session `atl_token` in `JIRA_ATL_TOKEN`; keep both out of arguments,
-prompts, files, receipts, and logs. Run without confirmation first:
+prompts, files, receipts, and logs. Launch every invocation with
+`NODE_USE_SYSTEM_CA=1` in the environment (PowerShell:
+`$env:NODE_USE_SYSTEM_CA='1'`). TLS verification stays enabled; add no error
+handling around it. Run without confirmation first:
 
 ```text
-node <skill-dir>/scripts/jira-protocol.mjs assign \
+NODE_USE_SYSTEM_CA=1 node <skill-dir>/scripts/jira-protocol.mjs assign \
   --issue LEL-1234 --assignee exact.login
 ```
 
