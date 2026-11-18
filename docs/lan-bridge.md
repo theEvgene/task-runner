@@ -60,8 +60,8 @@ declare it.
 Exit `2` refuses without executing: empty command, bad key, key inside the
 queue or a repository, duplicate id, unreadable command file, and -- when
 `--dialect` is given -- a syntax refusal or an unavailable syntax
-validator (see "Syntax gate" below; without `--dialect` the gate stays
-off and the submit path is unchanged).
+validator (see [the submit syntax gate](lan-bridge-syntax-gate.md); without
+`--dialect` the gate stays off and the submit path is unchanged).
 
 2. Fetch the bound result (live callers MUST pass explicit `--timeout 600`
    `--poll 30`; defaults are fixture-only):
@@ -150,104 +150,31 @@ stderr text.
 
 ## Syntax gate (syntax-only, opt-in per submit)
 
-With `--dialect powershell|cmd`, `submit` checks the command syntax
-before seal/publish through the small seam
-`scripts/lan_bridge/syntax.py::validate(command, dialect)`. The check
-point sits in `submit_job` ahead of JOBID generation: a refusal prints
-the reason to stderr, exits `2`, and leaves no JOBID and no file under
-`jobs/`. A pass continues down the unchanged
-seal/publish/MAC/immutability path.
+With `--dialect powershell|cmd`, `submit` checks the command syntax before
+seal/publish through `scripts/lan_bridge/syntax.py::validate`: a refusal
+prints a secret-free reason, exits `2`, and leaves no JOBID and no file
+under `jobs/`; a pass continues down the unchanged path. Without
+`--dialect` the gate stays off. The gate is syntax only (never "exists" or
+"safe") and fails closed when its validator cannot run.
 
-- Explicit dialect, no guessing. The dialect must be `powershell` or
-  `cmd`; anything else refuses naming the explicit choice. Without
-  `--dialect` the gate is off and the submit path is unchanged.
-- Worker shell compatibility. The worker executes through the platform
-  shell (`shell=True`; `COMSPEC`/`cmd.exe` on Windows), so a bare
-  PowerShell line is not portable. `--dialect powershell` requires an
-  explicit launcher: `powershell -Command <script>` (or
-  `powershell.exe`/`pwsh`, with optional launcher flags). A bare line
-  such as `& '...' ...` refuses as ambiguous even when its PowerShell
-  syntax is valid; wrap it as
-  `powershell -NoProfile -Command "& '...' ..."`. Only one `-Command`
-  script argument is accepted: no unquoted cmd operator
-  (`| & < > ^ ( )`) may sit outside a double-quoted script, no cmd
-  token may follow its closing quote, and `-File`/other launcher shapes
-  refuse. This is a launcher-shape check, not a full cmd parse of the
-  launcher.
-- `powershell` runs `Parser.ParseInput` (AST + `Token[]` +
-  `ParseError[]`) on the inner `-Command` script; a syntax error
-  refuses with the `powershell` dialect, a secret-free parser reason,
-  and the source offset within the submitted command file. `cmd` is a
-  deliberately narrow subset: one command line, balanced double quotes,
-  no NUL, and no unquoted `| & < > ^ ( )` operator. That refuses
-  pipelines, redirection, compounds, and subshells, so malformed forms
-  such as `echo hi |` refuse; it is not a full cmd grammar check.
-- Syntax only. A pass says nothing about the runtime: cmdlet/path
-  existence, execution policy, providers, rights, and the network are
-  not checked. A valid line naming a nonexistent cmdlet or path passes,
-  and a pass must never be read as "exists" or "safe". The gate is not
-  a security sanitizer or an allow-list.
-- Fail-closed when active. If the validator cannot run (no
-  `pwsh`/`powershell` runtime, nonzero parser-probe exit even with
-  output, or unreadable probe output), submit refuses before any write
-  instead of skipping the check. The operator may pin or blank
-  discovery with `TASK_RUNNER_POWERSHELL_BIN` (a path, or empty to
-  force unavailable). Without `--dialect` the gate stays off and the
-  submit path keeps its legacy behavior.
-- Diagnostics never carry secrets: only the dialect, a secret-free
-  reason (parser free text and caught-exception text pass through a
-  redactor that removes command-derived tokens of any length, including
-  short ones, and truncates), and the offset, plus the usual call
-  parameters. Command text, key material and queue contents are never
-  printed.
+Launcher shapes, the accepted `cmd` subset, and diagnostics are specified
+in [the submit syntax gate](lan-bridge-syntax-gate.md).
 
 ## Managed-write claims (opt-in per submit)
 
-`submit --claim <resource>` (repeatable; `submit_job(..., resource_claims=)`
-in Python) declares the job's explicit managed-write footprint. It enables
-the authoritative reserved parallel path for exactly this job:
+`submit --claim <resource>` (repeatable; `submit_job(...,
+resource_claims=)`) declares the job's explicit managed-write footprint and
+enables the authoritative reserved parallel path for that job only. Two
+producers cannot both admit the same or a nested footprint, and a conflict
+refuses with exit `2` before anything is published. `capacity:<name>` is
+the only shared claim: its quota comes from `queue/capacity-quotas.json`,
+never from an inference or a per-call ceiling.
 
-```text
-python scripts/lan_bridge/lan_bridge.py submit \
-  --queue <queue-dir> --key-file <key-path> \
-  --command-file <cmd-file> --cwd <working-dir-on-worker> \
-  --claim 'file:C:\out\report.csv' --claim 'tcp:127.0.0.1:8080'
-```
-
-- The signed reservation (`queue/reservations/<job-id>.json`) and the job
-  publish together under one queue-local operating-system lock, so two
-  producers cannot both admit the same or a nested footprint. A conflicting
-  footprint refuses with exit `2` before anything is published.
-- Claims are normalized: absolute case-folded paths, and one exclusive
-  `tcp:*:<port>` token per port. A wildcard bind, `localhost`, and a
-  specific address naming the same port are the same claim.
-- `capacity:<name>` is the only shared claim, and it is never inferred.
-  Its quota is one queue-local file, `queue/capacity-quotas.json`, a plain
-  JSON object such as `{"cpu": 2, "heavy-build": 1}`. The referee reads it
-  inside the same lock as the reservation scan, so every producer behind
-  the queue is bounded by the same ceiling and no submit call can raise it.
-  At most 8 names per queue, each quota an integer from 1 to 256; a name is
-  case-folded like a claim, and names that collide after folding refuse.
-  Live holders are counted, an over-limit publish is refused by naming the
-  exhausted resource and its limit, and a capacity claim with no entry in
-  that file (or an unreadable or malformed file) is refused before
-  publication. `--claim 'capacity:cpu'` therefore works once the operator
-  writes the file. The Python `capacities=` keyword of
-  `reserve_and_submit`/`referee_publish` is only an assertion: every name
-  it states must equal the queue file, and a different value is refused,
-  so omit it or keep it identical.
-- A capacity quota bounds one queue directory; two queue roots on one host
-  each apply their own file, so keep one queue per heavy-job pool.
-- A refusal names the limiting resource: an overlapping port or path
-  token appears in the conflict message, and a quota denial names the
-  resource and its limit. Re-submitting an already published job returns
-  `owned` and stays idempotent even after the quota file changed.
-- Without `--claim` nothing changes: one direct immutable publish, the
-  worker's `exclusive:global` fallback, and sequential execution.
-- Admission alone does not free anything. The worker releases a footprint
-  only by publishing `queue/releases/<job-id>.json` bound to the claim
-  owner and generation, the exact job bytes, the resource set, and the
-  exact result bytes; a signed result alone keeps the footprint held.
+Claim normalization, the one queue-local quota authority, and the
+proof-bound release are specified in [managed-write claims and the
+reservation referee](lan-bridge-claims.md). Without `--claim` nothing
+changes: one direct immutable publish, the worker's `exclusive:global`
+fallback, and sequential execution.
 
 ## Failure diagnosis
 
@@ -423,11 +350,7 @@ original id with exactly one submission, bounded expiry as waiting or unknown pl
 restart recovery with the same id, tamper/unavailable/bad-id fast blockers,
 verified-but-unrecognized status returned as confirmed-yet-unknown (never
 success), the single-resolve before/after fixture, and the one-probe
-immediate-result assertion. The syntax-gate suites are
-`test_submit_syntax_gate.py` (seam via stub adapters, ambiguous dialect,
-fail-closed validator, secret-free diagnostics, legacy pass-through) and
-`test_powershell_syntax.py` (`Parser.ParseInput` refusals with offset, the
-wrapped `& '...'` shape, launcher-boundary refusals including an external
-cmd operator, the nonexistent-cmdlet negative case, nonzero-probe
-fail-closed, and a missing PowerShell backend). No second host is ever
+immediate-result assertion. The syntax-gate suites
+(`test_submit_syntax_gate.py`, `test_powershell_syntax.py`) are described in
+[the submit syntax gate](lan-bridge-syntax-gate.md). No second host is ever
 reached.
