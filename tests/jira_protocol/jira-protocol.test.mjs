@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { errorReceipt, serializeReceipt } from "../../scripts/jira-protocol.mjs";
+import {
+  errorReceipt,
+  serializeReceipt,
+} from "../../scripts/jira-protocol.mjs";
 import { defaultsFromEditHtml } from "../../scripts/jira_protocol/html-form.mjs";
 import {
   JiraAmbiguousOutcome,
@@ -62,6 +65,10 @@ class FakeTransport {
       },
     };
     this.board = board();
+    this.board.issuesData.issues = [
+      { key: "LEL-42", id: 42, statusId: "10206", assignee: "old.user" },
+      { key: "LEL-43", id: 43, statusId: "10206" },
+    ];
     this.transitions = {
       issueId: 42,
       transitions: [
@@ -421,7 +428,9 @@ test("ambiguous submission failures retain the safe stage", async () => {
   const originalRequest = transport.request.bind(transport);
   transport.request = async (request) => {
     if (request.path === "/secure/QuickCreateIssue.jspa")
-      throw new JiraAmbiguousOutcome("Jira returned HTTP 500 after a write may have started");
+      throw new JiraAmbiguousOutcome(
+        "Jira returned HTTP 500 after a write may have started"
+      );
     return originalRequest(request);
   };
   await assert.rejects(
@@ -458,7 +467,8 @@ test("Epic creation serializes the server model and reads back the created key",
   assert.equal(result.readback.projectId, 10848);
   assert.equal(result.readback.issueTypeId, "10000");
   assert.equal(result.readback.issueTypeName, "Epic");
-  assert.equal(result.readback.inBacklog, true);
+  assert.equal(result.readback.onBoard, true);
+  assert.equal("inBacklog" in result.readback, false);
   assert.deepEqual(result.readback.persistedFields, {
     customfield_10104: {
       expected: "New Epic",
@@ -521,16 +531,35 @@ test("Epic confirmation changes when a live server default changes", async () =>
   );
 });
 
-test("Epic creation completes when the issue is on a board column instead of in backlog", async () => {
+test("Epic creation completes when the issue is on a board column", async () => {
   const transport = new FakeTransport();
   transport.board.issuesData.issues = [
     { key: "LEL-43", id: 43, statusId: "10206" },
   ];
+  const input = {
+    summary: "New Epic",
+    fields: { customfield_10104: "New Epic", customfield_10481: "SERVICE" },
+  };
+  const preview = await createEpic(transport, input);
+  const result = await createEpic(transport, {
+    ...input,
+    confirm: preview.confirmation,
+  });
+  assert.equal(result.state, "Completed");
+  assert.equal(result.issue.key, "LEL-43");
+  assert.equal(result.readback.onBoard, true);
+  assert.equal("inBacklog" in result.readback, false);
+});
+
+test("backlog membership alone does not prove board placement", async () => {
+  const transport = new FakeTransport();
   const originalRequest = transport.request.bind(transport);
   transport.request = async (request) => {
     const response = await originalRequest(request);
+    if (request.path.endsWith("/work/allData.json"))
+      response.payload.issuesData.issues = [];
     if (request.path.endsWith("/issue/matchesBoard"))
-      response.payload.issuesInBacklog = [];
+      response.payload.issuesInBacklog = ["LEL-43"];
     return response;
   };
   const input = {
@@ -538,11 +567,16 @@ test("Epic creation completes when the issue is on a board column instead of in 
     fields: { customfield_10104: "New Epic", customfield_10481: "SERVICE" },
   };
   const preview = await createEpic(transport, input);
-  const result = await createEpic(transport, { ...input, confirm: preview.confirmation });
-  assert.equal(result.state, "Completed");
-  assert.equal(result.issue.key, "LEL-43");
-  assert.equal(result.readback.inBacklog, false);
-  assert.equal(result.readback.onBoard, true);
+  await assert.rejects(
+    createEpic(transport, { ...input, confirm: preview.confirmation }),
+    (error) => {
+      assert.ok(error instanceof JiraAmbiguousOutcome);
+      assert.equal(error.issueKey, "LEL-43");
+      assert.equal(error.verification.isOnBoard, false);
+      assert.equal("isInBacklog" in (error.verification ?? {}), false);
+      return true;
+    }
+  );
 });
 
 test("an issue in board data without a mapped column does not prove placement", async () => {
@@ -550,13 +584,6 @@ test("an issue in board data without a mapped column does not prove placement", 
   transport.board.issuesData.issues = [
     { key: "LEL-43", id: 43, statusId: "999999" },
   ];
-  const originalRequest = transport.request.bind(transport);
-  transport.request = async (request) => {
-    const response = await originalRequest(request);
-    if (request.path.endsWith("/issue/matchesBoard"))
-      response.payload.issuesInBacklog = [];
-    return response;
-  };
   const input = {
     summary: "New Epic",
     fields: { customfield_10104: "New Epic", customfield_10481: "SERVICE" },
@@ -580,13 +607,6 @@ test("missing board status identifiers never prove placement", async () => {
       { key: "LEL-43", id: 43, statusId: invalidId },
     ];
     transport.board.columnsData.columns = [{ id: 1, statusIds: [invalidId] }];
-    const originalRequest = transport.request.bind(transport);
-    transport.request = async (request) => {
-      const response = await originalRequest(request);
-      if (request.path.endsWith("/issue/matchesBoard"))
-        response.payload.issuesInBacklog = [];
-      return response;
-    };
     const input = {
       summary: "New Epic",
       fields: { customfield_10104: "New Epic", customfield_10481: "SERVICE" },
@@ -600,13 +620,13 @@ test("missing board status identifiers never prove placement", async () => {
   }
 });
 
-test("Epic creation refuses Completed when board and backlog membership are not proven", async () => {
+test("Epic creation refuses Completed when board membership is not proven", async () => {
   const transport = new FakeTransport();
   const originalRequest = transport.request.bind(transport);
   transport.request = async (request) => {
     const response = await originalRequest(request);
-    if (request.path.endsWith("/issue/matchesBoard"))
-      response.payload.issuesInBacklog = [];
+    if (request.path.endsWith("/work/allData.json"))
+      response.payload.issuesData.issues = [];
     return response;
   };
   const input = {
@@ -626,7 +646,6 @@ test("Epic creation refuses Completed when board and backlog membership are not 
       assert.deepEqual(receipt.verification, {
         isExpectedProject: true,
         isEpic: true,
-        isInBacklog: false,
         isOnBoard: false,
         fieldsPersisted: true,
       });
