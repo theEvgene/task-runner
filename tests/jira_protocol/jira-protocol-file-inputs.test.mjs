@@ -77,3 +77,46 @@ test("CLI refuses --summary with --summary-file together", () => {
   assert.notEqual(result.status, 0);
   assert.match(`${result.stdout}${result.stderr}`, /mutually exclusive/);
 });
+
+test("CLI refuses --description with --description-file together", () => {
+  const result = spawnSync(
+    process.execPath,
+    [cli, "create-epic", "--description", "x", "--description-file", "y"],
+    { encoding: "utf8" }
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stdout}${result.stderr}`, /mutually exclusive/);
+});
+
+test("long multiline Russian summary and description survive UTF-8 files exactly", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "jira-epic-ru-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const summary =
+    "Длинный русский заголовок эпика «Устойчивость сервиса»\n" +
+    'вторая строка с кавычками "тест" и символами <>& éß 中文 🙂';
+  const description =
+    "Описание эпика:\n" +
+    "- строка 1: проверка «ёлочки» и „лапок“\n" +
+    "- строка 2: символы éß 中文 emoji 🙂\n" +
+    "\n" +
+    "{code}node scripts/jira-protocol.mjs create-epic --summary-file s.txt --description-file d.txt{code}\n" +
+    "Конец описания.";
+  const summaryFile = join(dir, "summary.txt");
+  const descriptionFile = join(dir, "description.md");
+  await writeFile(summaryFile, summary, "utf8");
+  await writeFile(descriptionFile, description, "utf8");
+  const resolvedSummary = await resolveFileBackedText(
+    { "summary-file": summaryFile },
+    "summary",
+    "summary-file"
+  );
+  const resolvedDescription = await resolveFileBackedText(
+    { "description-file": descriptionFile },
+    "description",
+    "description-file"
+  );
+  assert.equal(resolvedSummary, summary);
+  assert.equal(resolvedDescription, description);
+  assert.equal(await readFile(summaryFile, "utf8"), summary);
+  assert.equal(await readFile(descriptionFile, "utf8"), description);
+});

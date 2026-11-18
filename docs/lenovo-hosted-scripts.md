@@ -68,6 +68,7 @@ Jira read example (Lenovo argv before transport rendering):
 ```text
 <node-on-lenovo> <checkout>\scripts\jira-protocol.mjs extract --issue LEL-1234
 <node-on-lenovo> <checkout>\scripts\jira-protocol.mjs flag --issue LEL-1234 --action add --comment-file <lenovo-share-path>\comment.md
+<node-on-lenovo> <checkout>\scripts\jira-protocol.mjs create-epic --summary-file <lenovo-share-path>\summary.txt --description-file <lenovo-share-path>\description.md
 ```
 
 DCO example (plan bytes staged to the share first, then referenced on Lenovo;
