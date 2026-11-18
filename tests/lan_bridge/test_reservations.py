@@ -407,5 +407,3 @@ class LanReservationsTests(unittest.TestCase):
             "c2" * 16, [f"file:{self.root / 'canonical-2.out'}"],
             "canonical-2")
         self.assertIn(accepted["id"], self.live())
-
-
