@@ -148,9 +148,15 @@ local directory that must already exist for both spawned roles.
   one exclusive `tcp:*:<port>` token per port, so a wildcard bind,
   `localhost`, and a specific address naming that port are the same claim.
   Explicitly configured `capacity:<name>` claims are shared quotas, never
-  exclusive owners: the referee counts live holders against the quota the
-  caller supplies, names the exhausted resource when it refuses, and refuses
-  a capacity claim with no configured quota.
+  exclusive owners: one queue-local file, `queue/capacity-quotas.json`
+  (`{"cpu": 2}`, at most 8 names, each quota 1-256), is the only authority,
+  read under the same lock, so no producer can raise a ceiling another
+  producer admitted under. The referee counts live holders against it, names
+  the exhausted resource when it refuses, and refuses a capacity claim with
+  no configured quota or with an unreadable quota file. The quota bounds that
+  one queue directory. A caller-supplied `capacities=` mapping may only
+  confirm the file, name by name; a different value refuses. An already
+  published job stays `owned` on re-submit even after the file changed.
   The worker re-derives every binding and adds its own normalized working
   directory, so a payload cannot omit the directory it runs in. A
   reservation is live until `queue/releases/<job-id>.json` proves this exact

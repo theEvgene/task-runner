@@ -221,16 +221,27 @@ python scripts/lan_bridge/lan_bridge.py submit \
 - Claims are normalized: absolute case-folded paths, and one exclusive
   `tcp:*:<port>` token per port. A wildcard bind, `localhost`, and a
   specific address naming the same port are the same claim.
-- `capacity:<name>` is the only shared claim, and it is never inferred:
-  the referee admits it only when the caller supplies an explicit quota
-  through `job_reservations.reserve_and_submit(..., capacities={...})`.
-  Live holders are counted, an over-limit publish is refused by naming
-  the exhausted resource, and a capacity claim without a configured
-  quota is refused before publication. This CLI exposes only `--claim`;
-  capacity quotas require the referee API.
+- `capacity:<name>` is the only shared claim, and it is never inferred.
+  Its quota is one queue-local file, `queue/capacity-quotas.json`, a plain
+  JSON object such as `{"cpu": 2, "heavy-build": 1}`. The referee reads it
+  inside the same lock as the reservation scan, so every producer behind
+  the queue is bounded by the same ceiling and no submit call can raise it.
+  At most 8 names per queue, each quota an integer from 1 to 256; a name is
+  case-folded like a claim, and names that collide after folding refuse.
+  Live holders are counted, an over-limit publish is refused by naming the
+  exhausted resource and its limit, and a capacity claim with no entry in
+  that file (or an unreadable or malformed file) is refused before
+  publication. `--claim 'capacity:cpu'` therefore works once the operator
+  writes the file. The Python `capacities=` keyword of
+  `reserve_and_submit`/`referee_publish` is only an assertion: every name
+  it states must equal the queue file, and a different value is refused,
+  so omit it or keep it identical.
+- A capacity quota bounds one queue directory; two queue roots on one host
+  each apply their own file, so keep one queue per heavy-job pool.
 - A refusal names the limiting resource: an overlapping port or path
   token appears in the conflict message, and a quota denial names the
-  resource and its limit.
+  resource and its limit. Re-submitting an already published job returns
+  `owned` and stays idempotent even after the quota file changed.
 - Without `--claim` nothing changes: one direct immutable publish, the
   worker's `exclusive:global` fallback, and sequential execution.
 - Admission alone does not free anything. The worker releases a footprint
