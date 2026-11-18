@@ -1,9 +1,9 @@
 ---
 name: cli-create-lel-service-backlog-issue
-description: Create one Epic in the fixed LEL Service backlog through the task-runner Jira protocol CLI. Use for an explicitly requested LEL backlog Epic; do not use for other projects, issue types, subtasks, comments, assignment, or status changes.
+description: Create one Epic on the fixed LEL Service board through the task-runner Jira protocol CLI. Use for an explicitly requested LEL board Epic; do not use for other projects, issue types, subtasks, comments, assignment, or status changes.
 ---
 
-# Create an LEL backlog Epic through the CLI
+# Create an LEL Service board Epic through the CLI
 
 Use the installed `scripts/jira-protocol.mjs` relative to this `SKILL.md`.
 Read `references/jira-protocol.md` before execution. The runtime is installed
@@ -58,7 +58,7 @@ default changes the digest and requires a new review; do not reuse the old one.
 
 Report `Completed` only with the returned issue key and the CLI readback. Its
 contract proves project `LEL`/`10848`, issue type `Epic`/`10000`, and placement
-on the board or in the backlog of rapid view `298290`. It also proves exact persisted Summary and
+on the board of rapid view `298290`. It also proves exact persisted Summary and
 Description and a matching persisted value/id/key/name for every submitted
 custom field. Show the `persistedFields` receipt; do not call creation complete
 if any requested field is absent or mismatched. `detail-view --issue <KEY>` may

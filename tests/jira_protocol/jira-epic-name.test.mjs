@@ -43,6 +43,15 @@ class FakeTransport {
       ],
     };
     this.issueState = null;
+    this.board = {
+      rapidViewId: 298290,
+      columnsData: {
+        columns: [{ id: 5934576, name: "To Do", statusIds: ["10206"] }],
+      },
+      issuesData: {
+        issues: [{ key: "LEL-43", id: 43, statusId: "10206" }],
+      },
+    };
   }
 
   async request(request) {
@@ -68,6 +77,8 @@ class FakeTransport {
     }
     if (request.path.startsWith("/rest/api/2/issue/"))
       return { payload: structuredClone(this.issueState) };
+    if (request.path.endsWith("/work/allData.json"))
+      return { payload: structuredClone(this.board) };
     if (request.path.endsWith("/issue/matchesBoard"))
       return {
         payload: { issueIdsOrKeys: ["LEL-43"], issuesInBacklog: ["LEL-43"] },
@@ -93,9 +104,16 @@ test("Epic Name defaults to summary when model marks it optional", async () => {
   });
   assert.equal(result.state, "Completed");
   assert.equal(result.issue.key, "LEL-43");
+  assert.equal(result.readback.onBoard, true);
   assert.equal(transport.createdForm.get("customfield_10104"), "New Epic");
   assert.equal(transport.createdForm.get("summary"), "New Epic");
-  assert.equal(result.readback.persistedFields.customfield_10104.expected, "New Epic");
-  assert.equal(result.readback.persistedFields.customfield_10104.actual, "New Epic");
+  assert.equal(
+    result.readback.persistedFields.customfield_10104.expected,
+    "New Epic"
+  );
+  assert.equal(
+    result.readback.persistedFields.customfield_10104.actual,
+    "New Epic"
+  );
   assert.equal(result.readback.persistedFields.customfield_10104.matched, true);
 });
