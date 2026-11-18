@@ -13,6 +13,9 @@ export class JiraAmbiguousOutcome extends Error {
   constructor(message, options = {}) {
     super(message, options);
     this.name = "JiraAmbiguousOutcome";
+    if (typeof options.issueKey === "string" && /^LEL-\d+$/.test(options.issueKey))
+      this.issueKey = options.issueKey;
+    if (options.verification) this.verification = options.verification;
   }
 }
 

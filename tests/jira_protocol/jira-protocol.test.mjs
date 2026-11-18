@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { serializeReceipt } from "../../scripts/jira-protocol.mjs";
+import { errorReceipt, serializeReceipt } from "../../scripts/jira-protocol.mjs";
 import { defaultsFromEditHtml } from "../../scripts/jira_protocol/html-form.mjs";
 import {
   JiraAmbiguousOutcome,
+  JiraProtocolError,
   JiraTransport,
   redactSecrets,
 } from "../../scripts/jira_protocol/protocol.mjs";
@@ -376,6 +377,65 @@ test("Quick Create reports dynamic required fields before any write", async () =
   );
 });
 
+test("Epic creation distinguishes form and submission denials without retry", async () => {
+  const input = {
+    summary: "New Epic",
+    fields: { customfield_10104: "New Epic", customfield_10481: "SERVICE" },
+  };
+  for (const [path, stage] of [
+    ["/secure/QuickCreateIssue!default.jspa", "create_form_model"],
+    ["/secure/QuickCreateIssue.jspa", "create_submission"],
+  ]) {
+    const transport = new FakeTransport();
+    const preview = await createEpic(transport, input);
+    const originalRequest = transport.request.bind(transport);
+    let denied = 0;
+    transport.request = async (request) => {
+      if (request.path === path) {
+        denied += 1;
+        throw new JiraProtocolError("Jira returned HTTP 403", { status: 403 });
+      }
+      return originalRequest(request);
+    };
+    await assert.rejects(
+      createEpic(transport, { ...input, confirm: preview.confirmation }),
+      (error) => {
+        const receipt = JSON.parse(serializeReceipt(errorReceipt(error)));
+        assert.equal(receipt.state, "Failed");
+        assert.equal(receipt.httpStatus, 403);
+        assert.equal(receipt.stage, stage);
+        return true;
+      }
+    );
+    assert.equal(denied, 1);
+  }
+});
+
+test("ambiguous submission failures retain the safe stage", async () => {
+  const transport = new FakeTransport();
+  const input = {
+    summary: "New Epic",
+    fields: { customfield_10104: "New Epic", customfield_10481: "SERVICE" },
+  };
+  const preview = await createEpic(transport, input);
+  const originalRequest = transport.request.bind(transport);
+  transport.request = async (request) => {
+    if (request.path === "/secure/QuickCreateIssue.jspa")
+      throw new JiraAmbiguousOutcome("Jira returned HTTP 500 after a write may have started");
+    return originalRequest(request);
+  };
+  await assert.rejects(
+    createEpic(transport, { ...input, confirm: preview.confirmation }),
+    (error) => {
+      const receipt = errorReceipt(error);
+      assert.equal(receipt.state, "UnknownOutcome");
+      assert.equal(receipt.stage, "create_submission");
+      assert.equal(receipt.issueKey, undefined);
+      return true;
+    }
+  );
+});
+
 test("Epic creation serializes the server model and reads back the created key", async () => {
   const transport = new FakeTransport();
   const input = {
@@ -461,7 +521,86 @@ test("Epic confirmation changes when a live server default changes", async () =>
   );
 });
 
-test("Epic creation refuses Completed when backlog membership is not proven", async () => {
+test("Epic creation completes when the issue is on a board column instead of in backlog", async () => {
+  const transport = new FakeTransport();
+  transport.board.issuesData.issues = [
+    { key: "LEL-43", id: 43, statusId: "10206" },
+  ];
+  const originalRequest = transport.request.bind(transport);
+  transport.request = async (request) => {
+    const response = await originalRequest(request);
+    if (request.path.endsWith("/issue/matchesBoard"))
+      response.payload.issuesInBacklog = [];
+    return response;
+  };
+  const input = {
+    summary: "New Epic",
+    fields: { customfield_10104: "New Epic", customfield_10481: "SERVICE" },
+  };
+  const preview = await createEpic(transport, input);
+  const result = await createEpic(transport, { ...input, confirm: preview.confirmation });
+  assert.equal(result.state, "Completed");
+  assert.equal(result.issue.key, "LEL-43");
+  assert.equal(result.readback.inBacklog, false);
+  assert.equal(result.readback.onBoard, true);
+});
+
+test("an issue in board data without a mapped column does not prove placement", async () => {
+  const transport = new FakeTransport();
+  transport.board.issuesData.issues = [
+    { key: "LEL-43", id: 43, statusId: "999999" },
+  ];
+  const originalRequest = transport.request.bind(transport);
+  transport.request = async (request) => {
+    const response = await originalRequest(request);
+    if (request.path.endsWith("/issue/matchesBoard"))
+      response.payload.issuesInBacklog = [];
+    return response;
+  };
+  const input = {
+    summary: "New Epic",
+    fields: { customfield_10104: "New Epic", customfield_10481: "SERVICE" },
+  };
+  const preview = await createEpic(transport, input);
+  await assert.rejects(
+    createEpic(transport, { ...input, confirm: preview.confirmation }),
+    (error) => {
+      assert.ok(error instanceof JiraAmbiguousOutcome);
+      assert.equal(error.issueKey, "LEL-43");
+      assert.equal(error.verification.isOnBoard, false);
+      return true;
+    }
+  );
+});
+
+test("missing board status identifiers never prove placement", async () => {
+  for (const invalidId of [null, 0, "0", "", false]) {
+    const transport = new FakeTransport();
+    transport.board.issuesData.issues = [
+      { key: "LEL-43", id: 43, statusId: invalidId },
+    ];
+    transport.board.columnsData.columns = [{ id: 1, statusIds: [invalidId] }];
+    const originalRequest = transport.request.bind(transport);
+    transport.request = async (request) => {
+      const response = await originalRequest(request);
+      if (request.path.endsWith("/issue/matchesBoard"))
+        response.payload.issuesInBacklog = [];
+      return response;
+    };
+    const input = {
+      summary: "New Epic",
+      fields: { customfield_10104: "New Epic", customfield_10481: "SERVICE" },
+    };
+    const preview = await createEpic(transport, input);
+    await assert.rejects(
+      createEpic(transport, { ...input, confirm: preview.confirmation }),
+      (error) =>
+        error instanceof JiraAmbiguousOutcome && error.issueKey === "LEL-43"
+    );
+  }
+});
+
+test("Epic creation refuses Completed when board and backlog membership are not proven", async () => {
   const transport = new FakeTransport();
   const originalRequest = transport.request.bind(transport);
   transport.request = async (request) => {
@@ -480,7 +619,19 @@ test("Epic creation refuses Completed when backlog membership is not proven", as
   const preview = await createEpic(transport, input);
   await assert.rejects(
     createEpic(transport, { ...input, confirm: preview.confirmation }),
-    JiraAmbiguousOutcome
+    (error) => {
+      assert.ok(error instanceof JiraAmbiguousOutcome);
+      const receipt = errorReceipt(error);
+      assert.equal(receipt.issueKey, "LEL-43");
+      assert.deepEqual(receipt.verification, {
+        isExpectedProject: true,
+        isEpic: true,
+        isInBacklog: false,
+        isOnBoard: false,
+        fieldsPersisted: true,
+      });
+      return true;
+    }
   );
 });
 
@@ -503,7 +654,36 @@ test("Epic creation is unknown when a requested field did not persist", async ()
   };
   await assert.rejects(
     createEpic(transport, { ...input, confirm: preview.confirmation }),
-    JiraAmbiguousOutcome
+    (error) => {
+      assert.ok(error instanceof JiraAmbiguousOutcome);
+      assert.equal(errorReceipt(error).issueKey, "LEL-43");
+      assert.equal(errorReceipt(error).verification.fieldsPersisted, false);
+      return true;
+    }
+  );
+});
+
+test("Epic readback errors retain the key without exposing the cause", async () => {
+  const transport = new FakeTransport();
+  const input = {
+    summary: "New Epic",
+    fields: { customfield_10104: "New Epic", customfield_10481: "SERVICE" },
+  };
+  const preview = await createEpic(transport, input);
+  const originalRequest = transport.request.bind(transport);
+  transport.request = async (request) => {
+    if (request.path.startsWith("/rest/api/2/issue/"))
+      throw new JiraProtocolError("sensitive fixture", { status: 403 });
+    return originalRequest(request);
+  };
+  await assert.rejects(
+    createEpic(transport, { ...input, confirm: preview.confirmation }),
+    (error) => {
+      const receipt = serializeReceipt(errorReceipt(error));
+      assert.equal(JSON.parse(receipt).issueKey, "LEL-43");
+      assert.doesNotMatch(receipt, /sensitive fixture/);
+      return true;
+    }
   );
 });
 

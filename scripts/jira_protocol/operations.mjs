@@ -126,6 +126,12 @@ async function backlogMatch(transport, key) {
   return payload;
 }
 
+function validStatusId(value) {
+  return typeof value === "string"
+    ? /^[1-9]\d*$/.test(value)
+    : Number.isSafeInteger(value) && value > 0;
+}
+
 export async function planTransition(
   transport,
   { issueKey, transitionId, targetColumn }
@@ -265,6 +271,19 @@ export async function assignIssue(transport, { issueKey, assignee, confirm }) {
   };
 }
 
+async function createRequest(transport, stage, request) {
+  try {
+    return await transport.request(request);
+  } catch (error) {
+    if (
+      error instanceof JiraProtocolError ||
+      error instanceof JiraAmbiguousOutcome
+    )
+      error.stage = stage;
+    throw error;
+  }
+}
+
 export async function createEpic(
   transport,
   { summary, description, fields = {}, confirm }
@@ -282,7 +301,7 @@ export async function createEpic(
     issueTypeId: CONTRACT.epicIssueTypeId,
     fields: suppliedFields,
   };
-  const { payload: model } = await transport.request({
+  const { payload: model } = await createRequest(transport, "create_form_model", {
     method: "POST",
     path: "/secure/QuickCreateIssue!default.jspa",
     query: {
@@ -327,7 +346,7 @@ export async function createEpic(
   if (missing.length) return { state: "MissingRequiredFields", ...plan };
   if (confirm !== confirmation)
     return { state: "AwaitingConfirmation", ...plan };
-  const { payload } = await transport.request({
+  const { payload } = await createRequest(transport, "create_submission", {
     method: "POST",
     path: "/secure/QuickCreateIssue.jspa",
     query: { decorator: "none" },
@@ -343,8 +362,16 @@ export async function createEpic(
     throw new JiraAmbiguousOutcome(
       "Quick Create did not return a confirmed LEL issue key"
     );
+  const verified = await verifyCreatedEpic(transport, payload.issueKey, suppliedFields);
+  return { ...plan, ...verified };
+}
+
+export async function verifyCreatedEpic(transport, issueKey, suppliedFields) {
+  if (typeof issueKey !== "string" || !/^LEL-\d+$/.test(issueKey))
+    throw new JiraProtocolError("a valid LEL issue key is required for readback");
   let issue;
   let membership;
+  let board;
   try {
     const readbackFields = [
       "project",
@@ -352,12 +379,15 @@ export async function createEpic(
       ...Object.keys(suppliedFields),
     ];
     [issue, membership] = await Promise.all([
-      getIssueState(transport, payload.issueKey, readbackFields),
-      backlogMatch(transport, payload.issueKey),
+      getIssueState(transport, issueKey, readbackFields),
+      backlogMatch(transport, issueKey),
     ]);
+    if (!membership.issuesInBacklog.includes(issueKey))
+      board = await boardData(transport);
   } catch (error) {
     throw new JiraAmbiguousOutcome("created Epic readback failed", {
       cause: error,
+      issueKey,
     });
   }
   const isExpectedProject =
@@ -366,7 +396,23 @@ export async function createEpic(
   const isEpic =
     String(issue.fields.issuetype?.id) === String(CONTRACT.epicIssueTypeId) &&
     issue.fields.issuetype?.name === "Epic";
-  const isInBacklog = membership.issuesInBacklog.includes(payload.issueKey);
+  const isInBacklog = membership.issuesInBacklog.includes(issueKey);
+  const isOnBoard = board
+    ? board.issuesData.issues.some(
+        (candidate) =>
+          candidate.key === issueKey &&
+          validStatusId(candidate.statusId) &&
+          board.columnsData.columns.some(
+            (column) =>
+              Array.isArray(column.statusIds) &&
+              column.statusIds.some(
+                (statusId) =>
+                  validStatusId(statusId) &&
+                  String(statusId) === String(candidate.statusId)
+              )
+          )
+      )
+    : null;
   const persistedFields = Object.fromEntries(
     Object.entries(suppliedFields).map(([field, expected]) => {
       const actual = issue.fields[field];
@@ -383,20 +429,29 @@ export async function createEpic(
   const fieldsPersisted = Object.values(persistedFields).every(
     (field) => field.matched
   );
-  if (!isExpectedProject || !isEpic || !isInBacklog || !fieldsPersisted)
+  if (
+    !isExpectedProject ||
+    !isEpic ||
+    (!isInBacklog && !isOnBoard) ||
+    !fieldsPersisted
+  )
     throw new JiraAmbiguousOutcome(
-      "created issue could not be confirmed with the requested persisted fields as an LEL Epic in the board backlog"
+      "created issue could not be confirmed with the requested persisted fields as an LEL Epic on the board or in its backlog",
+      {
+        issueKey,
+        verification: { isExpectedProject, isEpic, isInBacklog, isOnBoard, fieldsPersisted },
+      }
     );
   return {
     state: "Completed",
-    ...plan,
     issue: { key: issue.key, id: Number(issue.id) },
     readback: {
       projectKey: issue.fields.project.key,
       projectId: Number(issue.fields.project.id),
       issueTypeId: String(issue.fields.issuetype.id),
       issueTypeName: issue.fields.issuetype.name,
-      inBacklog: true,
+      inBacklog: isInBacklog,
+      onBoard: isOnBoard,
       persistedFields,
     },
   };

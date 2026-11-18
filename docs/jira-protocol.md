@@ -199,16 +199,25 @@ After a confirmed write, `Completed` requires all of the following readback:
 
 - the returned key resolves to project `LEL` / `10848`;
 - its issue type is `Epic` / `10000`;
-- `/xboard/issue/matchesBoard` reports the key in `issuesInBacklog` for rapid
-  view `298290`;
+- rapid view `298290` reports the key either in `issuesInBacklog` or in its
+  board data with a status mapped to one of its columns;
 - every submitted field is returned by key-specific Jira issue readback with
   the submitted value. Summary and Description are exact strings; structured
   custom fields must expose the submitted value, id, key, or name unambiguously.
 
 Fields absent from the live Quick Create model are rejected before writing. If
 any readback invariant is absent or mismatched, the result is `UnknownOutcome`.
-The CLI does not equate Jira's initial workflow state with backlog placement
-and does not invent a separate rank write.
+When Quick Create returned a valid issue key, an `UnknownOutcome` receipt retains
+that `issueKey` for readback; invariant failures also report placement and field
+`verification` results. These fields do not prove completion or authorize a
+retry. HTTP failures during create report a fixed `stage` for model retrieval
+or submission without exposing request contents. Select-field labels supplied
+by the caller are resolved against the current model's options; ambiguous or
+unknown labels are rejected before submission.
+The readback reports `inBacklog` and `onBoard` separately. `onBoard: null` means
+board data was not queried because backlog membership already proved placement.
+The CLI does not equate an initial workflow state with placement and does not
+invent a separate rank write.
 
 ## Exit states
 

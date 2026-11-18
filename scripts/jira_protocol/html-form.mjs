@@ -72,6 +72,48 @@ export function defaultsFromEditHtml(html) {
   return values;
 }
 
+function resolveSelectValue(field, suppliedValue) {
+  const value = String(suppliedValue);
+  const html = String(field?.editHtml ?? "");
+  for (const select of html.matchAll(
+    /<select\b([^>]*)>([\s\S]*?)<\/select>/gi
+  )) {
+    const selectAttributes = attributes(select[1]);
+    if (
+      selectAttributes.name !== field.id ||
+      selectAttributes.disabled !== undefined
+    )
+      continue;
+    const options = [
+      ...select[2].matchAll(/<option\b([^>]*)>([\s\S]*?)<\/option>/gi),
+    ]
+      .map((match) => ({
+        attrs: attributes(match[1]),
+        label: decodeHtml(match[2].replace(/<[^>]*>/g, ""))
+          .replace(/[\t\n\f\r ]+/g, " ")
+          .trim(),
+      }))
+      .filter(
+        (option) =>
+          option.attrs.disabled === undefined && option.attrs.value !== undefined
+      );
+    const exactValues = options.filter((option) => option.attrs.value === value);
+    if (exactValues.length) return value;
+    const matchedValues = [
+      ...new Set(
+        options
+          .filter((option) => option.label === value.replace(/[\t\n\f\r ]+/g, " ").trim())
+          .map((option) => option.attrs.value)
+      ),
+    ];
+    if (matchedValues.length === 1) return matchedValues[0];
+    throw new JiraProtocolError(
+      `select field ${field.id} has an unsupported or ambiguous value`
+    );
+  }
+  return value;
+}
+
 export function createFormFromModel(model, suppliedFields) {
   if (!model || typeof model !== "object" || !Array.isArray(model.fields))
     throw new JiraProtocolError("Quick Create returned an unsupported model");
@@ -89,8 +131,10 @@ export function createFormFromModel(model, suppliedFields) {
       values.get(name).push(...entries);
     }
   }
-  for (const [name, value] of Object.entries(suppliedFields))
-    values.set(name, [String(value)]);
+  for (const [name, value] of Object.entries(suppliedFields)) {
+    const field = model.fields.find((item) => item?.id === name);
+    values.set(name, [field ? resolveSelectValue(field, value) : String(value)]);
+  }
   values.set("atl_token", [model.atl_token]);
   values.set("formToken", [model.formToken]);
   values.set("pid", ["10848"]);
