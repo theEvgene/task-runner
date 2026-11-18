@@ -42,9 +42,16 @@ NODE_USE_SYSTEM_CA=1 node <skill-dir>/scripts/jira-protocol.mjs create-epic \
 ```
 
 For a long, quoted, Unicode, or multiline Summary or Description, write the
-exact UTF-8 text to a file and pass `--summary-file` / `--description-file`
-instead of the inline form (mutually exclusive; the file forms are also the
-bridge-safe forms over the LAN share).
+exact UTF-8 bytes to a file and pass `--summary-file` / `--description-file`
+instead of the inline form. Inline and file forms of one field are mutually
+exclusive; the CLI refuses both together and reads the file as UTF-8. The file
+forms are the bridge-safe forms over the LAN share: stage the UTF-8 file to
+the LAN share first, then pass the Lenovo-side share path through the existing
+generic signed-queue mechanism (`docs/lenovo-hosted-scripts.md`; no
+Jira-specific wrapper). The file is read as UTF-8 without re-encoding;
+`createEpic` then trims outer whitespace from Summary (pre-existing behavior,
+also applied to the inline form) and keeps Description byte-exact. Do not rely
+on leading or trailing whitespace in Summary.
 
 `MissingRequiredFields` names safe server-declared field ids and labels. Ask
 for or derive only supported values, then plan again. Never guess custom-field
