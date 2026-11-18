@@ -71,9 +71,12 @@ carries `operation.parentKey`, the per-entry matches, `results[].key`, and
 For `AwaitingConfirmation`, show the parent key, the entry list with
 matches, the selected subtask type id, and `confirmation`. Only after the
 user confirms that live plan may a later invocation repeat the identical
-inputs with `--confirm <confirmation>`. An ambiguous match is never
-created without its exact summary passed as a repeatable
-`--allow-duplicate`; that decision is bound into the digest.
+inputs with `--confirm <confirmation>` plus `--journal <path>` (a confirmed
+write requires a durable journal; plan-only runs stay journal-free). An
+ambiguous match is never created without its exact summary passed as a
+repeatable `--allow-duplicate`; that decision is bound into the digest.
+Identical file entries stay `ambiguous` even when allowed and are never
+written.
 
 ## Readback and recovery
 
@@ -91,10 +94,12 @@ creation readback.
 `UnknownOutcome` stops only the affected entry: its key (when returned) and
 verification are recorded, no automatic retry follows, and the remaining
 entries still complete. Preserve the receipt and investigate that entry
-from its current state before any new run. With `--journal <path>` every
-confirmed result is persisted durably and an interrupted run resumes without
-a second write; a journaled `UnknownOutcome` blocks any rerun of that index
-until `--resolve-unknown <index>=retry|LEL-N` records the operator's explicit
-decision. HTTP 401/403 aborts the batch, preserves partial results, and is
-terminal for this route; report it without changing clients,
+from its current state before any new run. With `--journal <path>` a durable
+in-flight marker is written before each POST and every confirmed result
+replaces that marker; an interrupted run resumes without a second write.
+A journaled in-flight or `UnknownOutcome` entry blocks any rerun of that
+index until `--resolve-unknown <index>=retry|LEL-N` records the operator's
+explicit verified decision; only failures proven to precede dispatch clear
+the marker as `Failed`. HTTP 401/403 aborts the batch, preserves partial
+results, and is terminal for this route; report it without changing clients,
 credentials, or protocols.

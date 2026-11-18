@@ -395,18 +395,24 @@ parent's existing children (`new`, `exists`, `ambiguous`) and creates only
 unmatched entries after confirmation. Matching normalizes summaries with
 NFC plus collapsing every Unicode whitespace run to one space, then trimming;
 matching stays case-sensitive, and normalized-equal entries need an explicit
-repeatable `--allow-duplicate '<summary>'`. A repeat run skips already-created
-entries, so an interrupted batch resumes without duplicates. For crash-safe
-resume pass `--journal <path>`: every confirmed per-item result is appended
-durably before the next item starts, the journal is bound to the batch
-identity (parent, file snapshot, requested type, allow-duplicate set) plus
-the live resolved subtask type, and a rerun skips journaled successes with no
-new write. A journaled `UnknownOutcome` blocks any rerun of that index until
-it is explicitly resolved with repeatable
-`--resolve-unknown <index>=retry|<LEL-key>`; there is no blind repeat. HTTP
-401/403 aborts the batch and preserves partial results in the error details
-and in the journal when one is used. The result lists every entry with its
-link and state. Single `create-subtask` is unchanged.
+repeatable `--allow-duplicate '<summary>'`. Identical file entries (the same
+normalized summary twice in the batch file) stay `ambiguous` even when
+allowed and are never written, so one batch cannot silently create twins. A
+repeat run skips already-created entries, so an interrupted batch resumes
+without duplicates. A confirmed write requires `--journal <path>`: a durable
+in-flight marker is written atomically before each POST, every confirmed
+per-item result replaces that marker before the next item starts, the journal
+is bound to the batch identity (parent, file snapshot, requested type,
+allow-duplicate set) plus the live resolved subtask type, and a rerun skips
+journaled successes with no new write. A journaled in-flight or
+`UnknownOutcome` entry blocks any rerun of that index until it is explicitly
+resolved after operator verification with repeatable
+`--resolve-unknown <index>=retry|<LEL-key>`; there is no blind repeat. Only
+failures proven to precede dispatch clear the marker as `Failed`; any
+uncertain failure keeps a blocking marker. Journal IO failures carry stage
+`batch_journal`. HTTP 401/403 aborts the batch and preserves partial results
+in the error details and in the journal. The result lists every entry with
+its link and state. Single `create-subtask` is unchanged.
 
 The portable step ledger, sanitized handoff evidence, transfer rules, and
 fixture/live boundary for these flows are defined in

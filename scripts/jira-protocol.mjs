@@ -265,6 +265,14 @@ async function main() {
     ]);
     if (values.file === undefined)
       throw new JiraProtocolError("--file is required");
+    // Crash-safe writes require a durable journal: a confirmed batch must
+    // persist an in-flight marker before each POST, so a stale child
+    // listing after a crash cannot cause a blind duplicate. Plan-only runs
+    // (no --confirm) stay journal-free.
+    if (values.confirm !== undefined && values.journal === undefined)
+      throw new JiraProtocolError(
+        "--journal is required for a confirmed create-subtasks write; re-run the plan with --journal <path> and the same inputs"
+      );
     const items = parseBatchFile(await loadBatchFile(values.file));
     const result = await createSubtaskBatch(transport(), {
       parent: values.parent,

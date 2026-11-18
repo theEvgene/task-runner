@@ -21,8 +21,11 @@ export const BATCH_JOURNAL_SCHEMA = "jira-subtasks-journal/1";
 // Unicode whitespace run to one ASCII space, then trimming. Matching stays
 // case-sensitive: "Fix" and "fix" are different items. Two file entries (or a
 // file entry and a live child) that normalize to the same string are treated
-// as the same match candidate and need an explicit --allow-duplicate decision;
-// the receipt keeps both the raw summary and the normalized form.
+// as the same match candidate and need an explicit --allow-duplicate decision
+// to proceed at all; identical file entries (same normalized summary twice
+// in the batch file) stay ambiguous even when allowed and are never written,
+// so a repeated title in one batch cannot silently create twins. The receipt
+// keeps both the raw summary and the normalized form.
 export function normalizeSummary(value) {
   return String(value ?? "")
     .normalize("NFC")
@@ -158,31 +161,50 @@ export async function loadBatchJournal(path) {
     text = await readFile(path, "utf8");
   } catch (error) {
     if (error?.code === "ENOENT") return null;
-    throw new JiraProtocolError("--journal is unreadable", {
-      details: { path, ...(error?.code ? { code: error.code } : {}) },
-    });
+    throw Object.assign(
+      new JiraProtocolError("--journal is unreadable", {
+        details: { path, ...(error?.code ? { code: error.code } : {}) },
+      }),
+      { stage: "batch_journal" }
+    );
   }
   let parsed;
   try {
     parsed = JSON.parse(text);
   } catch {
-    throw new JiraProtocolError("--journal holds invalid JSON", {
-      details: { path },
-    });
+    throw Object.assign(
+      new JiraProtocolError("--journal holds invalid JSON", {
+        details: { path },
+      }),
+      { stage: "batch_journal" }
+    );
   }
   if (!parsed || typeof parsed !== "object" || parsed.schema !== BATCH_JOURNAL_SCHEMA)
-    throw new JiraProtocolError("--journal schema is unsupported", {
-      details: { path },
-    });
+    throw Object.assign(
+      new JiraProtocolError("--journal schema is unsupported", {
+        details: { path },
+      }),
+      { stage: "batch_journal" }
+    );
   return parsed;
 }
 
 export async function saveBatchJournal(path, data) {
-  const payload = `${JSON.stringify(data, null, 2)}\n`;
-  await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp.${process.pid}`;
-  await writeFile(tmp, payload, "utf8");
-  await rename(tmp, path);
+  try {
+    const payload = `${JSON.stringify(data, null, 2)}\n`;
+    await mkdir(dirname(path), { recursive: true });
+    const tmp = `${path}.tmp.${process.pid}`;
+    await writeFile(tmp, payload, "utf8");
+    await rename(tmp, path);
+  } catch (error) {
+    if (error instanceof JiraProtocolError && error.stage === "batch_journal") throw error;
+    throw Object.assign(
+      new JiraProtocolError("--journal write failed", {
+        details: { path, ...(error?.code ? { code: error.code } : {}) },
+      }),
+      { stage: "batch_journal" }
+    );
+  }
 }
 
 function journalResultFor(journal, index) {
@@ -195,6 +217,24 @@ function journalUnknownFor(journal, index) {
   const bucket = journal?.unknown;
   if (!bucket || typeof bucket !== "object") return undefined;
   return bucket[String(index)];
+}
+
+function journalInflightFor(journal, index) {
+  const bucket = journal?.inflight;
+  if (!bucket || typeof bucket !== "object") return undefined;
+  return bucket[String(index)];
+}
+
+function journalBlockedIndexes(journal) {
+  const blocked = new Set();
+  for (const bucket of [journal?.unknown, journal?.inflight]) {
+    if (!bucket || typeof bucket !== "object") continue;
+    for (const key of Object.keys(bucket)) {
+      const index = Number(key);
+      if (Number.isSafeInteger(index)) blocked.add(index);
+    }
+  }
+  return [...blocked].sort((a, b) => a - b);
 }
 
 async function existingSubtasks(transport, parentKey) {
@@ -388,11 +428,17 @@ function blockedItems(planned) {
 // children before any write; a changed digest restarts confirmation. Each
 // item reuses the single-subtask two-phase operation. An unknown item
 // outcome stops that item only and never retries it; HTTP 401/403 aborts
-// the batch as terminal for the route. When journalPath is supplied, every
-// confirmed per-item result is persisted durably before the next item starts,
-// an interrupted run resumes by skipping journaled successes, and a
-// journaled UnknownOutcome blocks any rerun of that index until it is
-// explicitly resolved with --resolve-unknown <index>=retry|LEL-<n>.
+// the batch as terminal for the route. When journalPath is supplied, a
+// durable in-flight marker is written atomically BEFORE each possible
+// mutation, every confirmed per-item result replaces that marker before the
+// next item starts, an interrupted run resumes by skipping journaled
+// successes, and a journaled in-flight or UnknownOutcome entry blocks any
+// rerun of that index until it is explicitly resolved with
+// --resolve-unknown <index>=retry|LEL-<n> after operator verification.
+// Only failures proven to have happened before dispatch (plan validation,
+// meta/parent read failures, or a definitive 4xx submission rejection) may
+// clear the marker as Failed; any uncertain failure keeps a blocking marker
+// and never retries blindly.
 export async function createSubtaskBatch(
   transport,
   {
@@ -418,13 +464,19 @@ export async function createSubtaskBatch(
         { details: { journalPath, batchId, journalBatchId: journal.batchId } }
       );
     if (journal) {
-      // Apply explicit operator resolutions before any write.
+      if (!journal.results || typeof journal.results !== "object") journal.results = {};
+      if (!journal.unknown || typeof journal.unknown !== "object") journal.unknown = {};
+      if (!journal.inflight || typeof journal.inflight !== "object") journal.inflight = {};
+      // Apply explicit operator resolutions before any write. A resolution
+      // applies to either a journaled UnknownOutcome or a leftover in-flight
+      // marker from an interrupted run; both need operator verification.
       let mutated = false;
       for (const [index, decision] of resolvedDecisions) {
-        const pending = journalUnknownFor(journal, index);
+        const pending = journalUnknownFor(journal, index) ?? journalInflightFor(journal, index);
         if (!pending) continue;
         if (decision.mode === "retry") {
           delete journal.unknown[String(index)];
+          delete journal.inflight[String(index)];
           mutated = true;
         } else {
           journal.results[String(index)] = {
@@ -436,6 +488,7 @@ export async function createSubtaskBatch(
             resolvedFromUnknown: true,
           };
           delete journal.unknown[String(index)];
+          delete journal.inflight[String(index)];
           mutated = true;
         }
       }
@@ -461,10 +514,12 @@ export async function createSubtaskBatch(
               .sort((a, b) => a - b)
           : [],
         blockedUnknown: journal
-          ? Object.keys(journal.unknown ?? {})
-              .map(Number)
-              .sort((a, b) => a - b)
-              .filter((index) => !resolvedDecisions.has(index) || journalUnknownFor(journal, index))
+          ? journalBlockedIndexes(journal).filter(
+              (index) =>
+                !resolvedDecisions.has(index) ||
+                journalUnknownFor(journal, index) ||
+                journalInflightFor(journal, index)
+            )
           : [],
         resolvedIssueTypeId: journal?.resolvedIssueTypeId ?? null,
       }
@@ -505,12 +560,10 @@ export async function createSubtaskBatch(
       { details: { blocked } }
     );
   if (journal) {
-    const stillBlocked = Object.keys(journal.unknown ?? {})
-      .map(Number)
-      .sort((a, b) => a - b);
+    const stillBlocked = journalBlockedIndexes(journal);
     if (stillBlocked.length)
       throw new JiraProtocolError(
-        "batch has journaled UnknownOutcome entries; resolve each with --resolve-unknown <index>=retry|LEL-<n> before any rerun, no blind repeat",
+        "batch has journaled UnknownOutcome or in-flight entries; resolve each with --resolve-unknown <index>=retry|LEL-<n> after verification before any rerun, no blind repeat",
         { details: { blockedUnknown: stillBlocked, journalPath, batchId } }
       );
   }
@@ -536,11 +589,19 @@ export async function createSubtaskBatch(
       })),
       results: {},
       unknown: {},
+      inflight: {},
       updatedAt: new Date().toISOString(),
     };
     await saveBatchJournal(journalPath, journal);
   } else if (journal && !journal.resolvedIssueTypeId) {
     journal.resolvedIssueTypeId = planned.operation.issueTypeId;
+    if (!journal.results || typeof journal.results !== "object") journal.results = {};
+    if (!journal.unknown || typeof journal.unknown !== "object") journal.unknown = {};
+    if (!journal.inflight || typeof journal.inflight !== "object") journal.inflight = {};
+    journal.updatedAt = new Date().toISOString();
+    await saveBatchJournal(journalPath, journal);
+  } else if (journal && (!journal.inflight || typeof journal.inflight !== "object")) {
+    journal.inflight = {};
     journal.updatedAt = new Date().toISOString();
     await saveBatchJournal(journalPath, journal);
   }
@@ -550,14 +611,53 @@ export async function createSubtaskBatch(
   let unknown = 0;
   let failed = 0;
   let runWrites = 0;
+  // A failure is proven to have happened before dispatch only when no
+  // mutation could have started: input validation with no stage, a
+  // meta/parent read failure, or a definitive 4xx submission rejection.
+  // Anything else (missing stage on a generic error, an unexpected stage,
+  // or a submission without a definitive rejection status) stays blocking
+  // and is never misclassified as a safe Failed retry.
+  const isProvenPreDispatchFailure = (error) => {
+    if (!(error instanceof JiraProtocolError)) return false;
+    if (error.stage === undefined || error.stage === null) return true;
+    if (
+      error.stage === "subtask_meta" ||
+      error.stage === "subtask_parent" ||
+      error.stage === "batch_existing" ||
+      error.stage === "batch_journal"
+    )
+      return error.stage !== "batch_journal";
+    if (error.stage === "subtask_submission") {
+      if (error.status === undefined || error.status === null) return false;
+      return Number(error.status) >= 400 && Number(error.status) < 500;
+    }
+    return false;
+  };
+  const persistInflight = async (index, entry) => {
+    if (!journalPath) return;
+    if (!journal.inflight || typeof journal.inflight !== "object") journal.inflight = {};
+    journal.inflight[String(index)] = entry;
+    journal.updatedAt = new Date().toISOString();
+    await saveBatchJournal(journalPath, journal);
+  };
+  const clearInflight = async (index) => {
+    if (!journalPath) return;
+    if (journal?.inflight && Object.hasOwn(journal.inflight, String(index))) {
+      delete journal.inflight[String(index)];
+      journal.updatedAt = new Date().toISOString();
+      await saveBatchJournal(journalPath, journal);
+    }
+  };
   const persistSuccess = async (index, entry) => {
     if (!journalPath) return;
+    delete journal.inflight?.[String(index)];
     journal.results[String(index)] = entry;
     journal.updatedAt = new Date().toISOString();
     await saveBatchJournal(journalPath, journal);
   };
   const persistUnknown = async (index, entry) => {
     if (!journalPath) return;
+    delete journal.inflight?.[String(index)];
     journal.unknown[String(index)] = entry;
     journal.updatedAt = new Date().toISOString();
     await saveBatchJournal(journalPath, journal);
@@ -577,6 +677,18 @@ export async function createSubtaskBatch(
       fields: item.fields,
       issueTypeId: planned.operation.issueTypeId,
     };
+    // Durable in-flight marker BEFORE any possible mutation: a crash after
+    // the remote POST succeeds but before persistSuccess leaves this marker,
+    // and a stale child listing cannot cause a blind duplicate because the
+    // next run blocks on the marker until explicit verified resolution.
+    if (journalPath) {
+      await persistInflight(item.index, {
+        index: item.index,
+        summary: item.summary,
+        normalized: normalizeSummary(item.summary),
+        startedAt: new Date().toISOString(),
+      });
+    }
     try {
       const preview = await createSubtask(transport, input);
       if (preview.state !== "AwaitingConfirmation") {
@@ -587,6 +699,7 @@ export async function createSubtaskBatch(
           state: "Failed",
           error: `single-subtask plan returned ${preview.state}`,
         });
+        await clearInflight(item.index);
         continue;
       }
       const done = await createSubtask(transport, {
@@ -601,6 +714,7 @@ export async function createSubtaskBatch(
           state: "Failed",
           error: `single-subtask write returned ${done.state}; rerun the batch plan`,
         });
+        await clearInflight(item.index);
         continue;
       }
       const entry = {
@@ -663,7 +777,7 @@ export async function createSubtaskBatch(
         );
         continue;
       }
-      if (error instanceof JiraProtocolError && (error.status === 401 || error.status === 403)) {
+      if (error instanceof JiraProtocolError && error.stage === "batch_journal") {
         error.details = {
           ...(error.details ?? {}),
           partialResults: [...results],
@@ -672,13 +786,53 @@ export async function createSubtaskBatch(
         };
         throw error;
       }
-      failed += 1;
-      results.push({
+      if (error instanceof JiraProtocolError && (error.status === 401 || error.status === 403)) {
+        // Terminal policy denial: the submission was definitively rejected,
+        // so the in-flight marker for this index is proven stale and cleared
+        // before aborting with partial results preserved.
+        await clearInflight(item.index);
+        error.details = {
+          ...(error.details ?? {}),
+          partialResults: [...results],
+          partialHandoff: [...handoff],
+          ...(journalPath ? { journalPath, batchId } : {}),
+        };
+        throw error;
+      }
+      if (error instanceof JiraProtocolError && isProvenPreDispatchFailure(error)) {
+        await clearInflight(item.index);
+        failed += 1;
+        results.push({
+          index: item.index,
+          summary: item.summary,
+          state: "Failed",
+          error: error instanceof Error ? error.message : "unknown error",
+        });
+        continue;
+      }
+      // Uncertain failure: a mutation may have started, so keep a blocking
+      // marker and require explicit verified resolution. Never misclassify
+      // as a safe Failed retry.
+      unknown += 1;
+      const uncertain = {
         index: item.index,
         summary: item.summary,
-        state: "Failed",
+        state: "UnknownOutcome",
+      };
+      results.push({
+        ...uncertain,
         error: error instanceof Error ? error.message : "unknown error",
       });
+      await persistUnknown(item.index, uncertain);
+      handoff.push(
+        toHandoffEvidence({
+          stage: "batch_item_submission",
+          method: "POST",
+          path: "/rest/api/2/issue",
+          httpStatus: "unknown",
+          note: "outcome unknown; no automatic retry",
+        })
+      );
     }
   }
   for (const item of planned.items.filter((entry) => entry.match === "exists")) {
@@ -712,21 +866,16 @@ export async function createSubtaskBatch(
                   .map(Number)
                   .sort((a, b) => a - b)
               : journalView.resumed,
-            blockedUnknown: journal
-              ? Object.keys(journal.unknown ?? {})
-                  .map(Number)
-                  .sort((a, b) => a - b)
-              : [],
+            blockedUnknown: journal ? journalBlockedIndexes(journal) : [],
           },
         }
       : {}),
   };
-  // Journaled UnknownOutcome entries from a previous run that were resolved
-  // to an operator-verified key are already in results; count any remaining
-  // in-journal unknowns (written this run) via the local counter.
-  const journaledUnknownCount = journal
-    ? Object.keys(journal.unknown ?? {}).length
-    : 0;
+  // Journaled UnknownOutcome or leftover in-flight entries from a previous
+  // run that were resolved to an operator-verified key are already in
+  // results; count any remaining in-journal blocking entries (written this
+  // run) via the local counter plus the journal buckets.
+  const journaledUnknownCount = journal ? journalBlockedIndexes(journal).length : 0;
   if (unknown > 0 || journaledUnknownCount > 0) return { state: "UnknownOutcome", ...receipt };
   if (failed > 0) return { state: "Failed", ...receipt };
   return { state: "Completed", ...receipt };
