@@ -46,6 +46,47 @@ resolves from the host system store. TLS verification stays enabled:
 `NODE_TLS_REJECT_UNAUTHORIZED` is never set to `0`, `rejectUnauthorized` is
 never disabled, and no error handling is added around it.
 
+### Lenovo owner-provided cookie file (local process only)
+
+On Lenovo the owner provides the session cookie as a file rather than typed
+text: shortcut `Documents\performance\task-runner\jira-cookie*.lnk` points at
+`%LOCALAPPDATA%\LanTaskRunnerData\private\jira-cookie.txt`. Read it only on the
+host that already holds it (a Lenovo-local run, or the Lenovo worker process
+for a signed-queue run). Keep its bytes out of command files, plans, receipts,
+queue payloads, logs, and the repository, and never print them.
+
+Discover both ends without a username and without launching the shortcut:
+
+```powershell
+$profile = [Environment]::GetFolderPath('UserProfile')
+$linkDir = Join-Path $profile 'Documents\performance\task-runner'
+$localAppData = [Environment]::GetFolderPath('LocalApplicationData')
+$expected = Join-Path $localAppData 'LanTaskRunnerData\private\jira-cookie.txt'
+```
+
+List `$linkDir\jira-cookie*.lnk`, read each link target through
+`WScript.Shell` `CreateShortcut(...).TargetPath` (read-only metadata; do not
+invoke or double-click the link, and do not open Nessy, a browser, or any UI),
+and proceed only when the resolved target equals `$expected` and that file
+exists. With several matches prefer the one targeting `$expected`; with no
+match there, stop and report cookie discovery as unverified.
+
+Load the file into the current process only, keeping a configured session
+intact:
+
+```powershell
+if ([string]::IsNullOrEmpty($env:JIRA_SESSION_COOKIE)) {
+  $env:JIRA_SESSION_COOKIE =
+    (Get-Content -Raw -Encoding utf8 $expected).Trim()
+}
+$env:NODE_USE_SYSTEM_CA = '1'
+node scripts/jira-protocol.mjs extract --issue LEL-4122
+```
+
+A non-empty `JIRA_SESSION_COOKIE` wins; the file is a fallback, never an
+override. `JIRA_ATL_TOKEN` still comes from the same-session environment, not
+from this file. TLS verification stays enabled as above.
+
 Production is pinned to `https://jira3.tcsbank.ru`. `JIRA_BASE_URL` is accepted
 only when `JIRA_PROTOCOL_TEST_MODE=1`, and even then only an HTTP(S) loopback
 origin (`localhost`, `127.0.0.1`, or `::1`) is permitted. This keeps a real

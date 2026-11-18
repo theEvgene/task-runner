@@ -32,7 +32,10 @@ this route.
   (plus same-session `JIRA_ATL_TOKEN` for `assign`) and `DCO_TEST_ACCESS_TOKEN` /
   `DCO_PRODUCTION_ACCESS_TOKEN` (or shared `DCO_ACCESS_TOKEN` fallback). The
   CLIs accept no credential flags and write no credential files. Never place a
-  token in argv, a command file, a plan, a receipt, or the queue.
+  token in argv, a command file, a plan, a receipt, or the queue. The
+  owner-provided Lenovo cookie-file location and its local process-only loading
+  rule live in `docs/jira-protocol.md` (`Lenovo owner-provided cookie file`);
+  this doc keeps no second copy.
 - Every Jira CLI invocation requires `NODE_USE_SYSTEM_CA=1` in the Lenovo
   worker process environment inherited by Node. Verify it is present there
   before submitting; setting it only in the Dell process does not propagate
