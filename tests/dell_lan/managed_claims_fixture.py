@@ -122,21 +122,55 @@ class ManagedClaimsCase(unittest.TestCase):
 
     # -- managed submit -------------------------------------------------
     def submit_command(self, writer: dict,
-                       output: Path | None = None) -> list[str]:
+                       output: Path | None = None,
+                       bridge_dir: Path | None = None) -> list[str]:
         path = output or (self.root / f"writer-{os.urandom(4).hex()}.json")
         path.write_text(json.dumps(writer), encoding="utf-8")
-        return [sys.executable, str(MANAGED_SUBMIT), "--writer-output", str(path),
-                "--queue", str(self.queue), "--key-file", str(self.key_file),
-                "--repo", str(self.repo)]
+        command = [sys.executable, str(MANAGED_SUBMIT), "--writer-output", str(path),
+                   "--queue", str(self.queue), "--key-file", str(self.key_file),
+                   "--repo", str(self.repo)]
+        if bridge_dir is not None:
+            command += ["--bridge-dir", str(bridge_dir)]
+        return command
 
     def submit(self, writer: dict,
-               output: Path | None = None) -> subprocess.CompletedProcess:
-        return run(self.submit_command(writer, output))
+               output: Path | None = None,
+               bridge_dir: Path | None = None) -> subprocess.CompletedProcess:
+        return run(self.submit_command(writer, output, bridge_dir))
 
     def submit_ok(self, writer: dict, output: Path | None = None) -> str:
         proc = self.submit(writer, output)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return proc.stdout.strip().split("JOBID=", 1)[1].strip()
+
+    # -- read-only recovery ---------------------------------------------
+    def recover_command(self, writer: dict,
+                        output: Path | None = None) -> list[str]:
+        path = output or (self.root / f"recover-{os.urandom(4).hex()}.json")
+        path.write_text(json.dumps(writer), encoding="utf-8")
+        return [sys.executable, str(MANAGED_SUBMIT), "--writer-output", str(path),
+                "--queue", str(self.queue), "--key-file", str(self.key_file),
+                "--repo", str(self.repo), "--recover"]
+
+    def recover(self, writer: dict,
+                output: Path | None = None) -> subprocess.CompletedProcess:
+        return run(self.recover_command(writer, output))
+
+    def lost_response_bridge(self) -> Path:
+        """A bridge that publishes the job, then loses the response."""
+
+        directory = self.root / "lost-bridge"
+        directory.mkdir(exist_ok=True)
+        (directory / "lan_bridge.py").write_text(
+            "import sys\n"
+            f"sys.path.insert(0, {str(BRIDGE_DIR)!r})\n"
+            "import lan_bridge as _real\n"
+            "from lan_bridge import *  # noqa: F401,F403\n"
+            "def submit_job(*args, **kwargs):\n"
+            "    _real.submit_job(*args, **kwargs)\n"
+            "    raise _real.BridgeError('simulated lost submit response')\n",
+            encoding="utf-8")
+        return directory
 
     # -- queue inspection -----------------------------------------------
     def job_files(self) -> list[str]:

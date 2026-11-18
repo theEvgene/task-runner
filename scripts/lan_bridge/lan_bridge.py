@@ -222,7 +222,8 @@ def submit_job(queue_dir: str, key: bytes, command: str,
                return_files: list | None = None, dialect=None,
                receipt_script_path: str | None = None,
                resource_claims: list | None = None,
-               expected_working_directory: str | None = None) -> str:
+               expected_working_directory: str | None = None,
+               job_id: str | None = None) -> str:
     """Seal the command payload and publish it immutably; return the job id.
 
     ``resource_claims`` publishes the signed reservation together with the
@@ -231,10 +232,20 @@ def submit_job(queue_dir: str, key: bytes, command: str,
     worker refuses a job whose signed expectation differs from its working
     directory before claiming or spawning anything. Without it the target
     stays unverified rather than "assumed equal".
+
+    ``job_id`` names the job before its response exists, so a caller that
+    must recover an exact id after a lost response can supply its own
+    deterministic one instead of hoping to be told. Publication stays
+    immutable and no-clobber: an existing id is refused, and with
+    ``resource_claims`` an identical job and reservation resolve as
+    ``owned`` instead of publishing a second time.
     """
 
     _syn.enforce(command, dialect, BridgeError)
-    job_id = generate_job_id()
+    if job_id is None:
+        job_id = generate_job_id()
+    elif not _is_hex32(job_id):
+        raise ValueError("job_id must be 32 lowercase hex")
     payload = build_job_payload(job_id=job_id, command=command,
                                 working_directory=working_directory,
                                 timeout_seconds=timeout_seconds,

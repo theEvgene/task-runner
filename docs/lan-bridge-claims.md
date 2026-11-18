@@ -96,3 +96,51 @@ live-lock authority, release proof, concurrent worktree race) and
 quota, fail-closed classification, one queue-local authority, two-process
 quota race, supported submit route); both share
 `tests/lenovo_worker/reservation_fixtures.py`.
+
+## Lost submit response: the exact job id
+
+A managed submit prints `JOBID=<id>` only after the signed publish succeeds.
+If that response is lost (client killed, terminal closed, transport error),
+the id is still a pure function of the request digest the writer already
+recorded:
+
+```text
+id = sha256("dell-managed-job-id/1\0" + requestSha256)[:32]
+```
+
+`dell_managed_submit.py` submits exactly that id, so it can be recomputed
+instead of guessed, and one read-only readback reports the exact state
+without publishing anything:
+
+```text
+python scripts/dell_lan/dell_managed_submit.py --recover \
+  --writer-output <writer-record> --queue <queue-dir> \
+  --key-file <key-path> --repo <dell-checkout>
+```
+
+It prints one `dell-managed-recovery/1` JSON record: `jobId`, `job`
+(`published`/`absent`), `jobEnvelopeSha256`, `requestSha256`, `result`
+(`present`/`absent`, with `resultStatus`/`exitCode` when present),
+`reservation` (`present`/`absent`/`inert`/`missing`), `footprintHeld`, and
+`resources`. Every record is opened by that exact id and re-authenticated;
+nothing scans `reservations/`, and nothing is published. Exit `0` means the
+state was established, not that the job succeeded.
+
+- `job: absent` means the job publish did not land. A reservation file
+  without its job is `inert`: the producer aborted under the referee lock, so
+  it holds nothing. The same writer record may then be submitted again - the
+  same id and identical signed bytes resolve as `owned` instead of publishing
+  a second job or a second reservation.
+- `job: published` means the write may execute. Recovery keeps the same id;
+  the read-only `--reconcile` probe stays the only admissible job for that
+  target until the worker's proof-bound release, which `footprintHeld`
+  reflects.
+- A job under the id whose signed command is not this request's command is
+  refused (`recovery-unproven`), never reported as recovered; so is an
+  unreadable or foreign record, and a published write whose reservation is
+  `missing` reports `footprintHeld: null`, never `false`.
+- The id is a deterministic name, not a secret and not an authentication
+  token: every state above comes from the signed envelope. Never discover the
+  id by scanning `queue/reservations/*.json` - another job's reservation is
+  not evidence about this request - and never re-submit a write just to be
+  told the id.

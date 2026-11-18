@@ -177,7 +177,10 @@ changes: one direct immutable publish, the worker's `exclusive:global`
 fallback, and sequential execution. The Dell publication routes
 (`publish`, `transfer`, `publish-existing`) declare their own footprint
 through `scripts/dell_lan/dell_managed_submit.py` instead of a hand-written
-`--claim` list; see that document's Dell section.
+`--claim` list; see that document's Dell section. A caller that must know the
+id before the response exists may pass `job_id=`; the Dell managed route
+derives it from the verified request and recovers it read-only after a lost
+response.
 
 ## Failure diagnosis
 
