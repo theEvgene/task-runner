@@ -204,29 +204,13 @@ seal/publish/MAC/immutability path.
 ## Managed-write claims (opt-in per submit)
 
 `submit --claim <resource>` (repeatable; `submit_job(..., resource_claims=)`
-in Python) declares the job's explicit managed-write footprint. It enables
-the authoritative reserved parallel path for exactly this job:
-
-```text
-python scripts/lan_bridge/lan_bridge.py submit \
-  --queue <queue-dir> --key-file <key-path> \
-  --command-file <cmd-file> --cwd <working-dir-on-worker> \
-  --claim 'file:C:\out\report.csv' --claim 'tcp:127.0.0.1:8080'
-```
-
-- The signed reservation (`queue/reservations/<job-id>.json`) and the job
-  publish together under one queue-local operating-system lock, so two
-  producers cannot both admit the same or a nested footprint. A conflicting
-  footprint refuses with exit `2` before anything is published.
-- Claims are normalized: absolute case-folded paths, and one exclusive
-  `tcp:*:<port>` token per port. A wildcard bind, `localhost`, and a
-  specific address naming the same port are the same claim.
-- Without `--claim` nothing changes: one direct immutable publish, the
-  worker's `exclusive:global` fallback, and sequential execution.
-- Admission alone does not free anything. The worker releases a footprint
-  only by publishing `queue/releases/<job-id>.json` bound to the claim
-  owner and generation, the exact job bytes, the resource set, and the
-  exact result bytes; a signed result alone keeps the footprint held.
+in Python) declares the job's explicit managed-write footprint. Without it
+nothing changes: one immutable publish, the worker's `exclusive:global`
+fallback, and sequential execution. The full contract -- canonical claims,
+the queue-local `capacity:<name>` quota authority, `capacities=` as an
+assertion only, publish-time-only admission, and the release proof that
+alone frees a footprint (a signed result never does) -- is
+`docs/queue-reservations.md`.
 
 ## Failure diagnosis
 
