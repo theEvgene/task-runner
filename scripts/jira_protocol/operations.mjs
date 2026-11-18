@@ -13,6 +13,8 @@ export const CONTRACT = Object.freeze({
   rapidViewId: 298290,
 });
 
+export const EPIC_NAME_FIELD = "customfield_10104";
+
 export function assertIssueKey(issueKey) {
   const normalized = String(issueKey ?? "")
     .trim()
@@ -293,6 +295,11 @@ export async function createEpic(
   const suppliedFields = {
     ...fields,
     summary: title,
+    // Jira enforces Epic Name on creation even when the Quick Create model
+    // does not mark it required (issue #122). Mirror summary so plan and
+    // submission always contain Epic Name equal to summary. No general
+    // required-field discovery: only this known field is defaulted.
+    [EPIC_NAME_FIELD]: title,
     ...(description !== undefined ? { description: String(description) } : {}),
   };
   const operation = {

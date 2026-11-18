@@ -362,9 +362,9 @@ test("Quick Create reports dynamic required fields before any write", async () =
   const result = await createEpic(transport, { summary: "New Epic" });
   assert.equal(result.state, "MissingRequiredFields");
   assert.deepEqual(result.model.missingFields, [
-    { id: "customfield_10104", label: "Epic Name" },
     { id: "customfield_10481", label: "Team" },
   ]);
+  assert.equal(result.operation.fields.customfield_10104, "New Epic");
   assert.equal(
     transport.calls.some(
       (call) => call.path === "/secure/QuickCreateIssue.jspa"
