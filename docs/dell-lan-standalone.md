@@ -58,9 +58,11 @@ keep the same job slot and never submit a blind duplicate.
 
 Submit through the managed-write entry point (`docs/dell-lan.md` §6), which is
 the one call that reserves the request's own Lenovo checkout and task worktree
-and publishes the signed job; it carries the writer's `receiptScriptPath` as
-`--receipt-script-path` and its `expectedCwd` as `--expected-cwd` (the same
-absolute path as `--cwd`) itself:
+and publishes the signed job. The request itself now records the driver,
+dialect, working directory, and its own path, and the submit derives the exact
+command from those verified bytes: a swapped command file, a different driver
+or target, or a write command paired with a read-only request refuses before
+anything is reserved or published.
 
 ```text
 python scripts/dell_lan/dell_managed_submit.py \
@@ -132,8 +134,8 @@ recovery.
 
 As with transfer, submission goes through `dell_managed_submit.py`: it
 re-verifies the request digest, derives the request's own checkout/worktree
-claims, and carries the writer's `receiptScriptPath`, which binds the sealed
-result schema to the exact standalone publication driver.
+claims and the exact command, and refuses any record, command file, dialect,
+or driver that disagrees with the verified request.
 
 ## 3. One-command transfer and publication (#45)
 

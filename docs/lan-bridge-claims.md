@@ -71,6 +71,15 @@ footprint; admission alone frees nothing, and only the worker's proof-bound
 release frees it. An unknown outcome therefore keeps the same job id and blocks
 a second writer for that target.
 
+The executed command is bound to the same verified bytes, not to the writer
+record's own `command` text: the request records its path, interpreter, driver,
+dialect, flow directory, and working directory inside its digest, and
+`dell_managed_command.py` derives the one command from them. The submit
+publishes that derived text and refuses when the command file differs, when the
+record's `kind`, `dialect`, `receiptScriptPath`, or `expectedCwd` differs, or
+when a read-only request is paired with the write command it would bypass. The
+route's driver comes from the schema, so the three routes never share one.
+
 Claims are normalized by the referee on the producer host and re-derived by the
 worker. Pass a literal absolute path (no mapped drive, `subst`, or symlink
 alias): an alias that resolves differently on Lenovo is refused there instead

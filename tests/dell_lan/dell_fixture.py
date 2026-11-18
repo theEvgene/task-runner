@@ -33,7 +33,6 @@ SCRIPTS = ROOT / "scripts" / "dell_lan"
 READBACK = SCRIPTS / "dell_readback.py"
 BASE_IMPORT = SCRIPTS / "dell_base_import.py"
 REQUEST_CLI = SCRIPTS / "dell_request.py"
-MANAGED_SUBMIT = SCRIPTS / "dell_managed_submit.py"
 STAGE_BUNDLE = SCRIPTS / "stage_bundle.py"
 BRIDGE_CLI = ROOT / "scripts" / "lan_bridge" / "lan_bridge.py"
 FIXTURE_FLOW = TESTS_DIR / "fixture_flow"
@@ -160,8 +159,7 @@ class Workspace:
 
     def submit(self, command_file: Path, return_file: Path | None = None,
                cwd: Path | None = None, dialect: str | None = None,
-               receipt_script_path: str | None = None,
-               claims: list[str] | None = None) -> str:
+               receipt_script_path: str | None = None) -> str:
         command = [
             sys.executable, str(BRIDGE_CLI), "submit", "--queue", str(self.queue),
             "--key-file", str(self.key), "--command-file", str(command_file),
@@ -173,30 +171,9 @@ class Workspace:
             command += ["--dialect", dialect]
         if receipt_script_path is not None:
             command += ["--receipt-script-path", receipt_script_path]
-        for claim in claims or []:
-            command += ["--claim", claim]
         proc = run(command)
         if proc.returncode != 0:
             raise AssertionError(f"bridge submit failed: {proc.stderr}")
-        return proc.stdout.strip().split("JOBID=", 1)[1].strip()
-
-    def managed_submit_command(self, request: dict, output: Path | None = None,
-                               *extra: str) -> tuple[list[str], Path]:
-        """The Dell managed-write submit argv for one writer record."""
-
-        path = output or (self.root / f"writer-{os.urandom(4).hex()}.json")
-        path.write_text(json.dumps(request), encoding="utf-8")
-        return ([sys.executable, str(MANAGED_SUBMIT),
-                 "--writer-output", str(path), "--queue", str(self.queue),
-                 "--key-file", str(self.key), "--repo", str(self.dell),
-                 *extra], path)
-
-    def submit_managed(self, request: dict, output: Path | None = None,
-                       *extra: str) -> str:
-        command, _ = self.managed_submit_command(request, output, *extra)
-        proc = run(command, env=self.env())
-        if proc.returncode != 0:
-            raise AssertionError(f"managed submit failed: {proc.stderr}")
         return proc.stdout.strip().split("JOBID=", 1)[1].strip()
 
     def fetch(self, job_id: str) -> subprocess.CompletedProcess:

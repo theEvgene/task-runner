@@ -14,6 +14,13 @@ those verified bytes, and refuses anything that disagrees. A caller therefore
 cannot add, drop, or re-point a claim: the verified request is the only claim
 source.
 
+The executed command is likewise derived from the verified request
+(``dell_managed_command``): its bytes must equal the one command that request
+defines, and that derived text is what gets sealed. A command file swapped
+beside the request, a read-only request paired with a write command, or a
+writer record whose dialect, driver, working directory, or kind disagrees is
+refused before anything is reserved or published.
+
 It never parses shell text, never infers a dialect or a target, and never
 holds a claim of its own: the referee publishes its provisional reservation
 and removes exactly that record if the job publish fails, and a reservation
@@ -34,6 +41,9 @@ from dell_lan_common import (
     DETAIL_MAX, Stop, default_bridge_dir, load_bridge, read_key, sha256_bytes,
 )
 from dell_managed_claims import ClaimRefused, is_write_request, verify_writer_output
+from dell_managed_command import (
+    ExecutionRefused, verified_command,
+)
 
 SCHEMA = "dell-lan-request/1"
 
@@ -68,8 +78,8 @@ def _load_output(args) -> dict:
     return document
 
 
-def _verified_request(document: dict) -> tuple[dict, list[str]]:
-    """The request document named by the writer record, plus its claims."""
+def _verified_request(document: dict) -> tuple[dict, list[str], str]:
+    """The request document named by the writer record, its claims, digest."""
 
     request_path = Path(document["requestPath"])
     try:
@@ -77,7 +87,8 @@ def _verified_request(document: dict) -> tuple[dict, list[str]]:
     except OSError as error:
         raise Stop("usage", code=2,
                    detail=f"request file unreadable: {error}") from error
-    if sha256_bytes(raw) != document["requestSha256"]:
+    digest = sha256_bytes(raw)
+    if digest != document["requestSha256"]:
         raise Stop("request-mismatch", detail=(
             "request file does not match the digest in the writer output; "
             "rebuild the request instead of editing it"))
@@ -97,41 +108,37 @@ def _verified_request(document: dict) -> tuple[dict, list[str]]:
     if document.get("readOnly") is not (not claims):
         raise Stop("claims-refused", detail=(
             "writer output readOnly flag disagrees with the verified request"))
-    return request, claims
+    return request, claims, digest
 
 
 def _submit(bridge, args, document: dict, request: dict,
-            claims: list[str]) -> str:
-    if not Path(document["expectedCwd"]).is_absolute():
-        raise Stop("usage", code=2,
-                   detail="expectedCwd must be the absolute Lenovo target")
-    dialect = document.get("dialect")
-    if dialect not in ("cmd", "powershell"):
-        raise Stop("usage", code=2,
-                   detail="writer output must name its cmd/powershell dialect")
-    return_file = document.get("returnFile")
-    return_files = ([return_file] if isinstance(return_file, str) and return_file
-                    else None)
+            claims: list[str], digest: str) -> str:
     try:
-        command = Path(document["commandFile"]).read_text(encoding="utf-8-sig")
+        command_file = Path(document["commandFile"]).read_text(encoding="utf-8-sig")
     except OSError as error:
         raise Stop("usage", code=2,
                    detail=f"command file unreadable: {error}") from error
-    if not command.strip():
-        raise Stop("usage", code=2, detail="command file is empty")
+    try:
+        command, parameters = verified_command(
+            document, command_file, request, digest)
+    except ExecutionRefused as error:
+        raise Stop("command-refused", detail=str(error)) from error
     shared = request.get("shared")
     if not isinstance(shared, str) or not Path(shared).is_absolute():
         raise Stop("usage", code=2,
                    detail="the request does not name its absolute shared path")
+    return_file = parameters["returnFile"]
+    return_files = [return_file] if return_file else None
+    target = parameters["expectedCwd"]
     key = read_key(bridge, Path(args.queue), Path(args.key_file),
                    args.key_format, repos=[Path(args.repo)], shared=[Path(shared)])
     try:
         return bridge.submit_job(
-            str(Path(args.queue)), key, command, document["expectedCwd"],
-            int(args.timeout), int(args.max_output), return_files, dialect,
-            document["receiptScriptPath"],
+            str(Path(args.queue)), key, command, target,
+            int(args.timeout), int(args.max_output), return_files,
+            parameters["dialect"], parameters["driverPath"],
             resource_claims=claims or None,
-            expected_working_directory=document["expectedCwd"])
+            expected_working_directory=target)
     except (bridge.BridgeError, bridge.ProtocolError, ValueError, TypeError) as error:
         raise Stop("submit-refused", detail=f"submit refused: {error}"[:DETAIL_MAX]) from error
 
@@ -157,14 +164,14 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     try:
         document = _load_output(args)
-        request, claims = _verified_request(document)
+        request, claims, digest = _verified_request(document)
         bridge = load_bridge(Path(args.bridge_dir) if args.bridge_dir
                              else default_bridge_dir())
         for name in ("submit_job", "load_key", "BridgeError", "ProtocolError"):
             if not hasattr(bridge, name):
                 raise Stop("driver-stale",
                            detail=f"bridge API incomplete: missing {name}")
-        job_id = _submit(bridge, args, document, request, claims)
+        job_id = _submit(bridge, args, document, request, claims, digest)
     except Stop as stop:
         if stop.code == 2:
             print(f"dell managed submit usage: {stop.detail or stop.reason}",

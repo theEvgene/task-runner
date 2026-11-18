@@ -64,3 +64,22 @@ with offset, the wrapped `& '...'` shape, launcher-boundary refusals
 including an external cmd operator, the nonexistent-cmdlet negative case,
 nonzero-probe fail-closed, and a missing PowerShell backend). No second
 host is ever reached.
+
+## Writer rendering
+
+`scripts/dell_lan/dell_request.py` renders the one command a Dell request
+defines, and the request records the declared dialect so the managed submit
+re-checks it instead of trusting the command file. The writer never infers the
+dialect.
+
+- `powershell` builds a literal program beginning with the call operator
+  (`&`); the writer then applies the one supported explicit
+  `powershell.exe -Command` launcher for signed submit and worker execution.
+- `cmd` uses the quoted Windows command form. Cmd arguments containing `%` or
+  `!` expansion markers, control characters, or an embedded double quote are
+  unrepresentable and refuse before either file is written.
+- PowerShell single-quoted arguments preserve `%` and `!`; the worker replaces
+  the validated launcher with an encoded wrapper before crossing `cmd.exe`. An
+  embedded double quote in a PowerShell argument still refuses at transport
+  adaptation because it would close the supported launcher's script quote.
+  Diagnostics name only the dialect and fixed reason.

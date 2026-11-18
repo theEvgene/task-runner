@@ -194,18 +194,10 @@ python scripts/dell_lan/dell_request.py publish \
 
 `--dialect` is mandatory and names the shell that will execute the generated
 command file. The writer never infers it: an omitted or unsupported value
-exits 2 before either file is written. The PowerShell dialect builder produces
-a literal program beginning with the call operator (`&`); the writer then
-applies the one supported explicit `powershell.exe -Command` launcher for
-signed submit and worker execution.
-`cmd` output uses the quoted Windows command form. Cmd arguments containing
-`%` or `!` expansion markers, control characters, or an embedded double quote
-are unrepresentable and refuse before either file is written. PowerShell
-single-quoted arguments preserve `%` and `!`; the worker replaces the validated
-launcher with an encoded wrapper before crossing `cmd.exe`. An embedded double
-quote in a PowerShell argument still refuses at transport adaptation because it
-would close the supported launcher's script quote. Diagnostics name only the
-dialect and fixed reason.
+exits 2 before either file is written, and the request records the declared
+dialect so the submit re-checks it. The writer's rendering rules for `cmd` and
+`powershell` live in
+[the syntax gate](lan-bridge-syntax-gate.md#writer-rendering).
 
 Only the actions the user authorized go in `--authorize`; `reconcile` only
 when the read-only probe was authorized too, and `undraft` only when the
@@ -230,8 +222,8 @@ changed.
 ## 6. Submit and let Lenovo publish; read back the exact SHA and MR
 
 `publish` is one of the three Lenovo-writing routes, so it goes through the
-managed-write entry point instead of a bare `submit`: this is the one call
-that reserves the requested footprint and publishes the signed job.
+managed-write entry point: one call reserves the request's own footprint and
+publishes the signed job.
 
 ```text
 python scripts/dell_lan/dell_managed_submit.py \
@@ -241,21 +233,13 @@ python scripts/dell_lan/dell_managed_submit.py \
 
 `<writer-json>` is the exact `dell-lan-request/1` record the writer printed
 (`-` reads it from stdin). The entry point re-reads the request file, requires
-its SHA-256 to equal `requestSha256`, re-derives the claim set from those
-verified bytes, and passes the writer's own `dialect`,
-`--receipt-script-path <receiptScriptPath>`, and
-`--expected-cwd <expectedCwd>` (the same absolute path as `--cwd`): never infer
-or translate the dialect after the command is built, and never pass a target the
-writer did not name. The worker refuses a provable working-directory difference
-before it claims or spawns anything. A request, claim list, or `readOnly` flag
-that disagrees with the verified request is refused.
-
-The claims are the request's own absolute Lenovo checkout and task worktree:
-the queue-local referee reserves them and publishes the job under one lock, so a
-second request for the same or a nested target refuses (exit 1, `reservation
-refused`, naming the limiting resource) before anything is published, and a
-separate check-then-submit can never race it. A refusal leaves no job and no
-reservation behind.
+its SHA-256 to equal `requestSha256`, and re-derives the claim set and the
+exact command from those verified bytes. A swapped command file, a different
+dialect, driver, working directory, or route, and a read-only request paired
+with a write command all refuse before anything is reserved or published; the
+reservation, dialect, receipt driver, and `--cwd`/`--expected-cwd` come from
+the request, never from a target the writer did not name.
+`docs/lan-bridge-claims.md` owns the claim semantics and the refusal text.
 
 On Lenovo the single command runs `lenovo_publish.py`, which re-hashes the
 request, re-verifies
@@ -317,9 +301,8 @@ result then proves three things: the re-captured head SHA still equals the
 task commit, the MR is no longer Draft, and the served title and
 description still match the request input byte-for-byte — the Ready title
 built the same way the writer builds the Draft title (without the
-`Draft: ` prefix), and the description file bytes (UTF-8). Exact equality
-is required on the Ready path because the request supplies the intended
-description under `mr`+`undraft` consent.
+`Draft: ` prefix), and the description file bytes (UTF-8). Exact equality is required on the Ready path: `mr`+`undraft` consent supplies
+the intended description.
 Any mismatch, or any undraft failure, is `unknown` (exit 3,
 `readback-mismatch` / `undraft-unknown`): the write may have landed, so the
 run reconciles through the read-only probe instead of retrying blind, and a
@@ -327,9 +310,8 @@ later publish updates the same MR.
 
 The driver never waits for or polls a pipeline on any path: no pipeline
 observer is imported or executed, and every publish result carries
-`pipeline: {waited: false, polled: false}` as the visible fact. A pipeline
-read, when the user explicitly asks for one, stays a separate
-`docs/pipeline-observer.md` run and is never part of publication.
+`pipeline: {waited: false, polled: false}`. A pipeline read, when the user
+explicitly asks for one, stays a separate `docs/pipeline-observer.md` run.
 
 ## 6c. Executor truth and receipt gate (issues #33/#36)
 
@@ -342,9 +324,8 @@ read, when the user explicitly asks for one, stays a separate
   `cmd /c start /wait`, `cmd /c if`, `call`, or `@powershell`. They are never
   run unwrapped; diagnostics omit command text. Ordinary cmd remains unchanged.
 - Submit `--dialect` is signed; old jobs without it retain classification.
-  Cmd inline quoting cannot turn
-  a disguised PowerShell executable into an unwrapped launch, while an
-  ordinary command merely mentioning PowerShell still runs normally.
+  Cmd inline quoting cannot turn a disguised PowerShell executable into an
+  unwrapped launch.
 - Receipt: `published` requires the structured driver receipt
   (`outcome: ok`, `stage: readback`, matching `identity.head_sha`), checked
   by `publish_receipt_gate.py` in the driver and Dell readback.
@@ -359,12 +340,12 @@ read, when the user explicitly asks for one, stays a separate
 - **Unknown push** (`stage: push`, exit 3): keep the id and re-fetch it
   per `docs/lan-bridge.md` "Observation rule"; a
   late sealed result is accepted by MAC and id binding. If the slot stays
-  empty, use the writer JSON's pre-rendered `reconcileCommand`, or rerun the
-  same `dell_request.py publish` construction with the same explicit dialect
-  and an additional `--reconcile`, then submit the regenerated command file.
-  The builder places the flag inside the PowerShell script (or as one quoted
-  cmd argument); never append text to an existing command file. The read-only
-  probe observes the remote branch and MR list and writes nothing. It needs
+  empty, rerun the same `dell_request.py publish` construction with an
+  additional `--reconcile` and submit that new writer record: the probe is a
+  request of its own with no claims, so it stays admissible while the unknown
+  job holds the footprint. Never append text to an existing command file, and
+  never submit a write request's `reconcileCommand`. The read-only probe
+  observes the remote branch and MR list and writes nothing. It needs
   `reconcile` in the request's `--authorize`.
 - **Unknown MR write** (`stage: mr`, exit 3): the write may have landed. The
   probe reports the existing MR only after its complete description exactly
@@ -378,11 +359,9 @@ read, when the user explicitly asks for one, stays a separate
   update the same MR. Never a second MR, never a blind retry.
 - **Unknown footprint**: while the outcome is unknown the reservation stays
   held, so the only admissible Lenovo job for that target is the read-only
-  recovery request above (`--reconcile` declares no claims). Never submit a
-  fresh write for the same checkout or worktree meanwhile: the referee refuses
-  it by naming the held footprint, and a blind duplicate would be a second
-  writer. The footprint frees itself only when the worker's proof-bound release
-  lands under the same job id.
+  recovery request above (`--reconcile` declares no claims); a fresh write is
+  refused by naming the held footprint. Only the worker's proof-bound release
+  under the same job id frees it.
 - **Rejected** (exit 1): read the carried exit code and stderr, fix on the
   anchored base, and submit a new job id. The queue refuses to reuse an id.
 - **Stale**: keep working offline on the anchored base and re-sync before the
@@ -390,16 +369,10 @@ read, when the user explicitly asks for one, stays a separate
 
 ## Standalone transfer and publication
 
-Two narrower runs reuse this loop: a transfer-only
-import with no push or MR (#42), and the publication of a branch that
-already exists on Lenovo with no bundle and no second GitLab client
-(#43). The combined `publish` route composes the same import and publication
-helpers and supports the metadata stop/resume described above (#45). All
-three routes live in `docs/dell-lan-standalone.md`.
-
-Preparing an already identified MR for Ready is independent of all three
-publication routes. Use `docs/mr-ready.md`; that signed route accepts the MR
-URL and existing checks, and does not transfer a branch or create an MR.
+`transfer` and `publish-existing` reuse this loop as narrower runs, and
+`publish` composes the same import and publication helpers; all three are in
+`docs/dell-lan-standalone.md`. Preparing an already identified MR for Ready is
+independent of them: `docs/mr-ready.md`, no transfer and no MR creation.
 
 ## Boundaries
 
