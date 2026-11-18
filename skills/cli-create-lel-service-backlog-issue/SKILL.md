@@ -57,8 +57,8 @@ default changes the digest and requires a new review; do not reuse the old one.
 ## Readback and recovery
 
 Report `Completed` only with the returned issue key and the CLI readback. Its
-contract proves project `LEL`/`10848`, issue type `Epic`/`10000`, and backlog
-membership on rapid view `298290`. It also proves exact persisted Summary and
+contract proves project `LEL`/`10848`, issue type `Epic`/`10000`, and placement
+on the board or in the backlog of rapid view `298290`. It also proves exact persisted Summary and
 Description and a matching persisted value/id/key/name for every submitted
 custom field. Show the `persistedFields` receipt; do not call creation complete
 if any requested field is absent or mismatched. `detail-view --issue <KEY>` may

@@ -205,6 +205,30 @@ async function main() {
   usage(`unknown command ${command}`);
 }
 
+export function errorReceipt(error) {
+  const ambiguous = error instanceof JiraAmbiguousOutcome;
+  const expected = ambiguous || error instanceof JiraProtocolError;
+  return {
+    schema: "jira-protocol-error/1",
+    state: ambiguous ? "UnknownOutcome" : "Failed",
+    error: expected ? error.message : "unexpected internal error",
+    ...(ambiguous && error.issueKey ? { issueKey: error.issueKey } : {}),
+    ...(ambiguous && error.verification
+      ? { verification: error.verification }
+      : {}),
+    ...(error instanceof JiraProtocolError && error.status
+      ? { httpStatus: error.status }
+      : {}),
+    ...(expected &&
+    ["create_form_model", "create_submission"].includes(error.stage)
+      ? { stage: error.stage }
+      : {}),
+    ...(error instanceof JiraProtocolError && error.details
+      ? { details: error.details }
+      : {}),
+  };
+}
+
 if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
@@ -213,18 +237,7 @@ if (
     process.exitCode = await main();
   } catch (error) {
     const ambiguous = error instanceof JiraAmbiguousOutcome;
-    const expected = ambiguous || error instanceof JiraProtocolError;
-    emit({
-      schema: "jira-protocol-error/1",
-      state: ambiguous ? "UnknownOutcome" : "Failed",
-      error: expected ? error.message : "unexpected internal error",
-      ...(error instanceof JiraProtocolError && error.status
-        ? { httpStatus: error.status }
-        : {}),
-      ...(error instanceof JiraProtocolError && error.details
-        ? { details: error.details }
-        : {}),
-    });
+    emit(errorReceipt(error));
     process.exitCode = ambiguous ? 5 : 2;
   }
 }
