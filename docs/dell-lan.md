@@ -229,13 +229,36 @@ changed.
 
 ## 6. Submit and let Lenovo publish; read back the exact SHA and MR
 
-Submit the command file with the standard client, passing the exact
-`--dialect <dialect>`, `--receipt-script-path <receiptScriptPath>`, and
-`--expected-cwd <expectedCwd>` from the writer's JSON output, with the same
-absolute path as `--cwd`: the worker refuses a provable difference before it
-claims or spawns anything, and a route that presents no expectation stays
-`unverified-target`. Do not infer or translate the dialect after the command
-is built. On Lenovo the single command runs `lenovo_publish.py`, which
+Submit the written request through the Dell managed-submit entry. It derives
+the one write footprint this route can prove from the digest-bound request
+file (the Lenovo task worktree; the job's working directory is reserved by
+the queue-local referee from the signed payload) and passes it to the signed
+submit as an explicit resource claim, so the job and its reservation publish
+together:
+
+```text
+python scripts/dell_lan/dell_managed_submit.py \
+  --queue <queue-dir> --key-file <key-path> \
+  --request <requestPath> --request-sha256 <requestSha256> \
+  --command-file <commandFile> --cwd <expectedCwd> --dialect <dialect> \
+  --receipt-script-path <receiptScriptPath> \
+  --shared <lan-share> --repo <source-copy> \
+  --receipt <outside-every-checkout>\dell-managed-submit.json
+```
+
+It refuses before any queue write when the request digest, the schema, the
+worktree path, the pinned revisions, or the command/request binding cannot be
+proven, and the queue-local referee refuses a conflicting footprint (the same
+or a nested worktree, or the same working directory) with exit `2` before
+anything is published. The entry passes `<expectedCwd>` as both the job
+`--cwd` and the signed expectation: the worker refuses a provable difference
+before it claims or spawns anything, and a route that presents no expectation
+stays `unverified-target`. Do not infer or translate the dialect after the
+command is built. Completion: the entry printed one `JOBID=<32hex>` and wrote
+a `dell-lan-managed-submit/1` receipt naming the job, the reservation
+generation and resource digest, the exact claims, the pinned revisions, and
+the reservation owner - that receipt is the reservation proof, not a
+pre-submit check. On Lenovo the single command runs `lenovo_publish.py`, which
 re-hashes the request, re-verifies
 the staged bundle, imports the task commit once with a compare-and-swap on
 `refs/heads/<task-branch>` (a repeat names the prior SHA; mismatch, dirty
@@ -244,7 +267,13 @@ branch, creates or updates the Draft MR (never a second MR for one branch),
 and reads the identity back. A `ready` request then runs the Ready route
 below: the external `remove_draft.py` marks the same MR Ready, and the
 driver re-captures the identity and proves the title and description still
-match the request input. Completion: submit printed one `JOBID=<32hex>`.
+match the request input.
+
+Never resubmit the same worktree after a timeout or exit 3: the reservation
+stays held until the worker publishes a proof-bound release, so a second
+submit for that footprint is refused. A submit without a claim keeps the
+legacy sequential fallback; the managed entry above is the supported producer
+path for these routes.
 
 For a metadata stop, do not treat the non-zero result as if transfer failed:
 retain its `import.worktree`, `import.branch`, `import.commit`, and

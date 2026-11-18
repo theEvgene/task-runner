@@ -56,9 +56,14 @@ at the task commit; the transfer result must report the latter exactly. A dirty
 or unreadable reconciliation remains `unknown`;
 keep the same job slot and never submit a blind duplicate.
 
-Submit the generated command with its returned `receiptScriptPath` as the
-bridge `--receipt-script-path` and its `expectedCwd` as `--expected-cwd`
-(the same absolute path as bridge `--cwd`). The worker refuses a provable
+Submit the generated command through `scripts/dell_lan/dell_managed_submit.py`
+(same documented form as `docs/dell-lan.md` section 6): pass the request, its
+`requestSha256`, the `commandFile`, and `receiptScriptPath` from the writer's
+JSON output, and its `expectedCwd` as `--cwd`. The entry claims the request's
+explicit `--lenovo-worktree` footprint and publishes the signed job and its
+reservation together; a request that fails the digest, schema, worktree,
+revision, or command binding refuses before any queue write, and a conflicting
+worktree is refused by the referee (exit `2`). The worker refuses a provable
 working-directory difference before spawning; without an expectation the
 target stays `unverified-target`, never verified. Readback authenticates that
 exact receipt-script path from the signed job envelope (it reads no expected
