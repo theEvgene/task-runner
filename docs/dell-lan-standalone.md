@@ -70,7 +70,10 @@ python scripts/dell_lan/dell_managed_submit.py \
   --key-file <key-path> --repo <source-copy>
 ```
 
-The worker refuses a provable working-directory difference before spawning;
+A lost submit response keeps the same id: rerun the same call with
+`--recover` and the preserved writer record, request file, and queue
+(read-only; a missing queue refuses `queue-missing`, never `absent`). The
+worker refuses a provable working-directory difference before spawning;
 without an expectation the target stays `unverified-target`, never verified.
 A second transfer for the same or a nested target refuses while the first
 footprint is held, and while an outcome is unknown only the read-only
@@ -135,7 +138,9 @@ recovery.
 As with transfer, submission goes through `dell_managed_submit.py`: it
 re-verifies the request digest, derives the request's own checkout/worktree
 claims and the exact command, and refuses any record, command file, dialect,
-or driver that disagrees with the verified request.
+or driver that disagrees with the verified request. The same `--recover`
+readback names the id after a lost response; it needs the preserved writer
+record, request file, and queue.
 
 ## 3. One-command transfer and publication (#45)
 

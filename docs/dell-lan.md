@@ -339,23 +339,21 @@ explicitly asks for one, stays a separate `docs/pipeline-observer.md` run.
 
 - **Unknown push** (`stage: push`, exit 3): keep the id and re-fetch it
   per `docs/lan-bridge.md` "Observation rule"; a
-  late sealed result is accepted by MAC and id binding. If the submit
-  response itself was lost, `--recover` names the exact id
-  (`docs/lan-bridge-claims.md`, "Lost submit response"). If the slot stays
-  empty, rerun the same `dell_request.py publish` construction with an
-  additional `--reconcile` and submit that new writer record: the probe is a
-  request of its own with no claims, so it stays admissible while the unknown
-  job holds the footprint. Never append text to an existing command file, and
-  never submit a write request's `reconcileCommand`. The read-only probe
-  observes the remote branch and MR list and writes nothing. It needs
-  `reconcile` in the request's `--authorize`.
+  late sealed result is accepted by MAC and id binding. A lost submit
+  response is named by `--recover` (`docs/lan-bridge-claims.md`). If the slot
+  stays empty, rerun the same construction with `--reconcile` and submit that
+  new writer record: the probe is a request of its own with no claims, so it
+  stays admissible while the unknown job holds the footprint. Never append
+  text to an existing command file, and never submit a write request's
+  `reconcileCommand`. The probe writes nothing. It needs `reconcile` in the
+  request's `--authorize`.
 - **Unknown MR write** (`stage: mr`, exit 3): the write may have landed. The
   probe reports the existing MR only after its complete description exactly
   matches the signed request; mismatch is refused and unavailable evidence is
   unknown. It never writes or creates a second MR, and while the outcome is
   unknown no second writer starts.
 - **Unknown undraft** (`stage: mr`, exit 3, `undraft-unknown` or
-  `readback-mismatch`): the same rule as an unknown MR write - the undraft
+  `readback-mismatch`): the same rule as an unknown MR write — the undraft
   may have landed, so reconcile the same job id and let a later publish
   update the same MR. Never a second MR, never a blind retry.
 - **Unknown footprint**: while the outcome is unknown the reservation stays
@@ -363,8 +361,10 @@ explicitly asks for one, stays a separate `docs/pipeline-observer.md` run.
   recovery request above (`--reconcile` declares no claims); a fresh write is
   refused by naming the held footprint. Only the worker's proof-bound release
   under the same job id frees it.
-- **Rejected** (exit 1): read the carried exit code and stderr, fix on the
-  anchored base, and submit a new job id. The queue refuses to reuse an id.
+- **Rejected** (exit 1): read the exit code and stderr, fix on the anchored
+  base, and resubmit the same request. A terminal job is permanent: the same
+  bytes return the same id and never re-run. Re-run only with a rebuilt
+  request (for example a new `--token`), which is a new id.
 - **Stale**: keep working offline on the anchored base and re-sync before the
   next transfer.
 

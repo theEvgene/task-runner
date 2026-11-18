@@ -118,29 +118,51 @@ python scripts/dell_lan/dell_managed_submit.py --recover \
   --key-file <key-path> --repo <dell-checkout>
 ```
 
-It prints one `dell-managed-recovery/1` JSON record: `jobId`, `job`
-(`published`/`absent`), `jobEnvelopeSha256`, `requestSha256`, `result`
-(`present`/`absent`, with `resultStatus`/`exitCode` when present),
-`reservation` (`present`/`absent`/`inert`/`missing`), `footprintHeld`, and
-`resources`. Every record is opened by that exact id and re-authenticated;
-nothing scans `reservations/`, and nothing is published. Exit `0` means the
-state was established, not that the job succeeded.
+Keep the three inputs the readback needs: the writer record, the request file
+it names, and the queue. The id is derivable from the digest, but the command
+binding is re-derived from the request bytes, so a deleted request file is
+`recovery-unproven`, not a guessed success.
 
-- `job: absent` means the job publish did not land. A reservation file
-  without its job is `inert`: the producer aborted under the referee lock, so
-  it holds nothing. The same writer record may then be submitted again - the
-  same id and identical signed bytes resolve as `owned` instead of publishing
-  a second job or a second reservation.
-- `job: published` means the write may execute. Recovery keeps the same id;
-  the read-only `--reconcile` probe stays the only admissible job for that
-  target until the worker's proof-bound release, which `footprintHeld`
-  reflects.
-- A job under the id whose signed command is not this request's command is
-  refused (`recovery-unproven`), never reported as recovered; so is an
-  unreadable or foreign record, and a published write whose reservation is
-  `missing` reports `footprintHeld: null`, never `false`.
+It prints one `dell-managed-recovery/1` JSON record: `jobId`, `job`
+(`published`/`absent`), `jobEnvelopeSha256` (`null` when absent),
+`requestSha256`, `result` (`present`/`absent`, with `resultStatus`/`exitCode`
+when present), `reservation` (`present`/`absent`/`reservation-only`/
+`missing`), `footprintHeld` (`true`/`false`/`null`), `resources`, and, for a
+published job, `execution` (`requestBound`, the CLI-only `timeoutSeconds`
+and `maxOutputBytes`, and `targetDecision`). Every record is opened by that
+exact id and re-authenticated; nothing scans `reservations/`, and nothing is
+published. Exit `0` means the state was established, not that the job
+succeeded.
+
+- An unavailable queue is refused before any state is reported: a missing
+  queue directory, `jobs/`, or `results/` exits `1` with `queue-missing`.
+  An unmounted share is never evidence that the job did not land.
+- `job: absent` means the job publish did not land in an available queue. A
+  reservation file without its job is `reservation-only`: recovery takes no
+  lock, so it cannot prove whether the producer aborted or is still
+  completing, and reports `footprintHeld: null`, never `false`. The same
+  writer record may then be submitted again: under the referee lock the
+  orphan is replaced only when it authenticates to the identical job bytes
+  and footprint, and the job is published; a mismatching record is refused
+  and left in place.
+- `job: published` means the write may execute and every request-derived
+  execution field matches the verified request: command, working directory,
+  expected working directory, dialect, receipt script path, and return
+  files, plus the reserved footprint. `execution.timeoutSeconds` and
+  `maxOutputBytes` are CLI-only and reported, not proven. A mismatch is
+  `recovery-unproven`, never a recovered id.
+- Recovery keeps the same id; the read-only `--reconcile` probe stays the
+  only admissible job for that target until the worker's proof-bound
+  release, which `footprintHeld` reflects.
+- A result without its job, a read-only request whose job carries a
+  reservation, and an unreadable or foreign record are refused as
+  contradictions or `recovery-unproven`. A published write whose
+  reservation is `missing` reports `footprintHeld: null`, never `false`.
+- A terminal job is permanent for the same request: resubmitting identical
+  bytes resolves as `owned` and never re-runs. Re-running requires a
+  rebuilt request (for example a new `--token`), which is a new id.
 - The id is a deterministic name, not a secret and not an authentication
-  token: every state above comes from the signed envelope. Never discover the
-  id by scanning `queue/reservations/*.json` - another job's reservation is
-  not evidence about this request - and never re-submit a write just to be
-  told the id.
+  token: every state above comes from the signed envelope. Never discover
+  the id by scanning `queue/reservations/*.json` - another job's reservation
+  is not evidence about this request - and never re-submit a write just to
+  be told the id.

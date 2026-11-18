@@ -138,7 +138,9 @@ MAC-verified result bound to that id or a concrete blocker (exit `2`)
 arrives. A short-timeout expiry is **unknown**, never completion, and WHILE
 the outcome is unknown there is never permission to publish a new JOBID for
 the same work. A verified terminal worker timeout, truncation, or failure
-is a known outcome: recover as a NEW id per Confirmed states below. Report `no response` only after the full 600 s watch: cite
+is a known outcome. A managed submit keeps its request-bound id, so the same
+bytes resolve as `owned` and never re-run; a new attempt needs a rebuilt
+request. Other submits recover as a NEW id per Confirmed states below. Report `no response` only after the full 600 s watch: cite
 `elapsed_s >= 600` (or `windows_used` x window >= 600) at a 30 s poll from
 the waiter report; a shorter expiry is `waiting`/`unknown` with the same
 same-id resume, never `no response`. State the `lan-job-status/1` fields
@@ -180,7 +182,8 @@ through `scripts/dell_lan/dell_managed_submit.py` instead of a hand-written
 `--claim` list; see that document's Dell section. A caller that must know the
 id before the response exists may pass `job_id=`; the Dell managed route
 derives it from the verified request and recovers it read-only after a lost
-response.
+response. A `--recover` readback refuses an unavailable queue
+(`queue-missing`) instead of reporting the job absent.
 
 ## Failure diagnosis
 

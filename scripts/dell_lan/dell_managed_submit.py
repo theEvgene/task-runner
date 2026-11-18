@@ -159,14 +159,15 @@ def _submit(bridge, args, document: dict, request: dict,
         raise Stop("submit-refused", detail=f"submit refused: {error}"[:DETAIL_MAX]) from error
 
 
-def _recover(bridge, args, request: dict, digest: str, job_id: str,
-             expects_claims: bool) -> dict:
+def _recover(bridge, args, request: dict, claims: list[str], digest: str,
+             job_id: str) -> dict:
     """Read the exact id back; this path never publishes anything."""
 
     try:
-        command, _ = expected_command(request, digest)
-        return recovery_state(bridge, Path(args.queue), _key(bridge, args, request),
-                              job_id, digest, command, expects_claims)
+        command, parameters = expected_command(request, digest)
+        return recovery_state(
+            bridge, Path(args.queue), _key(bridge, args, request), job_id,
+            digest, parameters, command, claims)
     except ExecutionRefused as error:
         raise Stop("command-refused", detail=str(error)) from error
     except RecoveryRefused as error:
@@ -208,8 +209,7 @@ def main(argv=None) -> int:
                            detail=f"bridge API incomplete: missing {name}")
         job_id = managed_job_id(digest)
         if args.recover:
-            state = _recover(bridge, args, request, digest, job_id,
-                             expects_claims=bool(claims))
+            state = _recover(bridge, args, request, claims, digest, job_id)
         else:
             job_id = _submit(bridge, args, document, request, claims, digest,
                              job_id)

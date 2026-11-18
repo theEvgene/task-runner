@@ -39,13 +39,16 @@ Contract:
   heuristic takeover. A refused attempt publishes nothing; a failed job
   publish removes only its own provisional reservation. An already
   published job is resolved first, so an idempotent retry stays
-  ``owned`` even after the quota configuration changed.
+  ``owned`` even after the quota configuration changed. A reservation
+  whose job never landed is replaced only under the same lock, and only
+  when it authenticates to the identical job bytes and footprint.
 * A reservation is live until its exact job has an authenticated release
   record in ``<queue>/releases/<job-id>.json`` bound to the job bytes, the
   reservation resources, the claim generation, and the exact result bytes.
-  A signed result alone never frees a footprint (#91), and a missing job
-  means the producer aborted under the lock, so the record is inert. Age or
-  a timeout never frees it; only the proof-bound release does.
+  A signed result alone never frees a footprint (#91), and a reservation
+  whose job never landed is unresolved, not free: the next identical submit
+  replaces it under the lock. Age or a timeout never frees it; only the
+  proof-bound release does.
 * Producer ``resource_claims`` inside the job payload stay a declaration,
   not authority: without a verified reservation the worker keeps the
   ``exclusive:global`` sequential fallback.
@@ -251,6 +254,36 @@ def referee_publish(queue: Path, key: bytes, bridge: object, record: dict,
                     f"capacity quota exhausted: {token} "
                     f"(limit {limit}, held {held})")
         directory = Path(queue) / "reservations"
+        existing = reservation_path(queue, job_id)
+        if existing.is_file():
+            # The job is absent and a reservation exists: a previous attempt
+            # aborted between the two publishes. The lock proves no producer
+            # is mid-flight, so only a record that authenticates to these
+            # exact job bytes and this exact footprint may be replaced. A
+            # mismatch refuses and is never released; a published job never
+            # reaches this branch.
+            try:
+                previous = read(queue, key, bridge, job_id,
+                                record["job_envelope_sha256"])
+            except ReservationRefused as error:
+                raise ReservationRefused(
+                    "inert reservation does not authenticate to this attempt: "
+                    f"{error}") from error
+            if previous is None:
+                raise ReservationRefused(
+                    "inert reservation vanished under the referee lock")
+            same_footprint = (
+                previous["resources"] == list(resources)
+                and previous["resource_digest"] == record["resource_digest"])
+            if not same_footprint:
+                raise ReservationRefused(
+                    "inert reservation has a different footprint")
+            try:
+                existing.unlink()
+            except OSError as error:
+                raise ReservationRefused(
+                    f"inert reservation could not be cleared: {error}"
+                ) from error
         bridge.publish(str(directory), job_id, bridge.seal(record, key))
         try:
             publish_job()
