@@ -202,6 +202,26 @@ id. This readback does not depend on the issue being present in top-level
 subtasks, and Epics. The board is still authoritative for validating that the
 chosen target column currently contains the transition target status.
 
+## Drive an issue to a target status
+
+`transition-to-status` plans and executes a live-discovered route to an
+explicit target status id. It consults no static workflow map: every edge
+comes from the issue-specific transitions actually returned for the current
+state, and every column check comes from the live board.
+
+```powershell
+$env:NODE_USE_SYSTEM_CA = '1'
+node scripts/jira-protocol.mjs transition-to-status --issue LEL-4122 --status 10217
+```
+
+Review the plan (current and target status, first step, available
+transitions) and repeat with its `confirmation` value. After confirmation the
+executor re-discovers before every step, verifies each step by issue-by-key
+readback, and stops without an automatic retry on any unknown outcome or
+ambiguity: an already-reached status writes nothing, an unavailable or
+ambiguous next step fails with its reason, and a workflow-form-only path is
+refused. Single-step `transition` is unchanged.
+
 ## Assign
 
 The first invocation is read-only and produces a confirmation digest:
@@ -357,6 +377,31 @@ HTTP failures during create report a fixed `stage` (`subtask_meta`,
 `subtask_parent`, or `subtask_submission`) without exposing request contents.
 Select-field labels are resolved against live `allowedValues`; ambiguous or
 unknown labels are rejected before submission. The Epic flow is unchanged.
+
+## Create a batch of subtasks from a file
+
+`create-subtasks` creates a set of subtasks under one parent from a UTF-8
+JSON file holding an array of `{ "summary", "description"?, "fields"? }`
+entries (multiline and non-ASCII text travel as JSON strings). It reuses the
+single-subtask operation, its confirmations, and its readback.
+
+```powershell
+$env:NODE_USE_SYSTEM_CA = '1'
+node scripts/jira-protocol.mjs create-subtasks --parent LEL-4122 --file subtasks.json
+```
+
+The read-only plan shows every entry with its live match against the
+parent's existing children (`new`, `exists`, `ambiguous`) and creates only
+unmatched entries after confirmation. A repeat run skips already-created
+entries, so an interrupted batch resumes without duplicates; an ambiguous
+match needs an explicit repeatable `--allow-duplicate '<summary>'`. An
+unknown entry outcome stops that entry without an automatic retry, and HTTP
+401/403 aborts the batch. The result lists every entry with its link and
+state. Single `create-subtask` is unchanged.
+
+The portable step ledger, sanitized handoff evidence, transfer rules, and
+fixture/live boundary for these flows are defined in
+`docs/jira-protocol-handoff.md`.
 
 ## Exit states
 

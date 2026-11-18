@@ -1,14 +1,16 @@
 # Jira protocol agent skills
 
-Six model-invoked, `cli-`-prefixed skills package the Jira protocol CLI by
+Eight model-invoked, `cli-`-prefixed skills package the Jira protocol CLI by
 operation:
 
 - `cli-create-lel-service-backlog-issue`
 - `cli-assign-jira-issue`
 - `cli-transition-jira-issue`
+- `cli-transition-jira-status`
 - `cli-extract-jira-content`
 - `cli-flag-jira-issue`
 - `cli-create-jira-subtask`
+- `cli-create-jira-subtasks`
 
 Each skill runs the installed CLI on the host that holds the authorized
 session: locally, or on Lenovo through the generic signed queue as
@@ -49,8 +51,10 @@ The skills use only the documented commands:
 | ---------- | ------------------------------------- | ------------------------------------------------------------------------ |
 | create     | `create-epic`, optional `detail-view` | returned key is a field-verified LEL Epic on rapid view 298290's board or backlog |
 | subtask    | `create-subtask`                      | returned key is a field-verified LEL subtask whose parent key equals the requested parent |
+| subtasks   | `create-subtasks`                     | every batch entry is `Created` (field-verified, exact parent) or a proven `AlreadyExists`; no duplicate confirmed instance |
 | assign     | `assign`                              | direct issue read reports the exact assignee login                       |
 | transition | `transitions`, `transition`           | direct issue read reports the planned target status id                   |
+| route      | `transition-to-status`                | direct issue read reports the target status id after every verified step |
 | extract    | `extract`                             | REST-visible issue, comments, metadata inventories, and immediate parent |
 | flag       | `flag`                                | direct issue read reports the requested flag state plus a new comment id |
 
@@ -68,6 +72,9 @@ Important limitations:
   or backlog placement; subtasks additionally require exact parent linkage.
 - Transition is one currently available transition, not automatic pathfinding.
   The CLI validates but does not expose discovery of target board column ids.
+  `transition-to-status` covers live-discovered multi-step routes to an
+  explicit status id instead: every edge is re-discovered, and ambiguous or
+  form-bound paths stop with their reason.
 - `extract` proves completeness only for its declared caller-visible REST
   scope. Server-rendered Jira sections, Wiki pages, remote links, attachment
   bodies, and attachment text remain explicit unproven/not-retrieved gaps.

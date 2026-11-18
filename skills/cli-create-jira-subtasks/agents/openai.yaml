@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create Jira Subtasks Batch (CLI)"
+  short_description: "Create a set of LEL subtasks from a JSON batch file"
+  default_prompt: "Use $cli-create-jira-subtasks to plan and safely create a set of LEL subtasks under one explicit parent from a UTF-8 JSON batch file."

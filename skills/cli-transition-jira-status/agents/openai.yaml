@@ -1,0 +1,4 @@
+interface:
+  display_name: "Transition Jira Issue to Status (CLI)"
+  short_description: "Drive one LEL issue to a target status along live-discovered steps"
+  default_prompt: "Use $cli-transition-jira-status to plan and safely drive one LEL Jira issue to an explicit target status id."

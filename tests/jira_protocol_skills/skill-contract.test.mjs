@@ -16,9 +16,11 @@ const names = [
   "cli-create-lel-service-backlog-issue",
   "cli-assign-jira-issue",
   "cli-transition-jira-issue",
+  "cli-transition-jira-status",
   "cli-extract-jira-content",
   "cli-flag-jira-issue",
   "cli-create-jira-subtask",
+  "cli-create-jira-subtasks",
 ];
 
 test("all Jira protocol skills are CLI-prefixed and use the installed runtime", async () => {
@@ -61,8 +63,20 @@ test("transition does not invent workflow paths, columns, or form submission", a
   assert.match(text, /Never\s+repeat the mutation blindly/);
 });
 
-test("extract binds the REST command, completeness ledger, and external gaps", async () => {
+test("status route uses only live edges and re-discovers every step", async () => {
   const text = await readFile(skill(names[3]), "utf8");
+  assert.match(text, /jira-protocol\.mjs transition-to-status[\s\\]+--issue LEL-1234/);
+  assert.match(text, /--confirm <confirmation>/);
+  assert.match(text, /never synthesizes a path from a static map/);
+  assert.match(text, /re-discovers before every step/);
+  assert.match(text, /UnknownOutcome/);
+  assert.match(text, /never repeat the mutation/);
+  assert.match(text, /401\/403/);
+  assert.match(text, /lenovo-hosted-scripts\.md/);
+});
+
+test("extract binds the REST command, completeness ledger, and external gaps", async () => {
+  const text = await readFile(skill(names[4]), "utf8");
   assert.match(text, /jira-protocol\.mjs extract --issue LEL-1234/);
   assert.match(text, /completeness\.comprehensive/);
   assert.match(text, /parent\.presence: unobserved/);
@@ -74,7 +88,7 @@ test("extract binds the REST command, completeness ledger, and external gaps", a
 });
 
 test("flag binds the required comment, refusal replay, and recovery boundary", async () => {
-  const text = await readFile(skill(names[4]), "utf8");
+  const text = await readFile(skill(names[5]), "utf8");
   assert.match(text, /jira-protocol\.mjs flag[\s\\]+--issue LEL-1234/);
   assert.match(text, /--comment-file/);
   assert.match(text, /--confirm <confirmation>/);
@@ -86,7 +100,7 @@ test("flag binds the required comment, refusal replay, and recovery boundary", a
 });
 
 test("subtask binds parent linkage, confirmation, readback, and recovery boundary", async () => {
-  const text = await readFile(skill(names[5]), "utf8");
+  const text = await readFile(skill(names[6]), "utf8");
   assert.match(text, /duplicate search: unavailable in this CLI/);
   assert.match(text, /MissingRequiredFields/);
   assert.match(text, /--confirm <confirmation>/);
@@ -94,6 +108,18 @@ test("subtask binds parent linkage, confirmation, readback, and recovery boundar
   assert.match(text, /parentKey/);
   assert.match(text, /UnknownOutcome/);
   assert.match(text, /stop without another create/);
+});
+
+test("subtask batch matches live children and resumes without duplicates", async () => {
+  const text = await readFile(skill(names[7]), "utf8");
+  assert.match(text, /jira-protocol\.mjs create-subtasks[\s\\]+--parent LEL-1234/);
+  assert.match(text, /--confirm <confirmation>/);
+  assert.match(text, /--allow-duplicate/);
+  assert.match(text, /UnknownOutcome/);
+  assert.match(text, /AlreadyExists/);
+  assert.match(text, /parentKey/);
+  assert.match(text, /401\/403/);
+  assert.match(text, /lenovo-hosted-scripts\.md/);
 });
 
 test("installer source names the actual runtime and records its hashes", async () => {
@@ -106,9 +132,13 @@ test("installer source names the actual runtime and records its hashes", async (
     "scripts/jira-protocol.mjs",
     "scripts/jira_protocol/protocol.mjs",
     "scripts/jira_protocol/operations.mjs",
+    "scripts/jira_protocol/route.mjs",
+    "scripts/jira_protocol/batch.mjs",
+    "scripts/jira_protocol/handoff.mjs",
     "scripts/jira_protocol/extract.mjs",
     "scripts/jira_protocol/html-form.mjs",
     "docs/jira-protocol.md",
+    "docs/jira-protocol-handoff.md",
   ]) {
     assert.match(text, new RegExp(file.replace(/[./-]/g, "\\$&")));
   }

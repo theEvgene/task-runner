@@ -17,19 +17,26 @@ import {
   getIssueTransitions,
   transitionIssue,
 } from "./jira_protocol/operations.mjs";
+import { transitionToStatus } from "./jira_protocol/route.mjs";
+import {
+  createSubtaskBatch,
+  loadBatchFile,
+  parseBatchFile,
+} from "./jira_protocol/batch.mjs";
 import { extractIssue } from "./jira_protocol/extract.mjs";
 
 function usage(message) {
   throw new JiraProtocolError(
     message ??
-      "usage: jira-protocol <extract|detail-view|transitions|transition|assign|flag|create-epic|create-subtask> [options]"
+      "usage: jira-protocol <extract|detail-view|transitions|transition|transition-to-status|assign|flag|create-epic|create-subtask|create-subtasks> [options]"
   );
 }
 
 function parse(argv) {
   const [command, ...tokens] = argv;
   if (!command) usage();
-  const values = { field: [] };
+  const repeatable = new Set(["field", "allow-duplicate"]);
+  const values = { field: [], "allow-duplicate": [] };
   const boolean = new Set(["--help"]);
   for (let index = 0; index < tokens.length; index += 1) {
     const name = tokens[index];
@@ -43,7 +50,7 @@ function parse(argv) {
       usage(`missing value for ${name}`);
     index += 1;
     const key = name.slice(2);
-    if (key === "field") values.field.push(value);
+    if (repeatable.has(key)) values[key].push(value);
     else if (Object.hasOwn(values, key)) usage(`duplicate option ${name}`);
     else values[key] = value;
   }
@@ -71,7 +78,11 @@ export async function resolveFileBackedText(values, inlineName, fileName) {
 function only(values, allowed) {
   const accepted = new Set([...allowed, "help"]);
   for (const key of Object.keys(values)) {
-    if (key === "field" && values.field.length === 0) continue;
+    if (
+      (key === "field" || key === "allow-duplicate") &&
+      values[key].length === 0
+    )
+      continue;
     if (!accepted.has(key) && values[key] !== undefined)
       usage(`unknown option --${key}`);
   }
@@ -156,6 +167,16 @@ async function main() {
     emit({ schema: "jira-protocol-result/1", ...result });
     return result.state === "Completed" ? 0 : 3;
   }
+  if (command === "transition-to-status") {
+    only(values, ["issue", "status", "confirm"]);
+    const result = await transitionToStatus(transport(), {
+      issueKey: values.issue,
+      status: values.status,
+      confirm: values.confirm,
+    });
+    emit({ schema: "jira-protocol-result/1", ...result });
+    return result.state === "Completed" ? 0 : 3;
+  }
   if (command === "assign") {
     only(values, ["issue", "assignee", "confirm"]);
     const result = await assignIssue(transport(), {
@@ -232,6 +253,31 @@ async function main() {
     if (result.state === "Completed") return 0;
     return result.state === "MissingRequiredFields" ? 4 : 3;
   }
+  if (command === "create-subtasks") {
+    only(values, [
+      "parent",
+      "file",
+      "issue-type-id",
+      "allow-duplicate",
+      "confirm",
+    ]);
+    if (values.file === undefined)
+      throw new JiraProtocolError("--file is required");
+    const items = parseBatchFile(await loadBatchFile(values.file));
+    const result = await createSubtaskBatch(transport(), {
+      parent: values.parent,
+      items,
+      issueTypeId: values["issue-type-id"],
+      allowDuplicates: values["allow-duplicate"],
+      confirm: values.confirm,
+    });
+    emit({ schema: "jira-protocol-result/1", ...result });
+    if (result.state === "Completed") return 0;
+    if (result.state === "MissingRequiredFields") return 4;
+    if (result.state === "UnknownOutcome") return 5;
+    if (result.state === "Failed") return 2;
+    return 3;
+  }
   usage(`unknown command ${command}`);
 }
 
@@ -256,6 +302,7 @@ export function errorReceipt(error) {
       "subtask_meta",
       "subtask_parent",
       "subtask_submission",
+      "batch_existing",
     ].includes(error.stage)
       ? { stage: error.stage }
       : {}),
