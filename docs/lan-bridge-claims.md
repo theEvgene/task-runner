@@ -141,7 +141,8 @@ succeeded.
   reservation file without its job is `reservation-only`: recovery takes no
   lock, so it cannot prove whether the producer aborted or is still
   completing, and reports `footprintHeld: null`, never `false`. The same
-  writer record may then be submitted again: under the referee lock the
+  writer record may then be submitted again with the original `--timeout`
+  and `--max-output` values: under the referee lock the
   orphan is replaced only when it authenticates to the identical job bytes
   and footprint, and the job is published; a mismatching record is refused
   and left in place.
@@ -155,8 +156,9 @@ succeeded.
   only admissible job for that target until the worker's proof-bound
   release, which `footprintHeld` reflects.
 - A result without its job, a read-only request whose job carries a
-  reservation, and an unreadable or foreign record are refused as
-  contradictions or `recovery-unproven`. A published write whose
+  reservation, and an unreadable or foreign record for a published job are
+  refused as contradictions or `recovery-unproven`. An unauthenticated
+  reservation without a job remains `reservation-only` and unproven. A published write whose
   reservation is `missing` reports `footprintHeld: null`, never `false`.
 - A terminal job is permanent for the same request: resubmitting identical
   bytes resolves as `owned` and never re-runs. Re-running requires a
