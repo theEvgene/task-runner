@@ -11,16 +11,32 @@ Canonical sources mirrored (read-only, never modified):
 `scripts/lenovo_worker/job_reconciliation.py`, `job_ownership.py`,
 `job_tree.py`, `proc.py`, `launch.py`, `scripts/lan_bridge/lan_bridge.py`.
 
-## Toolchain — Go
+## Toolchain — Go (deterministic build)
 
-The single exe is built with Go (stdlib only, no dependencies, no network):
-`scripts\lenovo_worker\job_recovery\build-go.bat` runs `go build -trimpath`
-with `GOPROXY=off`. Sources are split across small files (`main.go`,
+The single exe is built with Go 1.24.7 exactly (stdlib only, no dependencies,
+no network): `scripts\lenovo_worker\job_recovery\build-go.bat` pins
+`GOTOOLCHAIN=local`, `GOPROXY=off`, `GOOS=windows`, `GOARCH=amd64`,
+`GOAMD64=v1`, `CGO_ENABLED=0` and runs
+`go build -trimpath -buildvcs=false`, refusing any other toolchain.
+`go.mod` additionally pins `toolchain go1.24.7`, so an older toolchain fails
+instead of silently building. `-trimpath` strips checkout-local paths and
+`-buildvcs=false` omits VCS stamping, so the same sources built with these
+settings are byte-identical. Sources are split across small files (`main.go`,
 `jsonx.go`, `bridge.go`, `custody.go`, `validate.go`, `recovery.go`,
 `proof.go`, `settle.go`, `procs.go`, `receipts.go`, `selftest.go`,
 `sanitize.go`, `refusal.go`) so each stays under the file token guard; all compile into
-the one exe. Rebuild-from-source is exact; byte-identical output across
-machines is not guaranteed (the PE embeds a build id/timestamp).
+the one exe.
+
+Reproduce: install Go 1.24.7, run `build-go.bat` (any caller cwd works; it
+builds from its own directory), then rebuild from a clean checkout
+(`git worktree add <dir> <commit>`) and compare full SHA-256
+(`certutil -hashfile LenovoJobRecovery.exe SHA256`). Both must equal
+`0a0daedd120342a8e6265e708c430643e071d5c236d1f961307110fde3d25f48`
+(`go version go1.24.7 windows/amd64`; current commit sources plus the
+deterministic build settings). A mismatch means the sources, toolchain, or
+flags moved: do not ship the exe. The previous blessed bytes (`d095b357…`)
+predate the deterministic flags (their Go build ID differs while all code
+bytes match) and are superseded.
 
 ## What it does
 
