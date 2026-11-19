@@ -176,13 +176,13 @@ func expectedReconciliationResult(jobID, generation string, start, proof map[str
 		"stdout": "", "stderr": reconcileStderr,
 		"started_at": startedAt, "finished_at": observedAt,
 		"timed_out": false, "output_truncated": false,
-		"files": map[string]any{},
+		"files":       map[string]any{},
 		"termination": "unknown",
 		"reconciliation": map[string]any{
-			"claim_generation":       generation,
-			"evidence_sha256":        sha256Hex([]byte(evText)),
-			"proof_envelope_sha256":  sha256Hex(proofRaw),
-			"outcome_derivation":     "unobserved-crash",
+			"claim_generation":      generation,
+			"evidence_sha256":       sha256Hex([]byte(evText)),
+			"proof_envelope_sha256": sha256Hex(proofRaw),
+			"outcome_derivation":    "unobserved-crash",
 		},
 	}
 	return expected, ""

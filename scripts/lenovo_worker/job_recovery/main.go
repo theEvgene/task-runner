@@ -30,6 +30,9 @@ func main() {
 }
 
 func run(argv []string) int {
+	if len(argv) == 0 {
+		return runInteractive()
+	}
 	o := &options{observer: "lenovo-recovery-exe/1 human-supervised"}
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
@@ -145,6 +148,7 @@ func usageErr(detail string) int {
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "LenovoJobRecovery -- evidence-gated recovery for one owned/unknown Lenovo job.")
+	fmt.Fprintln(os.Stderr, "  No arguments (double-click): ask for one job ID, verify, then recover only when safe.")
 	fmt.Fprintln(os.Stderr, "  --config PATH     local Lenovo config (default %LOCALAPPDATA%\\task-runner\\lenovo-worker.json)")
 	fmt.Fprintln(os.Stderr, "  --job-id HEX32    required; no default (refuses when omitted)")
 	fmt.Fprintln(os.Stderr, "  --proof-out PATH  where the signed proof envelope is written (outside the queue)")

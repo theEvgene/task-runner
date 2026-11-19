@@ -272,8 +272,8 @@ func selfTest() int {
 		startPayload := map[string]any{
 			"schema": startSchema, "kind": "start", "id": jobID,
 			"generation": generation, "owner": owner,
-			"child_pid": jsonNum(4194302),
-			"started_at": "2026-01-01T00:00:01+00:00",
+			"child_pid":           jsonNum(4194302),
+			"started_at":          "2026-01-01T00:00:01+00:00",
 			"job_envelope_sha256": envelopeSha, "resources": resources,
 		}
 		startRaw, err := seal(startPayload, key, "start", jobID)
@@ -289,7 +289,7 @@ func selfTest() int {
 			"resources": resources,
 			"evidence": map[string]any{
 				"schema": evidenceSchema,
-				"owner": owner, "child_pid": jsonNum(4194302),
+				"owner":  owner, "child_pid": jsonNum(4194302),
 				"tree_absent": true, "observer": "self-test",
 				"observed_at": "2026-01-01T00:00:02+00:00",
 			},
@@ -355,6 +355,64 @@ func selfTest() int {
 		// mismatch or the release digest mismatch must refuse.
 		problem, _, _ = verifySettlement(dir, proofPath, key, jobID, envelopeSha, resources, owner, generation)
 		return problem != ""
+	}, &passed, &failed)
+
+	runCase(&log, "job-id-validation", func() bool {
+		if !isHex32("ab010101010101010101010101010101") {
+			return false
+		}
+		for _, bad := range []string{"", "not-hex", "AB010101010101010101010101010101",
+			"ab01010101010101010101010101010", "ab0101010101010101010101010101011"} {
+			if isHex32(bad) {
+				return false
+			}
+		}
+		return true
+	}, &passed, &failed)
+
+	runCase(&log, "worker-compat-accepts-current", func() bool {
+		dir, err := os.MkdirTemp("", "worker-compat-ok")
+		if err != nil {
+			return false
+		}
+		defer os.RemoveAll(dir)
+		workerPy := filepath.Join(dir, "worker.py")
+		reconPy := filepath.Join(dir, "job_reconciliation.py")
+		workerSrc := "WORKER_SCHEMA = \"lenovo-worker/1\"\n--reconcile-id --reconcile-proof\n"
+		reconSrc := "PROOF_SCHEMA = \"lenovo-job-reconciliation/2\"\n" +
+			"EVIDENCE_SCHEMA = \"lenovo-job-terminal-evidence/1\"\nDERIVATION = \"unobserved-crash\"\n"
+		if err := os.WriteFile(workerPy, []byte(workerSrc), 0o644); err != nil {
+			return false
+		}
+		if err := os.WriteFile(reconPy, []byte(reconSrc), 0o644); err != nil {
+			return false
+		}
+		return checkWorkerCompatible(workerPy) == nil
+	}, &passed, &failed)
+
+	runCase(&log, "worker-compat-refuses-outdated", func() bool {
+		dir, err := os.MkdirTemp("", "worker-compat-old")
+		if err != nil {
+			return false
+		}
+		defer os.RemoveAll(dir)
+		workerPy := filepath.Join(dir, "worker.py")
+		reconPy := filepath.Join(dir, "job_reconciliation.py")
+		if err := os.WriteFile(workerPy, []byte("WORKER_SCHEMA = \"lenovo-worker/1\"\n--reconcile-id --reconcile-proof\n"), 0o644); err != nil {
+			return false
+		}
+		if err := os.WriteFile(reconPy, []byte("PROOF_SCHEMA = \"lenovo-job-reconciliation/1\"\n"), 0o644); err != nil {
+			return false
+		}
+		r := checkWorkerCompatible(workerPy)
+		if r == nil || r.Reason != "worker-incompatible" {
+			return false
+		}
+		missing := filepath.Join(dir, "absent-worker.py")
+		if r := checkWorkerCompatible(missing); r == nil || r.Reason != "worker-missing" {
+			return false
+		}
+		return true
 	}, &passed, &failed)
 
 	fmt.Printf("{\"schema\":\"lenovo-job-recovery-self-test/1\",\"passed\":%d,\"failed\":%d}\n", passed, failed)

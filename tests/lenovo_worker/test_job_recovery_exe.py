@@ -112,7 +112,7 @@ class JobRecoveryExeTests(unittest.TestCase):
         completed = run_exe("--self-test")
         self.assertEqual(completed.returncode, 0, completed.stderr[-500:])
         body = json.loads(completed.stdout.strip().splitlines()[0])
-        self.assertEqual((body["passed"], body["failed"]), (13, 0))
+        self.assertEqual((body["passed"], body["failed"]), (16, 0))
 
     def test_job_id_required_no_default(self) -> None:
         queue, _, _, _ = self.make_queue(JOB1)

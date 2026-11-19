@@ -248,6 +248,10 @@ func runRecovery(cfg *config, jobID, proofOut, observer string, invoke, verifyOn
 			"canonical worker.py not found")
 		return 2
 	}
+	if refusal := checkWorkerCompatible(cfg.WorkerPy); refusal != nil {
+		emitRefusal(jobID, refusal.Reason, refusal.NextAction, refusal.Detail)
+		return 2
+	}
 	if cfg.PythonExe == "" || !isFile(cfg.PythonExe) {
 		emitRefusal(jobID, "worker-missing",
 			"set python (or --python) to the configured interpreter",
