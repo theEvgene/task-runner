@@ -202,6 +202,26 @@ id. This readback does not depend on the issue being present in top-level
 subtasks, and Epics. The board is still authoritative for validating that the
 chosen target column currently contains the transition target status.
 
+## Drive an issue to a target status
+
+`transition-to-status` plans and executes a live-discovered route to an
+explicit target status id. It consults no static workflow map: every edge
+comes from the issue-specific transitions actually returned for the current
+state, and every column check comes from the live board.
+
+```powershell
+$env:NODE_USE_SYSTEM_CA = '1'
+node scripts/jira-protocol.mjs transition-to-status --issue LEL-4122 --status 10217
+```
+
+Review the plan (current and target status, first step, available
+transitions) and repeat with its `confirmation` value. After confirmation the
+executor re-discovers before every step, verifies each step by issue-by-key
+readback, and stops without an automatic retry on any unknown outcome or
+ambiguity: an already-reached status writes nothing, an unavailable or
+ambiguous next step fails with its reason, and a workflow-form-only path is
+refused. Single-step `transition` is unchanged.
+
 ## Assign
 
 The first invocation is read-only and produces a confirmation digest:
@@ -358,16 +378,29 @@ HTTP failures during create report a fixed `stage` (`subtask_meta`,
 Select-field labels are resolved against live `allowedValues`; ambiguous or
 unknown labels are rejected before submission. The Epic flow is unchanged.
 
+## Create a batch of subtasks from a file
+
+Batch creation is detailed in `docs/jira-protocol-batch.md`: `create-subtasks`
+plans every entry against the parent's live children (`new`, `exists`,
+`ambiguous`), writes only unmatched entries after confirmation, and requires
+`--journal <path>` for a confirmed write with per-item in-flight markers,
+resume, and explicit `--resolve-unknown` recovery. See that file for the
+matching, journal binding, and blocking rules.
+
+The portable step ledger, sanitized handoff evidence, transfer rules, and
+fixture/live boundary for these flows are defined in
+`docs/jira-protocol-handoff.md`.
+
 ## Exit states
 
-| Exit | Meaning                                                                |
-| ---: | ---------------------------------------------------------------------- |
-|  `0` | read succeeded or a write was confirmed by readback                    |
-|  `2` | invalid input, unsupported response, or policy/HTTP failure            |
-|  `3` | exact confirmation is required                                         |
+| Exit | Meaning                                                                      |
+| ---: | ---------------------------------------------------------------------------- |
+|  `0` | read succeeded or a write was confirmed by readback                          |
+|  `2` | invalid input, unsupported response, or policy/HTTP failure                  |
+|  `3` | exact confirmation is required                                               |
 |  `4` | Quick Create or subtask create metadata requires more server-declared fields |
-|  `5` | a write may have happened but readback did not prove the outcome       |
-|  `6` | extraction returned evidence but its declared REST scope is incomplete |
+|  `5` | a write may have happened but readback did not prove the outcome             |
+|  `6` | extraction returned evidence but its declared REST scope is incomplete       |
 
 The CLI performs no live write unless an exact live-model-bound confirmation
 digest is supplied. Tests use injected transports and local data only.

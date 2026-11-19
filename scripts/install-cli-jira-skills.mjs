@@ -17,17 +17,28 @@ const skillNames = [
   "cli-create-lel-service-backlog-issue",
   "cli-assign-jira-issue",
   "cli-transition-jira-issue",
+  "cli-transition-jira-status",
   "cli-extract-jira-content",
   "cli-flag-jira-issue",
   "cli-create-jira-subtask",
+  "cli-create-jira-subtasks",
 ];
 const runtimeFiles = [
   "scripts/jira-protocol.mjs",
   "scripts/jira_protocol/protocol.mjs",
   "scripts/jira_protocol/operations.mjs",
+  "scripts/jira_protocol/route.mjs",
+  "scripts/jira_protocol/batch.mjs",
+  "scripts/jira_protocol/batch-parse.mjs",
+  "scripts/jira_protocol/batch-journal.mjs",
+  "scripts/jira_protocol/batch-plan.mjs",
+  "scripts/jira_protocol/batch-execute.mjs",
+  "scripts/jira_protocol/handoff.mjs",
   "scripts/jira_protocol/extract.mjs",
   "scripts/jira_protocol/html-form.mjs",
   "docs/jira-protocol.md",
+  "docs/jira-protocol-batch.md",
+  "docs/jira-protocol-handoff.md",
 ];
 
 function usage() {
@@ -95,7 +106,13 @@ try {
     hashes[relative] = await digest(source);
   }
   hashes["references/jira-protocol.md"] = hashes["docs/jira-protocol.md"];
+  hashes["references/jira-protocol-batch.md"] =
+    hashes["docs/jira-protocol-batch.md"];
+  hashes["references/jira-protocol-handoff.md"] =
+    hashes["docs/jira-protocol-handoff.md"];
   delete hashes["docs/jira-protocol.md"];
+  delete hashes["docs/jira-protocol-batch.md"];
+  delete hashes["docs/jira-protocol-handoff.md"];
   for (const skillName of skillNames) {
     const stage = join(targetRoot, `.${skillName}.install-${nonce}`);
     staged.push(stage);
@@ -112,6 +129,13 @@ try {
     for (const moduleName of [
       "protocol.mjs",
       "operations.mjs",
+      "route.mjs",
+      "batch.mjs",
+      "batch-parse.mjs",
+      "batch-journal.mjs",
+      "batch-plan.mjs",
+      "batch-execute.mjs",
+      "handoff.mjs",
       "extract.mjs",
       "html-form.mjs",
     ]) {
@@ -123,6 +147,14 @@ try {
     await cp(
       sources["docs/jira-protocol.md"],
       join(stage, "references", "jira-protocol.md")
+    );
+    await cp(
+      sources["docs/jira-protocol-batch.md"],
+      join(stage, "references", "jira-protocol-batch.md")
+    );
+    await cp(
+      sources["docs/jira-protocol-handoff.md"],
+      join(stage, "references", "jira-protocol-handoff.md")
     );
     await writeFile(
       join(stage, "runtime-manifest.json"),

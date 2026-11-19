@@ -35,7 +35,7 @@ export function confirmationDigest(operation) {
 }
 
 const SECRET_KEY =
-  /^(?:atl_?token|formtoken|authorization|cookie|set-cookie)$/i;
+  /(?:atl_?token|auth[_-]?token|formtoken|authorization|set-?cookie|cookie|session|secret|passwd|password|credential)/i;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_REDIRECTS = 5;
 

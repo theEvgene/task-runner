@@ -6,8 +6,9 @@ signed queue. No Jira- or DCO-specific wrapper exists; every run below uses
 exactly as `docs/lan-bridge.md` states. Local execution stays intact: use a
 skill's local command when its credentials already live on the calling host.
 
-Scope: the seven `cli-` Jira operations (`extract`, `transitions`,
-`transition`, `assign`, `flag`, `create-epic`, `create-subtask` in
+Scope: the nine `cli-` Jira operations (`extract`, `transitions`,
+`transition`, `transition-to-status`, `assign`, `flag`, `create-epic`,
+`create-subtask`, `create-subtasks` in
 `scripts/jira-protocol.mjs`) and the DCO protocol CLI
 (`scripts/dco-feature-flags.mjs` `plan`/`apply`). The managed Nessy
 `dp jira` read keeps its own route in `docs/lan-bridge-config.md` and is not
@@ -81,7 +82,15 @@ Jira examples (Lenovo argv before transport rendering; read plus file-backed wri
 <node-on-lenovo> <checkout>\scripts\jira-protocol.mjs flag --issue LEL-1234 --action add --comment-file <lenovo-share-path>\comment.md
 <node-on-lenovo> <checkout>\scripts\jira-protocol.mjs create-epic --summary-file <lenovo-share-path>\summary.txt --description-file <lenovo-share-path>\description.md
 <node-on-lenovo> <checkout>\scripts\jira-protocol.mjs create-subtask --parent LEL-1234 --summary-file <lenovo-share-path>\summary.txt --description-file <lenovo-share-path>\description.md
+<node-on-lenovo> <checkout>\scripts\jira-protocol.mjs transition-to-status --issue LEL-1234 --status 10217
+<node-on-lenovo> <checkout>\scripts\jira-protocol.mjs create-subtasks --parent LEL-1234 --file <lenovo-share-path>\subtasks.json
 ```
+
+The batch `--file` is a UTF-8 JSON array of `{ "summary", "description"?,
+"fields"? }` staged to the share exactly like the other file-backed forms;
+`--confirm` digests for every write command travel inline as 64-hex.
+`transition-to-status` takes no free text, only the issue key and the target
+status id.
 
 DCO example (plan bytes staged to the share first, then referenced on Lenovo;
 state stays Lenovo-local, see below):
