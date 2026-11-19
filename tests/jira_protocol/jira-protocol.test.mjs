@@ -520,4 +520,3 @@ test("CLI output redacts token inputs independent of attribute syntax", () => {
   assert.match(serialized, /\[REDACTED\]/);
   assert.doesNotMatch(serialized, /cli-boundary-secret/);
 });
-
