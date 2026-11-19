@@ -91,4 +91,10 @@ landed.
 ```text
 python -m unittest discover -s tests/mr_ready -v
 node scripts/check-file-tokens.mjs  # with the changed files staged
+node scripts/check-file-tokens.mjs --base <base-SHA> --head <head-SHA>  # final range contents before review
 ```
+
+The `--base/--head` line is the pre-review gate for the whole range (scope
+and report boundary in `docs/agents/file-token-guard.md`). The guard can
+also be run directly outside this route; that bypass stays possible for a
+quick local check but skips this route's other gates.
