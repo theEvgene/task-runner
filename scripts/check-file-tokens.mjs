@@ -219,24 +219,25 @@ function gitBlobSize({ rev, file, cwd }) {
   }
 }
 
-function isBinaryBetween({ mergeBase, head, file, cwd }) {
-  // numstat prints `- -` instead of line counts for binary files; the guard
-  // skips binaries exactly like the staged and --all modes do. Any git
-  // failure here is a broken scope, never a pass.
-  let output;
+function isBinaryBlob({ rev, file, cwd }) {
+  // Binary status of the blob itself at <rev>, matching staged/--all mode
+  // (NUL byte or non-UTF-8 sample). Inspects only the HEAD blob for the
+  // skip decision, so a binary base replaced by oversized text at HEAD is
+  // not skipped. Any git failure here is a broken scope, never a pass.
+  let buffer;
   try {
-    output = execFileSync(
-      "git",
-      ["diff", "--numstat", mergeBase, head, "--", file],
-      { cwd, encoding: "utf8", maxBuffer: 64 * 1024 },
-    );
-  } catch (error) {
-    throw new Error(
-      `cannot inspect ${file} between ${mergeBase} and ${head}`,
-    );
+    buffer = execFileSync("git", ["cat-file", "-p", `${rev}:${file}`], {
+      cwd,
+      encoding: "buffer",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    throw new Error(`cannot inspect ${file} at ${rev}`);
   }
-  const [added, deleted] = (output.split("\n")[0] ?? "").split("\t");
-  return added === "-" && deleted === "-";
+  return isBinarySample(
+    buffer.subarray(0, Math.min(buffer.length, BINARY_SAMPLE_BYTES)),
+  );
 }
 
 export function checkDiffFiles({
@@ -259,11 +260,25 @@ export function checkDiffFiles({
     const headSize = gitBlobSize({ rev: head, file, cwd });
     if (headSize === null) continue;
     if (estimateTokens(headSize) <= MAX_TOKENS) continue;
-    if (isBinaryBetween({ mergeBase, head, file, cwd })) continue;
-    const baseSize =
-      gitBlobSize({ rev: mergeBase, file, cwd }) ??
-      (oldFile ? gitBlobSize({ rev: mergeBase, file: oldFile, cwd }) : null);
+    if (isBinaryBlob({ rev: head, file, cwd })) continue;
+    // A binary at the base was skipped there, so it never counts as a
+    // pre-existing text exceedance: binary base to oversized text HEAD is a
+    // new violation, not a baseline entry.
+    let basePath = null;
+    let baseSize = gitBlobSize({ rev: mergeBase, file, cwd });
+    if (baseSize !== null) {
+      basePath = file;
+    } else if (oldFile) {
+      baseSize = gitBlobSize({ rev: mergeBase, file: oldFile, cwd });
+      if (baseSize !== null) basePath = oldFile;
+    }
     if (baseSize === null) {
+      violations.push({
+        file,
+        tokens: estimateTokens(headSize),
+        status: "new",
+      });
+    } else if (isBinaryBlob({ rev: mergeBase, file: basePath, cwd })) {
       violations.push({
         file,
         tokens: estimateTokens(headSize),
@@ -460,6 +475,15 @@ if (
     console.log(USAGE);
   } else if (options) {
     try {
+      // Validate the mode combination at the actual CLI entry: the diff
+      // branch below never calls listSelectedFiles, so its identical guard
+      // there would not run for --all with --base/--head.
+      if (options.all && (options.base || options.head)) {
+        throw new Error("--all cannot be combined with --base/--head");
+      }
+      if ((options.base && !options.head) || (!options.base && options.head)) {
+        throw new Error("--base and --head must be given together");
+      }
       if (options.base && options.head) {
         const { mergeBase, violations, baseline } = checkDiffFiles(options);
         process.stdout.write(

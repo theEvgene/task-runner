@@ -221,3 +221,30 @@ test("staged mode contract is preserved", () => {
   assert.equal(result.status, 1);
   assert.match(result.stdout, /staged-big\.txt/);
 });
+
+test("--all combined with --base/--head is rejected at the CLI entry", () => {
+  const repo = initRepo();
+  write(repo, "small.txt", "hi");
+  const base = commitAll(repo, "base");
+  write(repo, "other.txt", "v2");
+  const head = commitAll(repo, "second");
+  const result = spawnSync(
+    process.execPath,
+    [CHECKER, "--all", "--base", base, "--head", head, "--cwd", repo],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /--all cannot be combined with --base\/--head/);
+});
+
+test("binary base replaced by oversized text HEAD fails as new violation", () => {
+  const repo = initRepo();
+  writeBinary(repo, "blob.dat", 30_000);
+  const base = commitAll(repo, "base");
+  write(repo, "blob.dat", text(OVER_BYTES));
+  const head = commitAll(repo, "binary to oversized text");
+  const result = runDiff(repo, base, head);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /blob\.dat/);
+  assert.match(result.stdout, /new in this range/);
+});
