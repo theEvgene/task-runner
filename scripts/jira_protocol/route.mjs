@@ -76,17 +76,91 @@ function compactTransitions(transitions) {
   }));
 }
 
-// Read-only route plan from the current live state to a target status id.
+// Read-only route plan from the current live state to a target status id or
+// unambiguous live status name.
 // No static workflow map is consulted: every edge comes from the
 // issue-specific transitions actually returned for the current state, and
-// every column check comes from the live board. Returns a Completed receipt
+// every column check comes from the live board. A non-numeric target is
+// resolved against the live status catalog filtered to the live board; the
+// match must be unique after trimming, collapsing whitespace, and
+// case-folding. Returns a Completed receipt
 // when already in the target status, a plannable first step otherwise, and
 // throws fail-closed when the route is unavailable or ambiguous.
+function normalizeStatusName(value) {
+  return String(value ?? "")
+    .replace(/[\t\n\f\r ]+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+async function resolveTargetStatus(watched, columns, rawStatus) {
+  const input = String(rawStatus ?? "").trim();
+  if (!input)
+    throw new JiraProtocolError(
+      "status must be a Jira status id or unambiguous status name"
+    );
+  if (/^[1-9]\d*$/.test(input)) {
+    if (!columns.some((column) => columnFor([column], input).length > 0))
+      throw new JiraProtocolError(
+        `status ${input} is not on board ${CONTRACT.rapidViewId}`
+      );
+    return { id: input, name: null, query: null };
+  }
+  if (/^[0-9.\s]+$/.test(input))
+    throw new JiraProtocolError(
+      "status must be a Jira status id or unambiguous status name"
+    );
+  const wanted = normalizeStatusName(input);
+  if (!wanted)
+    throw new JiraProtocolError(
+      "status must be a Jira status id or unambiguous status name"
+    );
+  const { payload } = await watched.request({
+    path: "/rest/api/2/status",
+  });
+  if (!Array.isArray(payload))
+    throw new JiraProtocolError("status catalog returned an unsupported body");
+  const boardIds = new Set(
+    columns.flatMap((column) =>
+      (Array.isArray(column?.statusIds) ? column.statusIds : []).map(String)
+    )
+  );
+  const onBoard = payload.filter(
+    (entry) =>
+      entry &&
+      typeof entry === "object" &&
+      boardIds.has(String(entry.id)) &&
+      typeof entry.name === "string"
+  );
+  const matched = onBoard.filter(
+    (entry) => normalizeStatusName(entry.name) === wanted
+  );
+  if (matched.length === 0)
+    throw new JiraProtocolError(
+      `no board status named "${input}" is on board ${CONTRACT.rapidViewId}`
+    );
+  if (matched.length > 1) {
+    const options = matched.map(
+      (entry) => `${String(entry.id)} (${String(entry.name)})`
+    );
+    throw new JiraProtocolError(
+      `ambiguous status name "${input}": ${options.join(", ")}`
+    );
+  }
+  return {
+    id: String(matched[0].id),
+    name: String(matched[0].name),
+    query: input,
+  };
+}
+
 export async function planTransitionRoute(transport, { issueKey, status }) {
   const key = assertIssueKey(issueKey);
-  const target = String(status ?? "").trim();
-  if (!/^[1-9]\d*$/.test(target))
-    throw new JiraProtocolError("status must be a Jira status id");
+  const rawTarget = String(status ?? "").trim();
+  if (!rawTarget)
+    throw new JiraProtocolError(
+      "status must be a Jira status id or unambiguous status name"
+    );
   const observed = new Map();
   const watched = observingTransport(transport, observed);
   const [state, discovered, columns] = await Promise.all([
@@ -98,14 +172,15 @@ export async function planTransitionRoute(transport, { issueKey, status }) {
   const currentName = String(state.fields.status?.name ?? "");
   if (!/^[1-9]\d*$/.test(currentStatus))
     throw new JiraProtocolError("issue state did not report a status id");
-  if (!columns.some((column) => columnFor([column], target).length > 0))
-    throw new JiraProtocolError(
-      `status ${target} is not on board ${CONTRACT.rapidViewId}`
-    );
+  const resolved = await resolveTargetStatus(watched, columns, rawTarget);
+  const target = resolved.id;
   const operation = {
     kind: "transition-to-status",
     issueKey: key,
     targetStatus: target,
+    ...(resolved.query !== null
+      ? { targetQuery: resolved.query, targetStatusName: resolved.name }
+      : {}),
   };
   const issue = {
     key,
@@ -118,7 +193,10 @@ export async function planTransitionRoute(transport, { issueKey, status }) {
       state: "Completed",
       operation,
       issue,
-      target: { statusId: target },
+      target: {
+        statusId: target,
+        ...(resolved.name !== null ? { statusName: resolved.name } : {}),
+      },
       steps: [],
       writes: 0,
       alreadyInStatus: true,
@@ -170,7 +248,11 @@ export async function planTransitionRoute(transport, { issueKey, status }) {
   const plan = {
     operation,
     issue,
-    target: { statusId: target },
+    target: {
+      statusId: target,
+      ...(resolved.name !== null ? { statusName: resolved.name } : {}),
+      ...(resolved.query !== null ? { statusQuery: resolved.query } : {}),
+    },
     current: { statusId: currentStatus, statusName: currentName },
     firstStep,
     routeResolution: resolution,
@@ -213,6 +295,17 @@ export async function planTransitionRoute(transport, { issueKey, status }) {
         ),
         note: "read-only discovery; no write performed",
       }),
+      ...(resolved.query !== null
+        ? [
+            toHandoffEvidence({
+              stage: "route_statuses",
+              method: "GET",
+              path: "/rest/api/2/status",
+              httpStatus: statusFor(observed, "GET", "/rest/api/2/status"),
+              note: "read-only name resolution; no write performed",
+            }),
+          ]
+        : []),
     ],
   };
   return {

@@ -239,20 +239,26 @@ chosen target column currently contains the transition target status.
 ## Drive an issue to a target status
 
 `transition-to-status` plans and executes a live-discovered route to an
-explicit target status id. It consults no static workflow map: every edge
+explicit target status id or unambiguous live status name. It consults no static workflow map: every edge
 comes from the issue-specific transitions actually returned for the current
-state, and every column check comes from the live board.
+state, and every column check comes from the live board. A name is resolved
+read-only against `GET /rest/api/2/status` filtered to rapid view `298290`
+(trim, collapse whitespace, case-fold; exactly one match required).
 
 ```powershell
 $env:NODE_USE_SYSTEM_CA = '1'
 node scripts/jira-protocol.mjs transition-to-status --issue LEL-4122 --status 10217
 ```
 
-Review the plan (current and target status, first step, available
-transitions) and repeat with its `confirmation` value. After confirmation the
+The same `--status` slot accepts a name (`--status Done`). Review the plan
+(current and target status, first step, available
+transitions) and repeat with its `confirmation` value. One user approval
+covers the named goal and the execution of the necessary intermediate
+transitions; after confirmation the
 executor re-discovers before every step, verifies each step by issue-by-key
 readback, and stops without an automatic retry on any unknown outcome or
-ambiguity: an already-reached status writes nothing, an unavailable or
+ambiguity: an already-reached status writes nothing, an unknown or ambiguous
+name stops with its reason, an unavailable or
 ambiguous next step fails with its reason, and a workflow-form-only path is
 refused. Single-step `transition` is unchanged.
 

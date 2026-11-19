@@ -22,14 +22,23 @@ const BOARD = {
 
 const STATUS_NAMES = { 10206: "To Do", 10217: "In Progress", 10218: "Review" };
 
+const STATUS_CATALOG = Object.entries(STATUS_NAMES).map(([id, name]) => ({
+  id: String(id),
+  name,
+}));
+
 class RouteFake {
-  constructor(flow) {
+  constructor(flow, options = {}) {
     this.flow = flow;
     this.current = "10206";
     this.writes = 0;
     this.transitionReads = 0;
     this.failReadsAfterWrites = Infinity;
     this.calls = [];
+    this.statusCatalog =
+      options.statusCatalog !== undefined
+        ? options.statusCatalog
+        : structuredClone(STATUS_CATALOG);
   }
 
   transitionById(id) {
@@ -55,6 +64,8 @@ class RouteFake {
     }
     if (request.path.endsWith("/work/allData.json"))
       return { payload: structuredClone(BOARD) };
+    if (request.path === "/rest/api/2/status")
+      return { payload: structuredClone(this.statusCatalog) };
     if (request.path === "/rest/api/2/issue/LEL-42") {
       if (this.writes > this.failReadsAfterWrites)
         throw new JiraProtocolError("fixture readback offline");
@@ -270,13 +281,18 @@ test("unreachable, ambiguous, and form-only routes fail with no write", async ()
   );
 });
 
-test("status must be a live board status id", async () => {
+test("status must be a live board status id or unambiguous name", async () => {
   const transport = new RouteFake({ 10206: [] });
-  for (const bad of ["Review", "0", "", "10.5"])
+  for (const bad of ["0", "", "10.5", "   "])
     await assert.rejects(
       planTransitionRoute(transport, { issueKey: "LEL-42", status: bad }),
-      /status must be a Jira status id/
+      /status must be a Jira status id or unambiguous status name/
     );
+  await assert.rejects(
+    planTransitionRoute(transport, { issueKey: "LEL-42", status: "Done" }),
+    /no board status named/
+  );
+  assert.equal(transport.mutations().length, 0);
   assert.ok(ROUTE_MAX_STEPS >= 2);
 });
 
@@ -300,4 +316,82 @@ test("step limit guards a route that never arrives", async () => {
     /within 1 step/
   );
   assert.equal(transport.mutations().length, 1);
+});
+
+test("named target resolves case-insensitively and completes direct", async () => {
+  const transport = new RouteFake({
+    10206: [hop(41, "In Progress", "10217")],
+    10217: [],
+  });
+  const preview = await planTransitionRoute(transport, {
+    issueKey: "LEL-42",
+    status: "  in PROGRESS ",
+  });
+  assert.equal(preview.state, "AwaitingConfirmation");
+  assert.equal(preview.operation.targetStatus, "10217");
+  assert.equal(preview.target.statusId, "10217");
+  assert.equal(transport.mutations().length, 0);
+  const done = await transitionToStatus(transport, {
+    issueKey: "LEL-42",
+    status: "  in PROGRESS ",
+    confirm: preview.confirmation,
+  });
+  assert.equal(done.state, "Completed");
+  assert.equal(done.writes, 1);
+  assert.equal(done.steps[0].toStatus, "10217");
+  assert.equal(assertHandoffClean(done.handoff), true);
+});
+
+test("named multi-step route discovers the later step live", async () => {
+  const transport = new RouteFake({
+    10206: [hop(41, "In Progress", "10217")],
+    10217: [hop(42, "To Review", "10218")],
+    10218: [],
+  });
+  const preview = await planTransitionRoute(transport, {
+    issueKey: "LEL-42",
+    status: "Review",
+  });
+  assert.equal(preview.state, "AwaitingConfirmation");
+  assert.equal(preview.operation.targetStatus, "10218");
+  assert.equal(preview.routeResolution, "live-stepwise");
+  const done = await transitionToStatus(transport, {
+    issueKey: "LEL-42",
+    status: "Review",
+    confirm: preview.confirmation,
+  });
+  assert.equal(done.state, "Completed");
+  assert.deepEqual(
+    done.steps.map((entry) => entry.toStatus),
+    ["10217", "10218"]
+  );
+});
+
+test("named already-reached status completes without a write", async () => {
+  const transport = new RouteFake({ 10206: [hop(41, "In", "10217")] });
+  const done = await transitionToStatus(transport, {
+    issueKey: "LEL-42",
+    status: "TO do",
+  });
+  assert.equal(done.state, "Completed");
+  assert.equal(done.alreadyInStatus, true);
+  assert.equal(done.writes, 0);
+  assert.equal(transport.mutations().length, 0);
+});
+
+test("ambiguous named target stops with no write", async () => {
+  const transport = new RouteFake(
+    { 10206: [hop(41, "In Progress", "10217")] },
+    {
+      statusCatalog: [
+        { id: "10217", name: "Review" },
+        { id: "10218", name: "review " },
+      ],
+    }
+  );
+  await assert.rejects(
+    planTransitionRoute(transport, { issueKey: "LEL-42", status: "Review" }),
+    /ambiguous status name/
+  );
+  assert.equal(transport.mutations().length, 0);
 });
