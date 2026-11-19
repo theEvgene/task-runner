@@ -2,8 +2,8 @@
 
 Nothing here adds a transport, a cryptography variant, or a receipt shape
 that another area already owns. The queue is the signed LAN bridge
-(``scripts/lan_bridge`` in this repository; ``skills/t-bank/lan-task-bridge``
-in a full personal-agent-toolkit checkout), the bundle manifest is the
+(``scripts/lan_bridge`` in this repository, overridable with
+``DELL_LAN_BRIDGE_DIR``), the bundle manifest is the
 ``git-bundle-manifest/1`` shape (JSON entries plus ``manifestDigest`` over the
 compact entry array), and the GitLab readback is the external
 ``gitlab-mr-flow`` identity receipt supplied through ``--flow-dir``.
@@ -576,20 +576,17 @@ def default_bridge_dir() -> Path:
     """The signed bridge client directory: explicit override first.
 
     ``DELL_LAN_BRIDGE_DIR`` names it directly (owner-provided, absolute).
-    Otherwise the task-runner sibling ``scripts/lan_bridge`` is used when it
-    carries the client; the final fallback keeps the personal-agent-toolkit
-    checkout spelling so this copy also runs from that tree. A missing client
-    fails closed in ``load_bridge``; nothing is guessed.
+    Otherwise the task-runner sibling ``scripts/lan_bridge`` is used; it
+    carries the client in every checkout of this repository. There is no
+    fallback into another repository: a missing client fails closed in
+    ``load_bridge``; nothing is guessed.
     """
 
     override = os.environ.get("DELL_LAN_BRIDGE_DIR")
     if override:
         return Path(override)
     here = Path(__file__).resolve()
-    runner = here.parent.parent / "lan_bridge"
-    if (runner / "lan_bridge.py").is_file():
-        return runner
-    return here.parents[3] / "skills" / "t-bank" / "lan-task-bridge" / "scripts"
+    return here.parent.parent / "lan_bridge"
 
 
 def default_flow_dir() -> Path:
@@ -598,15 +595,14 @@ def default_flow_dir() -> Path:
     The flow itself (preflight, writer, readback) is NOT vendored here.
     ``DELL_LAN_FLOW_DIR`` or ``--flow-dir`` names the owner-provided checkout
     that carries it (the same pattern as the pipeline observer's client dir).
-    The final fallback keeps the personal-agent-toolkit checkout spelling; a
-    missing directory fails closed in ``load_flow`` with ``flow-unavailable``.
+    Otherwise the ``external/gitlab-mr-flow/scripts`` layout beside this
+    repository is assumed; a missing directory fails closed in ``load_flow``
+    with ``flow-unavailable``. No checkout of another agent repository is
+    consulted.
     """
 
     override = os.environ.get("DELL_LAN_FLOW_DIR")
     if override:
         return Path(override)
     here = Path(__file__).resolve()
-    legacy = here.parents[2] / "t-bank" / "gitlab-mr-flow" / "scripts"
-    if (legacy / "publish_mr.py").is_file():
-        return legacy
     return here.parents[2] / "external" / "gitlab-mr-flow" / "scripts"

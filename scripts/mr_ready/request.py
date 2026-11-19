@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Dell side: build one signed-queue command for an existing MR Ready run.
 
-The generated command invokes the existing personal-agent-toolkit
-``mr_ready_run.py`` on Lenovo.  This adapter performs no GitLab access, branch
+The generated command invokes the owner-provided external
+``gitlab-mr-flow`` ``mr_ready_run.py`` on Lenovo (named through
+``--lenovo-client-dir``, never resolved from another agent checkout).
+This adapter performs no GitLab access, branch
 transfer, Draft creation, or queue write; the standard signed bridge submits
 the command file separately.
 """

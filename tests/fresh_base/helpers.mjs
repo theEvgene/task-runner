@@ -22,7 +22,14 @@ export const PYTHON =
   "C:\\Users\\rb199787\\AppData\\Local\\Programs\\Python\\Python313\\python.exe";
 export const BRIDGE =
   process.env.FRESH_BASE_BRIDGE ??
-  "C:\\Users\\rb199787\\Documents\\repositories\\personal-agent-toolkit-installed\\skills\\t-bank\\lan-task-bridge\\scripts\\lan_bridge.py";
+  join(
+    dirname(new URL(import.meta.url).pathname.slice(1)),
+    "..",
+    "..",
+    "scripts",
+    "lan_bridge",
+    "lan_bridge.py"
+  );
 
 export function git(args, cwd) {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();

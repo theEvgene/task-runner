@@ -158,12 +158,13 @@ absolute and outside the task worktree, the shared folder, and every Git
 checkout. Pass the staged `--bundle`/`--manifest` paths of this attempt to
 the publish request below; never re-stage over another attempt's files.
 
-The external issue-517 bundle stager from the personal-agent-toolkit stays
-an accepted alternative when its prerequisite holds (a toolkit checkout
-with Node on Dell); it writes the same `git-bundle-manifest/1` shape the
-Lenovo driver verifies. Either way, the driver re-verifies the manifest
-digest, every file hash, and the bundle tip before importing — staging is
-transport, never trust.
+Only this repository's staging script is accepted
+(`scripts/dell_lan/stage_bundle.py`): it writes the same
+`git-bundle-manifest/1` shape the Lenovo driver re-verifies
+(`lenovo_bundle.verify_bundle`: manifest digest, every file hash and byte
+count, then the bundle tip against `--expected-commit` before any import).
+An external stager is not an accepted alternative — the driver trusts only
+what it re-verifies.
 
 ## 5. Write the publish request with per-action consent
 

@@ -152,7 +152,7 @@ silently changed from Ready to Draft.
 Timeout, truncation, or exit 3 is different from `missing-data`: keep the job
 slot and run the existing read-only reconciliation before any new writer.
 Ready for a specific existing MR remains a separate operation described in
-`docs/mr-ready.md`; it reuses the toolkit Ready checks and performs neither
+`docs/mr-ready.md`; it reuses the owner-provided Ready checks and performs neither
 transfer nor MR creation.
 
 ## Boundaries

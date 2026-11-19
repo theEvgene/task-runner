@@ -56,7 +56,7 @@ NEXT_ACTION = {
     "worktree-head-mismatch": "re-cut the task commit in the task worktree and re-verify",
     "transfer-worktree-unpinned": "repeat readback with the requested Lenovo worktree path; trust no unpinned transfer result",
     "transfer-worktree-mismatch": "reconcile the signed transfer request and returned Lenovo worktree before any retry",
-    "bundle-manifest-malformed": "re-stage the bundle and manifest with scripts/dell_lan/stage_bundle.py (docs/dell-lan.md step 4); the external issue-517 stager stays an accepted alternative",
+    "bundle-manifest-malformed": "re-stage the bundle and manifest with this repository's scripts/dell_lan/stage_bundle.py (docs/dell-lan.md step 4); no external stager is accepted",
     "bundle-path-refused": "rebuild the manifest with contained relative paths and re-verify",
     "bundle-missing": "re-stage the bundle from the intact origin and re-verify",
     "bundle-mismatch": "re-stage the bundle from the intact origin and re-verify",

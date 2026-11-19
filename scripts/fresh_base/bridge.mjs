@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Thin Node binding to the existing signed transport client
-// (skills/t-bank/lan-task-bridge/scripts/lan_bridge.py). All sealing,
+// Thin Node binding to the signed transport client of this repository
+// (scripts/lan_bridge/lan_bridge.py). All sealing,
 // MAC verification, kind/id binding, immutable publish, and key-file rules
 // execute inside that client; nothing here reimplements them. Key placement
 // is additionally proven outside every caller-named root before delegating.

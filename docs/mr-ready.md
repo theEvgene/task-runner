@@ -1,8 +1,10 @@
 # Existing MR Ready run
 
 Use this Dell → Lenovo scenario for one explicit request to prepare an
-existing GitLab merge request for review. It invokes the existing
-personal-agent-toolkit `gitlab-mr-flow/scripts/mr_ready_run.py` on Lenovo and
+existing GitLab merge request for review. It invokes the owner-provided
+external `gitlab-mr-flow` `mr_ready_run.py` on Lenovo (there is no native
+task-runner runner; the client directory below is owner-provided per run,
+never resolved from another agent checkout) and
 returns its bound Ready/blocker receipt through the existing signed queue.
 
 This route does not transfer a branch, create a Draft MR, merge, or introduce
@@ -13,8 +15,8 @@ bounded failed-job retry, and the Ready write are all owned by
 ## Build and submit on Dell
 
 All Lenovo paths below are absolute paths as seen on Lenovo. The checkout must
-already contain the MR source branch, and `--lenovo-client-dir` is the existing
-personal-agent-toolkit `gitlab-mr-flow/scripts` directory.
+already contain the MR source branch, and `--lenovo-client-dir` is the
+owner-provided `gitlab-mr-flow/scripts` directory on Lenovo.
 
 ```text
 python scripts/mr_ready/request.py \
