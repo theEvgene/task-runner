@@ -196,6 +196,46 @@ test("stale live state invalidates the confirmation without writing", async () =
   assert.equal(transport.mutations().length, 0);
 });
 
+test("changes after confirmation revalidation stop before a write", async () => {
+  for (const change of ["state", "step"]) {
+    const transport = new RouteFake({
+      10206: [hop(41, "In Progress", "10217")],
+      10217: [hop(42, "To Review", "10218")],
+    });
+    const preview = await planTransitionRoute(transport, {
+      issueKey: "LEL-42",
+      status: "10218",
+    });
+    const request = transport.request.bind(transport);
+    let stateReads = 0;
+    let transitionReads = 0;
+    transport.request = async (call) => {
+      if (
+        call.path === "/rest/api/2/issue/LEL-42" &&
+        ++stateReads === 2 &&
+        change === "state"
+      )
+        transport.current = "10217";
+      if (
+        call.path.endsWith("/issue/transitions.json") &&
+        ++transitionReads === 2 &&
+        change === "step"
+      )
+        transport.flow["10206"] = [hop(43, "Changed", "10217")];
+      return request(call);
+    };
+    await assert.rejects(
+      transitionToStatus(transport, {
+        issueKey: "LEL-42",
+        status: "10218",
+        confirm: preview.confirmation,
+      }),
+      /changed after confirmation/
+    );
+    assert.equal(transport.mutations().length, 0);
+  }
+});
+
 test("unknown outcome stops the route after verified steps without retry", async () => {
   const transport = new RouteFake({
     10206: [hop(41, "In Progress", "10217")],

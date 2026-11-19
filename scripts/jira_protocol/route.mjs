@@ -16,7 +16,9 @@ export const ROUTE_MAX_STEPS = 10;
 
 function observedStatus(result) {
   const raw = Number(result?.response?.status);
-  return Number.isSafeInteger(raw) && raw >= 100 && raw <= 599 ? raw : "unknown";
+  return Number.isSafeInteger(raw) && raw >= 100 && raw <= 599
+    ? raw
+    : "unknown";
 }
 
 function observingTransport(transport, statuses) {
@@ -204,9 +206,7 @@ export async function planTransitionRoute(transport, { issueKey, status }) {
     };
   }
   const usable = usableTransitions(discovered.transitions);
-  const direct = usable.filter(
-    (item) => String(item.targetStatus) === target
-  );
+  const direct = usable.filter((item) => String(item.targetStatus) === target);
   let firstStep = null;
   let resolution = "live-stepwise";
   if (direct.length > 0) {
@@ -223,9 +223,8 @@ export async function planTransitionRoute(transport, { issueKey, status }) {
     firstStep = describeStep(columns, direct[0]);
     resolution = "direct";
   } else if (usable.length === 0) {
-    const formed = (Array.isArray(discovered.transitions)
-      ? discovered.transitions
-      : []
+    const formed = (
+      Array.isArray(discovered.transitions) ? discovered.transitions : []
     ).filter((item) => item && item.hasTransitionView !== false);
     if (formed.length > 0)
       throw new JiraProtocolError(
@@ -360,6 +359,10 @@ export async function transitionToStatus(
   for (let index = 0; index < limit; index += 1) {
     const live = await getIssueState(watched, planned.operation.issueKey);
     const current = String(live.fields.status?.id ?? "");
+    if (index === 0 && current !== planned.current.statusId)
+      throw new JiraProtocolError(
+        "route state changed after confirmation; re-plan before writing"
+      );
     if (current === planned.target.statusId) {
       return {
         state: "Completed",
@@ -401,6 +404,13 @@ export async function transitionToStatus(
       );
     const columns = await boardColumns(watched);
     const step = describeStep(columns, next);
+    if (
+      index === 0 &&
+      confirmationDigest(step) !== confirmationDigest(planned.firstStep)
+    )
+      throw new JiraProtocolError(
+        "first route step changed after confirmation; re-plan before writing"
+      );
     const from = current;
     let done;
     try {
@@ -411,6 +421,14 @@ export async function transitionToStatus(
       });
       if (preview.state !== "AwaitingConfirmation")
         throw new JiraProtocolError("single-step transition refused to plan");
+      if (
+        preview.operation.targetStatus !== step.targetStatus ||
+        preview.operation.transitionName !== step.transitionName ||
+        preview.operation.targetColumnName !== step.targetColumnName
+      )
+        throw new JiraProtocolError(
+          "route step changed during planning; re-plan before writing"
+        );
       done = await transitionIssue(watched, {
         issueKey: planned.operation.issueKey,
         transitionId: step.transitionId,
