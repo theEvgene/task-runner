@@ -20,6 +20,7 @@ import {
   getIssueTransitions,
   transitionIssue,
 } from "../../scripts/jira_protocol/operations.mjs";
+import { createUnreadableMutationTransport } from "./helpers/ambiguous-write.mjs";
 
 function details(key = "LEL-42", overrides = {}) {
   return {
@@ -753,16 +754,15 @@ test("mutation transport failures are unknown outcomes and never expose cookie",
 });
 
 test("mutation 2xx with an unreadable JSON body is an unknown outcome", async () => {
-  const transport = new JiraTransport({
-    origin: "http://127.0.0.1:9123",
-    cookie: "fixture-cookie",
-    allowTestOrigin: true,
-    fetchImpl: async () => new Response("", { status: 200 }),
+  const { transport, requests } = createUnreadableMutationTransport({
+    status: 200,
+    body: "",
   });
   await assert.rejects(
     transport.request({ path: "/write", method: "PUT", mutation: true }),
     JiraAmbiguousOutcome
   );
+  assert.equal(requests.length, 1);
 });
 
 test("transport pins production credentials to Jira and explicit loopback test mode", () => {
