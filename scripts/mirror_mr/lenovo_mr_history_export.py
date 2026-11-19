@@ -1,0 +1,400 @@
+#!/usr/bin/env python3
+"""Lenovo side: export a merged GitLab MR's historical revisions (issue #143).
+
+Runs as the single command of a signed LAN job. It re-hashes the request,
+observes the merged MR through the reader seam
+(``gitlab_mr_reader.read_merged_mr`` from ``--flow-dir``, else the ``glab``
+CLI), retrieves the historical base/head objects (and the squash commit
+when recorded) even when the original source branch was deleted, and
+exports them as one hashed git bundle plus its ``git-bundle-manifest/1``
+manifest. The authoritative comparison is the unified diff of the
+original head against its base, computed here from the retrieved objects;
+the squash representation is never assumed identical. A refusal deletes
+the staged bundle and manifest.
+
+Nothing here publishes, pushes, merges, or edits GitLab.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dell_lan"))
+
+from mirror_mr_common import (DETAIL_MAX, REQUEST_SCHEMA, SHA_RE,
+                              Stop, check_branch, parse_mr_url)
+from dell_lan_common import (git, git_ok, load_json, manifest_digest, now_iso,
+                             safe_name, sha256_bytes, sha256_file,
+                             write_json_atomic)  # noqa: E402
+from urllib.parse import quote as _quote
+
+HISTORY_EXPORT_SCHEMA = "mirror-mr-history-export/1"
+
+
+def parse(argv=None):
+    parser = argparse.ArgumentParser(prog="lenovo_mr_history_export.py",
+                                     description=__doc__)
+    parser.add_argument("--request", required=True)
+    parser.add_argument("--request-sha256", required=True)
+    parser.add_argument("--flow-dir", default=None,
+                        help="reader seam dir holding gitlab_mr_reader.py "
+                             "(default: the glab CLI fallback)")
+    return parser.parse_args(argv)
+
+
+def validated(request_path: Path, expected_digest: str) -> dict:
+    raw = request_path.read_bytes()
+    if sha256_bytes(raw) != (expected_digest or "").lower():
+        raise Stop("request-digest-mismatch",
+                   detail=f"{sha256_bytes(raw)} != {expected_digest}")
+    request = load_json(request_path, "request-malformed")
+    if request.get("schema") != REQUEST_SCHEMA:
+        raise Stop("request-malformed", detail=f"expected {REQUEST_SCHEMA}")
+    if "mode" in request and request.get("mode") != "merged":
+        raise Stop("request-malformed", detail="mode must be merged here")
+    for name in ("bundleName", "manifestName"):
+        if not safe_name(str(request.get(name) or "")):
+            raise Stop("request-malformed", detail=f"{name} must be one contained file")
+    if not str(request.get("mrUrl") or "").startswith("https://"):
+        raise Stop("request-malformed", detail="mrUrl must be https")
+    shared = Path(str(request.get("shared") or ""))
+    if not shared.is_dir():
+        raise Stop("shared-unavailable", detail=str(shared)[:DETAIL_MAX])
+    return request
+
+
+def read_mr(request: dict, flow_dir: str | None) -> dict:
+    host = request["gitlabHost"]
+    project = request["gitlabProject"]
+    iid = request["mrIid"]
+    if flow_dir:
+        sys.path.insert(0, flow_dir)
+        try:
+            reader = importlib.import_module("gitlab_mr_reader")
+        except Exception as error:
+            raise Stop("reader-unavailable",
+                       detail=f"{flow_dir}: {error}"[:DETAIL_MAX])
+        read = getattr(reader, "read_merged_mr", None)
+        if not callable(read):
+            raise Stop("reader-unavailable",
+                       detail="reader has no read_merged_mr")
+        try:
+            observed = read(host, project, iid)
+        except getattr(reader, "ReaderError", Exception) as error:
+            raise Stop("mr-unreadable", detail=str(error)[:DETAIL_MAX])
+        if not isinstance(observed, dict):
+            raise Stop("mr-unreadable", detail="reader returned no MR record")
+        return normalise(observed, request)
+    return via_glab(request)
+
+
+def _sha(record: dict, *names: str) -> str | None:
+    for name in names:
+        value = str(record.get(name) or "").strip().lower()
+        if value and SHA_RE.match(value):
+            return value
+    raw = next((str(record.get(name) or "").strip() for name in names
+                if str(record.get(name) or "").strip()), "")
+    if raw:
+        raise Stop("mr-unreadable", detail=f"{names[0]} is not a commit SHA")
+    return None
+
+
+def normalise(record: dict, request: dict | None = None) -> dict:
+    status = str(record.get("status") or record.get("state") or "").lower()
+    if status in ("opened", "open"):
+        raise Stop("mr-not-merged", detail=(
+            "MR is still open; use the open-MR route instead"))
+    if status != "merged":
+        raise Stop("mr-unreadable", detail=f"MR state is {status or 'unknown'}")
+    source = check_branch(str(record.get("sourceBranch")
+                              or record.get("source_branch") or ""),
+                          "source branch")
+    target = check_branch(str(record.get("targetBranch")
+                              or record.get("target_branch") or ""),
+                          "target branch")
+    if request is not None:
+        _check_identity(record, request)
+    diff_refs = record.get("diff_refs") \
+        if isinstance(record.get("diff_refs"), dict) else {}
+    head = _sha(record, "sourceSha", "source_sha", "sha", "head_sha") \
+        or _sha(diff_refs, "head_sha", "headSha")
+    base = _sha(record, "targetSha", "target_sha", "baseSha", "diffBaseSha",
+                "base_sha") or _sha(diff_refs, "base_sha", "baseSha")
+    if base is None:
+        # start_sha is the fork point, not the diff base; use it only when
+        # the diff base itself is absent.
+        base = _sha(diff_refs, "start_sha", "startSha")
+    if head is None or base is None:
+        raise Stop("mr-unreadable", detail="merged MR has no exact revisions")
+    squash = None
+    try:
+        squash = _sha(record, "squashSha", "squash_sha", "squashCommitSha",
+                      "squash_commit_sha")
+    except Stop:
+        squash = None
+    merge_commit = None
+    try:
+        merge_commit = _sha(record, "mergeCommitSha", "merge_commit_sha",
+                            "mergeCommit", "merge_commit")
+    except Stop:
+        merge_commit = None
+    return {"status": "merged",
+            "title": str(record.get("title") or ""),
+            "description": str(record.get("description") or ""),
+            "sourceBranch": source, "targetBranch": target,
+            "headSha": head, "baseSha": base,
+            "squashSha": squash, "mergeCommitSha": merge_commit}
+
+
+def _check_identity(record: dict, request: dict) -> None:
+    want_iid = int(request.get("mrIid"))
+    got_iid = record.get("iid")
+    if got_iid is not None and int(got_iid) != want_iid:
+        raise Stop("mr-unreadable", detail=(
+            f"MR iid {got_iid} != requested {want_iid}"))
+    web_url = str(record.get("web_url") or "")
+    if web_url:
+        try:
+            meta = parse_mr_url(web_url)
+        except Stop:
+            raise Stop("mr-unreadable", detail="MR web_url is not usable")
+        if meta["iid"] != want_iid or meta["host"] != request["gitlabHost"] \
+                or meta["project"].lower() != request["gitlabProject"].lower():
+            raise Stop("mr-unreadable", detail=(
+                f"MR {web_url} != requested {request.get('mrUrl')}"))
+
+
+def _enc_project(project: str) -> str:
+    return _quote(project, safe="")
+
+
+def glab_api(endpoint: str, host: str) -> dict:
+    proc = subprocess.run(
+        ["glab", "api", endpoint, "--hostname", host],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False)
+    if proc.returncode != 0:
+        raise Stop("mr-unreadable",
+                   detail=(proc.stderr or proc.stdout).strip()[:DETAIL_MAX])
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as error:
+        raise Stop("mr-unreadable", detail=str(error)[:DETAIL_MAX])
+    if not isinstance(data, dict):
+        raise Stop("mr-unreadable", detail="GitLab API returned no MR record")
+    return data
+
+
+def via_glab(request: dict) -> dict:
+    endpoint = (f"projects/{_enc_project(request['gitlabProject'])}"
+                f"/merge_requests/{int(request['mrIid'])}")
+    record = glab_api(endpoint, request["gitlabHost"])
+    return normalise(record, request)
+
+
+def ensure_object(checkout: Path, sha: str, token: str, label: str) -> bool:
+    ok, _ = git_ok(checkout, "cat-file", "-e", f"{sha}^{{commit}}")
+    if ok:
+        return True
+    tmp = f"refs/tmp/mirror-mr/{token}/{label}"
+    ok, _ = git_ok(checkout, "fetch", "-q", "origin", f"{sha}:{tmp}")
+    if not ok:
+        return False
+    try:
+        ok, _ = git_ok(checkout, "cat-file", "-e", f"{sha}^{{commit}}")
+        return ok
+    finally:
+        git_ok(checkout, "update-ref", "-d", tmp)
+
+
+def ensure_head(checkout: Path, sha: str, iid: int, token: str) -> bool:
+    """Retrieve the historical head even when its branch was deleted.
+
+    GitLab keeps ``refs/merge-requests/<iid>/head`` after the source
+    branch is gone. A SHA fetch is tried first; the MR head ref is the
+    fallback, accepted only when it resolves to exactly the observed SHA.
+    """
+
+    if ensure_object(checkout, sha, token, "head"):
+        return True
+    tmp = f"refs/tmp/mirror-mr/{token}/mr-head"
+    ok, _ = git_ok(checkout, "fetch", "-q", "origin",
+                    f"refs/merge-requests/{int(iid)}/head:{tmp}")
+    if not ok:
+        return False
+    try:
+        ok, resolved = git_ok(checkout, "rev-parse", "--verify",
+                              f"{tmp}^{{commit}}")
+        if not ok or resolved.strip().lower() != sha.lower():
+            return False
+        ok, _ = git_ok(checkout, "cat-file", "-e", f"{sha}^{{commit}}")
+        return ok
+    finally:
+        git_ok(checkout, "update-ref", "-d", tmp)
+
+
+def unified_diff(checkout: Path, base: str, head: str) -> tuple[str, list[str]]:
+    ok, patch = git_ok(checkout, "diff", f"{base}..{head}", "--")
+    if not ok:
+        raise Stop("history-unavailable",
+                   detail=f"cannot compare {base[:12]}..{head[:12]}")
+    ok, names = git_ok(checkout, "diff", "--name-only", f"{base}..{head}",
+                       "--")
+    files = sorted(line.strip() for line in names.splitlines()
+                   if line.strip())
+    if not files:
+        raise Stop("history-unavailable", detail="empty historical comparison")
+    return patch, files
+
+
+def export(request: dict, observed: dict) -> dict:
+    shared = Path(request["shared"])
+    checkout = Path(request["lenovoCheckout"])
+    token = request["token"]
+    if not checkout.is_dir():
+        raise Stop("checkout-unavailable", detail=str(checkout)[:DETAIL_MAX])
+    base, head = observed["baseSha"], observed["headSha"]
+    squash = observed.get("squashSha")
+    iid = int(request["mrIid"])
+    git_ok(checkout, "fetch", "-q", "origin")
+    if not ensure_object(checkout, base, token, "base"):
+        raise Stop("history-unavailable",
+                   detail=f"historical base {base[:12]} is not retrievable")
+    if not ensure_head(checkout, head, iid, token):
+        raise Stop("history-unavailable",
+                   detail=f"historical head {head[:12]} is not retrievable; "
+                          "the source objects are gone")
+    squash_available = bool(squash) and ensure_object(
+        checkout, squash, token, "squash") if squash else False
+    patch, files = unified_diff(checkout, base, head)
+    digest = sha256_bytes(patch.encode("utf-8"))
+    squash_digest = None
+    if squash_available:
+        squash_patch, _ = unified_diff(checkout, base, squash)
+        squash_digest = sha256_bytes(squash_patch.encode("utf-8"))
+    revs = [base, head] + ([squash] if squash_available else [])
+    tmp = f"refs/tmp/mirror-mr/{token}"
+    refs = [f"{tmp}/rev{i}" for i in range(len(revs))]
+    try:
+        for ref, sha in zip(refs, revs):
+            ok, failure = git_ok(checkout, "fetch", "-q", "origin",
+                                 f"{sha}:{ref}")
+            if not ok:
+                ok, _ = git_ok(checkout, "update-ref", ref, sha)
+                if not ok:
+                    raise Stop("remote-unreadable",
+                               detail=failure[:DETAIL_MAX])
+            ok, resolved = git_ok(checkout, "rev-parse", "--verify",
+                                  f"{ref}^{{commit}}")
+            if not ok or resolved.strip().lower() != sha:
+                raise Stop("history-unavailable",
+                           detail=f"{sha[:12]} is not a commit here")
+        bundle = shared / request["bundleName"]
+        if bundle.exists():
+            raise Stop("artifact-exists", detail=f"refusing to replace {bundle.name}")
+        git(checkout, "bundle", "create", str(bundle), *refs)
+        ok, listed = git_ok(checkout, "bundle", "list-heads", str(bundle))
+        if not ok:
+            raise Stop("bundle-unreadable", detail=listed[:DETAIL_MAX])
+        heads = [line.split()[0].lower() for line in listed.splitlines()
+                 if line.strip()]
+        for want in revs:
+            if want not in heads:
+                raise Stop("bundle-tip-mismatch",
+                           detail=f"{want[:12]} not in bundle")
+        data = bundle.read_bytes()
+        bundle_files = [{"path": bundle.name, "sha256": sha256_bytes(data),
+                         "bytes": len(data)}]
+        manifest = {"version": "git-bundle-manifest/1",
+                    "revs": " ".join(revs),
+                    "bundle": bundle.name, "files": bundle_files,
+                    "manifestDigest": manifest_digest(bundle_files)}
+        manifest_path = shared / request["manifestName"]
+        if manifest_path.exists():
+            raise Stop("artifact-exists",
+                       detail=f"refusing to replace {manifest_path.name}")
+        write_json_atomic(manifest_path, manifest)
+        ok, base_out = git_ok(checkout, "merge-base", base, head)
+        return {"bundle": bundle, "manifestPath": manifest_path,
+                "sha256": bundle_files[0]["sha256"], "bytes": len(data),
+                "manifestDigest": manifest["manifestDigest"],
+                "mergeBase": base_out.strip().lower() if ok else None,
+                "ancestry": "connected" if ok else "disjoint",
+                "authoritativeDigest": digest,
+                "authoritativeBytes": len(patch.encode("utf-8")),
+                "authoritativeFiles": files,
+                "squashAvailable": squash_available,
+                "squashDigest": squash_digest}
+    finally:
+        for ref in refs:
+            git_ok(checkout, "update-ref", "-d", ref)
+        git_ok(checkout, "update-ref", "-d", f"{tmp}/base")
+        git_ok(checkout, "update-ref", "-d", f"{tmp}/head")
+        git_ok(checkout, "update-ref", "-d", f"{tmp}/squash")
+
+
+def main(argv=None) -> int:
+    args = parse(argv)
+    staged: list[Path] = []
+    try:
+        request = validated(Path(args.request), args.request_sha256)
+        observed = read_mr(request, args.flow_dir)
+        exported = export(request, observed)
+        staged = [exported["bundle"], exported["manifestPath"]]
+        rechecked = read_mr(request, args.flow_dir)
+        if rechecked["headSha"] != observed["headSha"] \
+                or rechecked["baseSha"] != observed["baseSha"]:
+            raise Stop("mr-moved", detail=(
+                "MR moved between observation and export; "
+                "re-read before any retry"))
+        result = {"schema": HISTORY_EXPORT_SCHEMA, "token": request["token"],
+                  "mrUrl": request["mrUrl"], "mrIid": request["mrIid"],
+                  "status": "merged", "title": observed["title"],
+                  "description": observed["description"],
+                  "sourceBranch": observed["sourceBranch"],
+                  "targetBranch": observed["targetBranch"],
+                  "baseSha": observed["baseSha"],
+                  "headSha": observed["headSha"],
+                  "squashSha": observed["squashSha"] if exported["squashAvailable"] else None,
+                  "mergeCommitSha": observed.get("mergeCommitSha"),
+                  "mergeBase": exported["mergeBase"],
+                  "ancestry": exported["ancestry"],
+                  "authoritativeDigest": exported["authoritativeDigest"],
+                  "authoritativeBytes": exported["authoritativeBytes"],
+                  "authoritativeFiles": exported["authoritativeFiles"],
+                  "squashDigest": exported["squashDigest"],
+                  "bundleName": request["bundleName"],
+                  "manifestName": request["manifestName"],
+                  "sha256": exported["sha256"], "bytes": exported["bytes"],
+                  "manifestDigest": exported["manifestDigest"],
+                  "observedAt": now_iso()}
+    except Stop as stop:
+        for path in staged:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        print(json.dumps({"schema": HISTORY_EXPORT_SCHEMA, "outcome": "refused",
+                          "reason": stop.reason, "detail": stop.detail},
+                         ensure_ascii=False, separators=(",", ":")))
+        print(f"mr history export refused: {stop.reason}", file=sys.stderr)
+        return stop.code
+    except OSError as error:
+        print(json.dumps({"schema": HISTORY_EXPORT_SCHEMA, "outcome": "refused",
+                          "reason": "io-error",
+                          "detail": str(error)[:DETAIL_MAX]},
+                         ensure_ascii=False, separators=(",", ":")))
+        return 1
+    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

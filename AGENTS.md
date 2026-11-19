@@ -26,6 +26,7 @@ Externally invoked agents start here explicitly; this repo assumes no global aut
 - Transfer one branch to Lenovo without publication, or publish a branch that already exists there -> `docs/dell-lan-standalone.md` (drivers `lenovo_transfer.py`, `lenovo_publish_existing.py`; combined `publish` route in `docs/dell-lan.md` unchanged).
 - Release on Lenovo through the signed queue (bare preview; versioned tag only with explicit version plus explicit confirmation) -> `docs/release.md` + `scripts/release/request.py` (single canonical release entry; `docs/release-tag-preview.md` stays in the tree as legacy and is not an entry).
 - Install this repository's skill links (managed junctions under `~/.agents/skills`, never overwriting foreign entries) -> `skills/release/SKILL.md` + `skills/release/scripts/install.ps1` (PAT-owned links migrate only with explicit opt-in and exact ownership proof).
+- Open a supplied GitLab MR in private GitHub from a natural-language request -> `skills/mirror-mr/SKILL.md` + `scripts/mirror_mr/mirror_mr.py` (single entry for open/merged; details `docs/mirror-mr.md`).
 
 Corporate routing and the signed queue apply where those docs state them. Do not pass secrets through task scripts, and rely only on guarantees those docs state.
 
@@ -60,3 +61,8 @@ Standalone-installable `release` skill (preview-first Lenovo release pointer, ma
 Repository-owned pointers for the canonical Dell development and signed bridge
 flows live in `skills/dell-lan-local-dev/SKILL.md` and
 `skills/lan-task-bridge/SKILL.md`.
+
+### Mirror MR
+
+Natural-language trigger for one supplied GitLab MR URL (open or merged).
+See `skills/mirror-mr/SKILL.md`.
