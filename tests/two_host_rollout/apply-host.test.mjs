@@ -40,10 +40,13 @@ const RUNTIME_FILES = [
   "scripts/jira_protocol/batch-execute.mjs",
   "scripts/jira_protocol/handoff.mjs",
   "scripts/jira_protocol/extract.mjs",
+  "scripts/jira_protocol/siblings.mjs",
+  "scripts/jira_protocol/read-fields.mjs",
   "scripts/jira_protocol/html-form.mjs",
   "docs/jira-protocol.md",
   "docs/jira-protocol-batch.md",
   "docs/jira-protocol-handoff.md",
+  "docs/jira-protocol-read-fields.md",
 ];
 const SKILL_DIRS = [
   "cli-create-lel-service-backlog-issue",
@@ -51,6 +54,8 @@ const SKILL_DIRS = [
   "cli-transition-jira-issue",
   "cli-transition-jira-status",
   "cli-extract-jira-content",
+  "cli-find-sibling-issues",
+  "cli-read-selected-fields",
   "cli-flag-jira-issue",
   "cli-create-jira-subtask",
   "cli-create-jira-subtasks",
