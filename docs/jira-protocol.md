@@ -135,6 +135,8 @@ pages, remote-link endpoints, attachment bodies, and attachment text are
 `unproven_not_retrieved` or `metadata_only_not_retrieved`. The extractor does
 not contact those systems or URLs.
 
+Compact selected-field reads are detailed in `docs/jira-protocol-read-fields.md`.
+
 ## Find sibling issues by assignee
 
 ```powershell

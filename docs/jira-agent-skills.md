@@ -1,6 +1,6 @@
 # Jira protocol agent skills
 
-Nine model-invoked, `cli-`-prefixed skills package the Jira protocol CLI by
+Ten model-invoked, `cli-`-prefixed skills package the Jira protocol CLI by
 operation:
 
 - `cli-create-lel-service-backlog-issue`
@@ -9,6 +9,7 @@ operation:
 - `cli-transition-jira-status`
 - `cli-extract-jira-content`
 - `cli-find-sibling-issues`
+- `cli-read-selected-fields`
 - `cli-flag-jira-issue`
 - `cli-create-jira-subtask`
 - `cli-create-jira-subtasks`
@@ -48,17 +49,18 @@ assignment, `JIRA_ATL_TOKEN`. Installation neither obtains nor stores them.
 
 The skills use only the documented commands:
 
-| Skill      | Commands                              | Proven successful readback                                                                                                 |
-| ---------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| create     | `create-epic`, optional `detail-view` | returned key is a field-verified LEL Epic on rapid view 298290's board or backlog                                          |
-| subtask    | `create-subtask`                      | returned key is a field-verified LEL subtask whose parent key equals the requested parent                                  |
-| subtasks   | `create-subtasks`                     | every batch entry is `Created` (field-verified, exact parent) or a proven `AlreadyExists`; no duplicate confirmed instance |
-| assign     | `assign`                              | direct issue read reports the exact assignee login                                                                         |
-| transition | `transitions`, `transition`           | direct issue read reports the planned target status id                                                                     |
-| route      | `transition-to-status`                | direct issue read reports the target status id after every verified step                                                   |
-| extract    | `extract`                             | REST-visible issue, comments, metadata inventories, and immediate parent                                                   |
-| siblings   | `siblings`                            | same-parent subtasks assigned to the exact login, unreadable children reported                                             |
-| flag       | `flag`                                | direct issue read reports the requested flag state plus a new comment id                                                   |
+| Skill       | Commands                              | Proven successful readback                                                                                                 |
+| ----------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| create      | `create-epic`, optional `detail-view` | returned key is a field-verified LEL Epic on rapid view 298290's board or backlog                                          |
+| subtask     | `create-subtask`                      | returned key is a field-verified LEL subtask whose parent key equals the requested parent                                  |
+| subtasks    | `create-subtasks`                     | every batch entry is `Created` (field-verified, exact parent) or a proven `AlreadyExists`; no duplicate confirmed instance |
+| assign      | `assign`                              | direct issue read reports the exact assignee login                                                                         |
+| transition  | `transitions`, `transition`           | direct issue read reports the planned target status id                                                                     |
+| route       | `transition-to-status`                | direct issue read reports the target status id after every verified step                                                   |
+| extract     | `extract`                             | REST-visible issue, comments, metadata inventories, and immediate parent                                                   |
+| read-fields | `read-fields`                         | only the requested caller-visible fields, no comments or parent extraction unless requested                                |
+| siblings    | `siblings`                            | same-parent subtasks assigned to the exact login, unreadable children reported                                             |
+| flag        | `flag`                                | direct issue read reports the requested flag state plus a new comment id                                                   |
 
 Every write is a read-only plan followed by a separate invocation carrying the
 exact live-model-bound confirmation digest. `UnknownOutcome` is never
@@ -84,6 +86,9 @@ Important limitations:
   exact assignee login. It is not a JQL or duplicate search: unlisted,
   unobserved, or unreadable children are reported, never silently dropped,
   and an incomplete receipt never proves that no sibling exists.
+- `read-fields` reads only the requested caller-visible fields from one
+  issue resource. It never pages comments and never extracts the parent
+  issue; use `extract` when those are required.
 - `detail-view` remains a separate explicitly incomplete GreenHopper UI-model
   command and is not an extraction fallback.
 - The CLI has no safe reconciliation command after an ambiguous write. Keep the

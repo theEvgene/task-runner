@@ -25,11 +25,15 @@ import {
 } from "./jira_protocol/batch.mjs";
 import { extractIssue } from "./jira_protocol/extract.mjs";
 import { findSiblingIssues } from "./jira_protocol/siblings.mjs";
+import {
+  formatForQueue,
+  readCompactFields,
+} from "./jira_protocol/read-fields.mjs";
 
 function usage(message) {
   throw new JiraProtocolError(
     message ??
-      "usage: jira-protocol <extract|siblings|detail-view|transitions|transition|transition-to-status|assign|flag|create-epic|create-subtask|create-subtasks> [options]"
+      "usage: jira-protocol <extract|read-fields|siblings|detail-view|transitions|transition|transition-to-status|assign|flag|create-epic|create-subtask|create-subtasks> [options]"
   );
 }
 
@@ -136,6 +140,28 @@ async function main() {
       issueKey: values.issue,
       assignee: values.assignee,
     });
+    emit(result);
+    return result.completeness.comprehensive ? 0 : 6;
+  }
+  if (command === "read-fields") {
+    only(values, ["issue", "fields", "max-bytes"]);
+    const result = await readCompactFields(transport(), {
+      issueKey: values.issue,
+      fields: values.fields,
+    });
+    if (values["max-bytes"] !== undefined) {
+      const maxBytes = Number(values["max-bytes"]);
+      if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)
+        throw new JiraProtocolError("max-bytes must be a positive integer");
+      const { json, truncated } = formatForQueue(result, { maxBytes });
+      if (truncated) {
+        process.stderr.write(
+          `jira-protocol read-fields: output truncated at ${maxBytes} bytes; receipt is incomplete\n`
+        );
+        process.stdout.write(`${JSON.stringify(JSON.parse(json), null, 2)}\n`);
+        return 6;
+      }
+    }
     emit(result);
     return result.completeness.comprehensive ? 0 : 6;
   }
