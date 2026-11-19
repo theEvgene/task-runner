@@ -25,7 +25,10 @@ import worker as lenovo_worker  # noqa: E402
 URL = "https://gitlab.example/team/app/-/merge_requests/7"
 HEAD = "1" * 40
 TARGET = "2" * 40
-RUNNER = r"C:\personal-agent-toolkit\skills\gitlab-mr-flow\scripts\mr_ready_run.py"
+# Owner-provided external flow checkout on Lenovo (never resolved from
+# another agent checkout; no native task-runner runner exists).
+FLOW_CLIENT_DIR = r"C:\flow\gitlab-mr-flow\scripts"
+RUNNER = FLOW_CLIENT_DIR + r"\mr_ready_run.py"
 
 
 def run_receipt(status: str = "ready") -> dict:
@@ -73,7 +76,7 @@ def job(command: str | None = None, receipt_script_path: str = RUNNER) -> dict:
         "command": command or (
             "powershell.exe -NoProfile -NonInteractive -Command \""
             "& 'C:\\Python\\python.exe' "
-            "'C:\\personal-agent-toolkit\\skills\\gitlab-mr-flow\\scripts\\mr_ready_run.py' "
+            f"'{RUNNER}' "
             f"'--url' '{URL}'\""),
         "dialect": "powershell",
         "receipt_script_path": receipt_script_path,
@@ -81,10 +84,10 @@ def job(command: str | None = None, receipt_script_path: str = RUNNER) -> dict:
 
 
 class RequestRoutingTests(unittest.TestCase):
-    def test_routes_only_to_existing_toolkit_ready_runner(self) -> None:
+    def test_routes_only_to_the_configured_ready_runner(self) -> None:
         built, command = request.build_request(
             URL, "C:\\Python\\python.exe",
-            "C:\\personal-agent-toolkit\\skills\\gitlab-mr-flow\\scripts",
+            FLOW_CLIENT_DIR,
             "C:\\repo", "feat", "ABC-1", "Коротко", ["src/**"])
         self.assertIn("mr_ready_run.py", command)
         self.assertIn("--repo", command)

@@ -1,6 +1,8 @@
 # task-runner
 
-Empty repository baseline. Agent tooling only; no runtime source yet.
+Agent tooling plus the owned runtime: `scripts/` (signed LAN bridge,
+Dell/ Lenovo LAN drivers, Jira/GitLab protocol CLIs, installer helpers),
+`tests/` (fast offline fixtures per area), and installable `skills/`.
 
 ## Agent entry
 
