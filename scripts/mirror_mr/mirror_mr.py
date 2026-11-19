@@ -126,11 +126,18 @@ def attempt_once(args, mode: str, token: str, env) -> tuple[int, dict | None]:
         print(f"mirror-mr request unreadable: {error}"[:DETAIL], file=sys.stderr)
         return 1, None
     bridge = Path(args.bridge_dir) if args.bridge_dir else here.parent / "lan_bridge"
+    # The command file carries the canonical PowerShell wrapper the
+    # worker executes; --expected-cwd pins the digest-bound Lenovo
+    # checkout as the only provable target. No --dialect: the legacy
+    # gate-off path seals the exact command bytes either way, and the
+    # wrapper verifies without requiring a PowerShell parser at submit.
     submit = [sys.executable, str(Path(bridge) / "lan_bridge.py"), "submit",
               "--queue", args.queue, "--key-file", args.key_file,
               "--key-format", args.key_format,
               "--command-file", str(command_file),
-              "--cwd", args.lenovo_checkout, "--timeout", args.submit_timeout,
+              "--cwd", args.lenovo_checkout,
+              "--expected-cwd", str(facts.get("expectedCwd") or args.lenovo_checkout),
+              "--timeout", args.submit_timeout,
               "--max-output", args.max_output,
               "--return-file", str(facts["returnFile"])]
     proc2 = run(submit, env=env)

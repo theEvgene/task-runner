@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dell_lan"))
@@ -38,7 +38,18 @@ DETAIL_MAX = _DETAIL_MAX
 __all__ = ["Stop", "REQUEST_SCHEMA", "EXPORT_SCHEMA", "MAPPING_SCHEMA",
            "STATE_SCHEMA", "RECEIPT_SCHEMA", "parse_mr_url", "mapping_key",
            "load_mapping", "resolve_mirror", "check_branch",
-           "check_export_identity"]
+           "check_export_identity", "parse_mirror_command",
+           "is_absolute_lenovo_path", "verify_export_job",
+           "MIRROR_REQUEST_NAME_RE"]
+
+MIRROR_REQUEST_NAME_RE = re.compile(r"^mirror-request-([0-9a-f]{16})\.json$")
+_LAUNCHER_NAMES = frozenset({"powershell", "powershell.exe", "pwsh", "pwsh.exe"})
+_LAUNCHER_FLAGS = frozenset({"-noprofile", "-noninteractive", "-nologo"})
+_PYTHON_NAMES = frozenset({"python", "python.exe", "python3", "python3.exe"})
+#: Tokens carrying these are a second statement on the worker shell.
+#: Backslash, colon, spaces, and single quotes are path bytes, not meta.
+_SHELL_META = ("%", "!", "^", "&", "|", "<", ">", "(", ")", ";", '"',
+               "\n", "\r", "\x00")
 
 
 def parse_mr_url(url: str) -> dict:
@@ -133,6 +144,295 @@ def check_export_identity(exported: dict, mr_url: str, iid: int) -> None:
             or int(exported.get("mrIid") or 0) != int(iid):
         raise Stop("request-malformed",
                    detail="sealed MR != requested MR")
+
+
+def is_absolute_lenovo_path(value: object) -> bool:
+    """True when a Lenovo-side path is absolute on Windows or the host.
+
+    Lenovo paths are Windows spellings (drive letter or UNC). The Dell
+    writer may run on Windows (where ``Path`` already proves them) or on
+    a POSIX host (where only ``PureWindowsPath`` recognises them), so
+    either proof counts. Relative spellings prove nothing on either host.
+    """
+
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        if Path(value).is_absolute():
+            return True
+    except (OSError, ValueError, RuntimeError):
+        pass
+    try:
+        return PureWindowsPath(value).is_absolute()
+    except (TypeError, ValueError):
+        return False
+
+
+def _parse_direct_argv(command: str) -> list[str] | None:
+    """Parse the request writer's whitespace-separated double-quoted argv.
+
+    Backslash-safe where POSIX ``shlex`` is not: a backslash run is
+    literal path bytes unless it directly escapes a double quote, so
+    ``C:\\x`` and ``\\\\SERVER\\share`` survive byte-identical. An
+    unquoted cmd operator, an unterminated quote, or a NUL refuses with
+    ``None`` instead of guessing.
+    """
+
+    if not isinstance(command, str) or not command.strip():
+        return None
+    text = command.strip()
+    argv: list[str] = []
+    token: list[str] = []
+    quoted = False
+    active = False
+    i = 0
+    while i < len(text):
+        char = text[i]
+        if char in "\r\n&|<>^" and not quoted:
+            return None
+        if char in " \t" and not quoted:
+            if active:
+                argv.append("".join(token))
+                token, active = [], False
+            i += 1
+            continue
+        if char == '"':
+            quoted = not quoted
+            active = True
+            i += 1
+            continue
+        if char == "\\":
+            start = i
+            while i < len(text) and text[i] == "\\":
+                i += 1
+            count = i - start
+            if i < len(text) and text[i] == '"':
+                token.extend("\\" * (count // 2))
+                if count % 2:
+                    token.append('"')
+                    i += 1
+                else:
+                    quoted = not quoted
+                    i += 1
+                active = True
+            else:
+                token.extend("\\" * count)
+                active = True
+            continue
+        token.append(char)
+        active = True
+        i += 1
+    if quoted:
+        return None
+    if active:
+        argv.append("".join(token))
+    return argv
+
+
+def _parse_ps_argv(inner: str) -> list[str] | None:
+    """Parse the ``& 'arg' 'arg'`` inner script with literal path bytes.
+
+    The transport renders every argument single-quoted with embedded
+    single quotes doubled. Bare words, expressions, and substitutions
+    are not part of that dialect. Backslashes (including UNC pairs)
+    are literal and preserved byte-identical.
+    """
+
+    if not isinstance(inner, str):
+        return None
+    text = inner.strip()
+    if not text.startswith("&") or (len(text) > 1 and not text[1].isspace()):
+        return None
+    i = 1
+    argv: list[str] = []
+    while i < len(text):
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i == len(text):
+            break
+        if text[i] != "'":
+            return None
+        i += 1
+        token: list[str] = []
+        while i < len(text):
+            if text[i] != "'":
+                token.append(text[i])
+                i += 1
+                continue
+            if i + 1 < len(text) and text[i + 1] == "'":
+                token.append("'")
+                i += 2
+                continue
+            i += 1
+            break
+        else:
+            return None
+        if i < len(text) and not text[i].isspace():
+            return None
+        argv.append("".join(token))
+    return argv or None
+
+
+def _launcher_basename(token: str) -> str:
+    return token.strip().strip('"').replace("/", "\\").rsplit("\\", 1)[-1].lower()
+
+
+def _unwrap_canonical(command: str) -> list[str] | None:
+    """The driver argv inside the canonical PowerShell wrapper, or None.
+
+    Returns ``None`` for the legacy direct form (the caller tries that
+    next) and raises ``Stop`` only for a wrapper-shaped command that is
+    malformed, so a second statement can never pass as a wrapper.
+    """
+
+    outer = _parse_direct_argv(command)
+    if not outer:
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    if _launcher_basename(outer[0]) not in _LAUNCHER_NAMES:
+        return None
+    if len(outer) < 3 or outer[-2].lower() != "-command":
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    if not {token.lower() for token in outer[1:-2]} <= _LAUNCHER_FLAGS:
+        # The canonical writer emits exactly -NoProfile -NonInteractive;
+        # anything else in a launcher-shaped command refuses fail-closed.
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    inner = _parse_ps_argv(outer[-1])
+    if not inner:
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    return inner
+
+
+def parse_mirror_command(command: str, expected_driver: str) -> dict:
+    """Parse and bind the exact mirror-export invocation (fail closed).
+
+    Accepts the canonical PowerShell wrapper the worker executes
+    (``powershell.exe -NoProfile -NonInteractive -Command "& '...'``)
+    and the legacy direct form it replaced. Either way the result is
+    exactly ``<python> <driver> --request <request> --request-sha256
+    <digest>`` with an optional absolute ``--flow-dir <dir>`` pair:
+    absolute interpreter and driver paths, the ``mirror-request-<16hex>``
+    basename, a 64-hex digest, no extra arguments, and no shell
+    operators. Backslashes and UNC pairs are path bytes and survive
+    byte-identical; anything that would let the sealed text name a
+    second command refuses as ``queue-job-mismatch`` without weakening
+    the digest, token, or driver identity the caller binds next.
+    """
+
+    if not isinstance(command, str) or not command.strip():
+        raise Stop("queue-job-mismatch", detail="empty command")
+    if len(command.encode("utf-8")) > 1024 * 1024:
+        raise Stop("queue-job-mismatch", detail="command is too large")
+    argv: list[str] | None = None
+    try:
+        argv = _unwrap_canonical(command)
+    except Stop:
+        raise
+    if argv is None:
+        parsed = _parse_direct_argv(command)
+        if not parsed:
+            raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+        argv = parsed
+    for token in argv:
+        if not token or any(char in token for char in _SHELL_META):
+            raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    if len(argv) not in (6, 8):
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    python, driver, flag_request, request_path, flag_digest, digest = argv[:6]
+    if PureWindowsPath(python).name.lower() not in _PYTHON_NAMES \
+            and Path(python).name.lower() not in _PYTHON_NAMES:
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    if not python or not is_absolute_lenovo_path(python):
+        raise Stop("queue-job-mismatch",
+                   detail="interpreter path must be absolute")
+    if not is_absolute_lenovo_path(driver):
+        raise Stop("queue-job-mismatch",
+                   detail="driver and request paths must be absolute")
+    if Path(driver).name != expected_driver \
+            and PureWindowsPath(driver).name != expected_driver:
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    if flag_request != "--request" or flag_digest != "--request-sha256":
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    match = MIRROR_REQUEST_NAME_RE.fullmatch(
+        PureWindowsPath(request_path).name
+        if "\\" in request_path else Path(request_path).name)
+    if match is None:
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    if not re.fullmatch(r"[0-9a-f]{64}", digest.lower()):
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    flow_dir: str | None = None
+    if len(argv) == 8:
+        if argv[6] != "--flow-dir" or not is_absolute_lenovo_path(argv[7]):
+            raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+        for token in (argv[7],):
+            if not token or any(char in token for char in _SHELL_META):
+                raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+        flow_dir = argv[7]
+    return {"python": python, "driver": driver,
+            "requestPath": request_path, "digest": digest.lower(),
+            "requestToken": match.group(1), "flowDir": flow_dir}
+
+
+def _canonical_lenovo_path(value: object) -> str | None:
+    """Canonical Windows identity of a Lenovo path, or None when unprovable."""
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        path = PureWindowsPath(value.strip())
+    except (TypeError, ValueError):
+        return None
+    if not path.is_absolute():
+        return None
+    anchor = path.anchor.rstrip("\\/")
+    if not anchor:
+        return None
+    rest = [part for part in path.parts[1:] if part not in ("\\", "/")]
+    if any(part in (".", "..") for part in rest):
+        return None
+    return "\\".join([anchor.casefold(), *(part.casefold() for part in rest)])
+
+
+def verify_export_job(bridge, queue, key: bytes, job_id: str,
+                      expected_driver: str) -> dict:
+    """Bind the sealed job to the exact mirror-export command (fail closed).
+
+    Shared by the open and merged import drivers. A substring marker is
+    never enough: the sealed command must be the canonical PowerShell
+    wrapper the worker executes (the legacy direct form still verifies
+    for in-flight same-ID resumes) carrying exactly ``<python> <driver>
+    --request <request> --request-sha256 <digest>`` with an optional
+    ``--flow-dir <dir>`` pair. The parsed request file token is stashed
+    as ``_requestFileToken`` so the sealed payload token binds to the
+    exact file the job named. A sealed ``expected_working_directory``
+    that disagrees with the job's own working directory refuses.
+    """
+
+    try:
+        raw = bridge.read(str(queue / "jobs"), job_id)
+    except bridge.JobNotFoundError:
+        raise Stop("queue-job-missing", detail=job_id)
+    except (bridge.BridgeError, OSError) as error:
+        raise Stop("queue-job-unverifiable", detail=str(error)[:DETAIL_MAX])
+    try:
+        job = bridge.open_envelope(raw, key, "job", job_id)
+    except bridge.ProtocolError as error:
+        raise Stop("queue-job-unverifiable", detail=str(error)[:DETAIL_MAX])
+    command = str(job.get("command") or "")
+    parsed = parse_mirror_command(command, expected_driver)
+    expected = job.get("expected_working_directory")
+    if expected is not None:
+        actual = job.get("working_directory")
+        if _canonical_lenovo_path(expected) is None \
+                or _canonical_lenovo_path(expected) \
+                != _canonical_lenovo_path(actual):
+            raise Stop("queue-job-mismatch",
+                       detail="sealed working directory disagrees with its expectation")
+    job["_requestFileToken"] = parsed["requestToken"]
+    job["_requestDigest"] = parsed["digest"]
+    job["_requestPath"] = parsed["requestPath"]
+    if parsed["flowDir"] is not None:
+        job["_requestFlowDir"] = parsed["flowDir"]
+    return job
 
 
 def main(argv=None) -> int:  # pragma: no cover - import surface only

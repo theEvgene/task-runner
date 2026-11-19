@@ -20,9 +20,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dell_lan"))
 
-from mirror_mr_common import (REQUEST_SCHEMA, TOKEN_RE, Stop, load_mapping,
-                              parse_mr_url, resolve_mirror)
-from dell_lan_common import DETAIL_MAX, command_line, inside, safe_name, sha256_bytes  # noqa: E402
+from mirror_mr_common import (REQUEST_SCHEMA, TOKEN_RE, Stop, is_absolute_lenovo_path,
+                              load_mapping, parse_mr_url, resolve_mirror)
+from dell_lan_common import DETAIL_MAX, inside, safe_name, sha256_bytes  # noqa: E402
+from shell_command import ShellDialectError, build_for_transport  # noqa: E402
 
 
 def parse(argv=None):
@@ -75,14 +76,14 @@ def validated(args) -> tuple[dict, Path, Path]:
         raise Stop("usage", code=2, detail="request file must live on the shared LAN path")
     for label, value in (("--lenovo-checkout", args.lenovo_checkout),
                          ("--python", args.python)):
-        if not value or not Path(value).is_absolute():
+        if not value or not is_absolute_lenovo_path(value):
             raise Stop("usage", code=2,
                        detail=f"{label} must be the absolute path on the Lenovo machine")
-    if args.lenovo_flow_dir and not Path(args.lenovo_flow_dir).is_absolute():
+    if args.lenovo_flow_dir and not is_absolute_lenovo_path(args.lenovo_flow_dir):
         raise Stop("usage", code=2, detail="--lenovo-flow-dir must be absolute on Lenovo")
     driver_dir = Path(args.lenovo_driver_dir) if args.lenovo_driver_dir \
         else Path(__file__).resolve().parent
-    if not Path(args.lenovo_driver_dir or ".").is_absolute() and args.lenovo_driver_dir:
+    if args.lenovo_driver_dir and not is_absolute_lenovo_path(args.lenovo_driver_dir):
         raise Stop("usage", code=2, detail="--lenovo-driver-dir must be absolute on Lenovo")
     if not safe_name(args.request_name):
         raise Stop("usage", code=2, detail="--request-name must be one contained file name")
@@ -105,12 +106,22 @@ def validated(args) -> tuple[dict, Path, Path]:
     }
     if mode == "merged":
         request["mode"] = "merged"
-    command = command_line([
+    # Canonical PowerShell wrapper the Lenovo worker executes through its
+    # platform shell (cmd.exe): a direct python invocation refuses there
+    # with "powershell launcher refused". The wrapper carries the same
+    # argv the exact-command verifier binds (request path, digest, token,
+    # driver); backslashes and UNC pairs are literal path bytes inside
+    # the single-quoted inner script.
+    command_parts = [
         args.python, str(driver_dir / driver),
         "--request", str(out_dir / args.request_name),
         "--request-sha256", sha256_bytes((json.dumps(
             request, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")),
-    ] + (["--flow-dir", args.lenovo_flow_dir] if args.lenovo_flow_dir else []))
+    ] + (["--flow-dir", args.lenovo_flow_dir] if args.lenovo_flow_dir else [])
+    try:
+        command = build_for_transport(command_parts, "powershell")
+    except ShellDialectError as error:
+        raise Stop("usage", code=2, detail=str(error))
     return request, out_dir / args.request_name, Path(args.command_file), command
 
 
@@ -136,7 +147,8 @@ def main(argv=None) -> int:
     print(json.dumps({
         "schema": "dell-mirror-request/1", "kind": REQUEST_SCHEMA,
         "requestPath": str(request_path), "commandFile": str(command_file),
-        "command": command,
+        "command": command, "dialect": "powershell",
+        "expectedCwd": str(Path(request["lenovoCheckout"])),
         "returnFile": str(Path(request["shared"]) / request["manifestName"]),
         "mrUrl": request["mrUrl"], "mirrorRepo": request["mirrorRepo"],
     }, ensure_ascii=False, separators=(",", ":")))

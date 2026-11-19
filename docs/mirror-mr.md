@@ -55,6 +55,10 @@ python scripts/mirror_mr/dell_mirror_request.py \
 
 Validates the URL shape (https, no userinfo, `/<project>/-/
 merge_requests/<iid>`), the mapping entry, and the shared-path layout.
+The command file carries the canonical PowerShell wrapper
+(`powershell.exe -NoProfile -NonInteractive -Command "& ..."`) with
+literal Windows path bytes (drive-letter or UNC); the import binds the
+same wrapper byte-identically (digest, token, driver).
 Prints the sealed request facts plus the `--return-file` (the small export
 manifest that also rides back in-band).
 
@@ -64,9 +68,17 @@ manifest that also rides back in-band).
 python scripts/lan_bridge/lan_bridge.py submit \
   --queue <queue-dir> --key-file <key-path> \
   --command-file <command-file> --cwd <working-dir-on-worker> \
+  --expected-cwd <working-dir-on-worker> \
   --timeout <seconds> --max-output <bytes> \
   --return-file <shared>\mirror-mr-<16hex>.manifest.json
 ```
+
+The request renders the canonical PowerShell wrapper the worker
+executes (`powershell.exe -NoProfile -NonInteractive -Command "& ..."`;
+a direct python invocation refuses there). `--expected-cwd` pins the
+digest-bound Lenovo checkout as the only provable target; the import
+refuses a sealed job whose expectation disagrees with its working
+directory.
 
 Prints `JOBID=<32hex>`. Only this client seals jobs; nothing here
 reimplements the envelope, the MAC, or the queue (`docs/lan-bridge.md`).
@@ -104,10 +116,11 @@ python scripts/mirror_mr/dell_mirror_import.py \
   [--github-dir <fixture-double-dir>] [--provenance fixture|live]
 ```
 
-What it proves, in order: the sealed job parses to the exact
-`lenovo_mr_export.py --request mirror-request-<16hex>.json --request-sha256
-<64hex>` command with absolute paths (a substring marker never suffices;
-same-id resume after any unknown outcome) and the sealed token and artifact
+What it proves, in order: the sealed job parses to the exact canonical
+PowerShell wrapper carrying `lenovo_mr_export.py --request
+mirror-request-<16hex>.json --request-sha256 <64hex>` with absolute
+paths (a substring marker never suffices; same-id resume after any
+unknown outcome) and the sealed token and artifact
 names match that request file; the bundle bytes, SHA-256,
 manifest entry, and manifest digest match the seal; both SHAs resolve in
 the mirror; the destination is currently `private`; the target ref is
@@ -192,8 +205,9 @@ retrievable object, or an empty comparison refuses as
 Import with `scripts/mirror_mr/dell_mr_history_import.py` (same flags as
 the open-route import, same `--state` resume and `--github-dir` seam):
 
-- It binds the sealed job to the exact `lenovo_mr_history_export.py`
-  command (an open-route job refuses as `queue-job-mismatch`), verifies
+- It binds the sealed job to the exact canonical PowerShell wrapper
+  carrying `lenovo_mr_history_export.py`
+  (an open-route job refuses as `queue-job-mismatch`), verifies
   bundle bytes, SHA-256, manifest entry, and manifest digest, and fetches
   every wanted SHA into the mirror.
 - It recomputes `git diff base..head` (paths plus patch bytes) in the

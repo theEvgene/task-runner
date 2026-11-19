@@ -59,6 +59,34 @@ def git(*args: str, cwd: Path | None = None,
     return proc.stdout.strip()
 
 
+def _wrapper_argv(command: str) -> list[str] | None:
+    """Inner argv of the canonical PowerShell wrapper, or None when direct.
+
+    The fixture has no PowerShell: it proves the sealed bytes are the
+    wrapper (the worker's accepted shape) and then runs the bound argv
+    directly, byte-identical to what the worker would invoke.
+    """
+
+    sys.path.insert(0, str(SCRIPTS))
+    sys.path.insert(0, str(SCRIPTS.parent / "dell_lan"))
+    try:
+        from mirror_mr_common import parse_mirror_command
+    except Exception:
+        return None
+    for driver in ("lenovo_mr_export.py", "lenovo_mr_history_export.py"):
+        try:
+            parsed = parse_mirror_command(command, driver)
+        except Exception:
+            continue
+        argv = [parsed["python"], parsed["driver"],
+                "--request", parsed["requestPath"],
+                "--request-sha256", parsed["digest"]]
+        if parsed.get("flowDir"):
+            argv += ["--flow-dir", parsed["flowDir"]]
+        return argv
+    return None
+
+
 class Workspace:
     """GitLab origin, Lenovo checkout, signed queue, GitHub mirror."""
 
@@ -144,11 +172,23 @@ class Workspace:
 
         raw = lan_bridge.read(str(self.queue / "jobs"), job_id)
         payload = lan_bridge.open_envelope(raw, self.key_bytes, "job", job_id)
-        proc = subprocess.run(
-            payload["command"], shell=True, cwd=payload["working_directory"],
-            env=self.env(), capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            timeout=payload["timeout_seconds"], check=False)
+        command = str(payload["command"])
+        argv = _wrapper_argv(command)
+        if argv is None:
+            proc = subprocess.run(
+                command, shell=True, cwd=payload["working_directory"],
+                env=self.env(), capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                timeout=payload["timeout_seconds"], check=False)
+        else:
+            # Canonical PowerShell wrapper: the worker replaces the
+            # launcher with an encoded program and runs the inner argv.
+            # This host runs that argv directly (no PowerShell needed).
+            proc = subprocess.run(
+                argv, shell=False, cwd=payload["working_directory"],
+                env=self.env(), capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                timeout=payload["timeout_seconds"], check=False)
         files = {}
         for declared in payload.get("return_files") or []:
             path = Path(declared)
@@ -170,7 +210,9 @@ class Workspace:
         command = [sys.executable, str(BRIDGE_CLI), "submit", "--queue",
                    str(self.queue), "--key-file", str(self.key),
                    "--command-file", str(command_file),
-                   "--cwd", str(cwd or self.lenovo), "--timeout", "300",
+                   "--cwd", str(cwd or self.lenovo),
+                   "--expected-cwd", str(cwd or self.lenovo),
+                   "--timeout", "300",
                    "--max-output", "65536"]
         if return_file is not None:
             command += ["--return-file", str(return_file)]
