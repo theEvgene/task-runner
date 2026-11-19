@@ -105,7 +105,10 @@ test("flag reports an ambiguous outcome when the new comment is absent", async (
   );
 });
 
-function unreadableWriteTransport({ flagAfter = true, commentsAfter = true } = {}) {
+function unreadableWriteTransport({
+  flagAfter = true,
+  commentsAfter = true,
+} = {}) {
   const calls = [];
   const transport = {
     calls,
@@ -113,14 +116,29 @@ function unreadableWriteTransport({ flagAfter = true, commentsAfter = true } = {
       calls.push(request);
       if (request.path.endsWith("/comment")) {
         if (calls.filter((c) => c.mutation).length === 0)
-          return { payload: { startAt: 0, total: 1, comments: [{ id: "1", body: "old" }] } };
+          return {
+            payload: {
+              startAt: 0,
+              total: 1,
+              comments: [{ id: "1", body: "old" }],
+            },
+          };
         if (!commentsAfter)
-          return { payload: { startAt: 0, total: 1, comments: [{ id: "1", body: "old" }] } };
+          return {
+            payload: {
+              startAt: 0,
+              total: 1,
+              comments: [{ id: "1", body: "old" }],
+            },
+          };
         return {
           payload: {
             startAt: 0,
             total: 2,
-            comments: [{ id: "1", body: "old" }, { id: "2", body: "(flag) Flag added\n\nreason" }],
+            comments: [
+              { id: "1", body: "old" },
+              { id: "2", body: "(flag) Flag added\n\nreason" },
+            ],
           },
         };
       }
@@ -134,7 +152,10 @@ function unreadableWriteTransport({ flagAfter = true, commentsAfter = true } = {
       return {
         payload: {
           key: "LEL-1",
-          fields: { customfield_10641: applied && flagAfter ? [{ value: "Impediment" }] : null },
+          fields: {
+            customfield_10641:
+              applied && flagAfter ? [{ value: "Impediment" }] : null,
+          },
         },
       };
     },
@@ -143,10 +164,16 @@ function unreadableWriteTransport({ flagAfter = true, commentsAfter = true } = {
 }
 
 test("flag recovers with one safe readback after an unreadable successful write", async () => {
-  const transport = unreadableWriteTransport({ flagAfter: true, commentsAfter: true });
+  const transport = unreadableWriteTransport({
+    flagAfter: true,
+    commentsAfter: true,
+  });
   const input = { issueKey: "LEL-1", action: "add", comment: "reason" };
   const plan = await flagIssue(transport, input);
-  const result = await flagIssue(transport, { ...input, confirm: plan.confirmation });
+  const result = await flagIssue(transport, {
+    ...input,
+    confirm: plan.confirmation,
+  });
   assert.equal(result.state, "Completed");
   assert.equal(result.readback.commentId, "2");
   assert.equal(result.readback.flag, true);
@@ -154,21 +181,67 @@ test("flag recovers with one safe readback after an unreadable successful write"
 });
 
 test("flag stays ambiguous after unreadable write without a new comment", async () => {
-  const transport = unreadableWriteTransport({ flagAfter: true, commentsAfter: false });
+  const transport = unreadableWriteTransport({
+    flagAfter: true,
+    commentsAfter: false,
+  });
   const input = { issueKey: "LEL-1", action: "add", comment: "reason" };
   const plan = await flagIssue(transport, input);
-  await assert.rejects(flagIssue(transport, { ...input, confirm: plan.confirmation }), {
-    name: "JiraAmbiguousOutcome",
-  });
+  await assert.rejects(
+    flagIssue(transport, { ...input, confirm: plan.confirmation }),
+    {
+      name: "JiraAmbiguousOutcome",
+    }
+  );
   assert.equal(transport.calls.filter((c) => c.mutation).length, 1);
 });
 
 test("flag stays ambiguous after unreadable write with a wrong flag state", async () => {
-  const transport = unreadableWriteTransport({ flagAfter: false, commentsAfter: true });
+  const transport = unreadableWriteTransport({
+    flagAfter: false,
+    commentsAfter: true,
+  });
   const input = { issueKey: "LEL-1", action: "add", comment: "reason" };
   const plan = await flagIssue(transport, input);
-  await assert.rejects(flagIssue(transport, { ...input, confirm: plan.confirmation }), {
-    name: "JiraAmbiguousOutcome",
-  });
+  await assert.rejects(
+    flagIssue(transport, { ...input, confirm: plan.confirmation }),
+    {
+      name: "JiraAmbiguousOutcome",
+    }
+  );
   assert.equal(transport.calls.filter((c) => c.mutation).length, 1);
+});
+
+test("flag stays ambiguous on failed or ambiguous comment readback", async () => {
+  for (const failure of ["read", "duplicate"]) {
+    const transport = unreadableWriteTransport();
+    const request = transport.request.bind(transport);
+    transport.request = async (call) => {
+      if (
+        call.path.endsWith("/comment") &&
+        transport.calls.some((c) => c.mutation)
+      ) {
+        if (failure === "read") throw new Error("read unavailable");
+        return {
+          payload: {
+            startAt: 0,
+            total: 3,
+            comments: [
+              { id: "1", body: "old" },
+              { id: "2", body: "(flag) Flag added\n\nreason" },
+              { id: "3", body: "(flag) Flag added\n\nreason" },
+            ],
+          },
+        };
+      }
+      return request(call);
+    };
+    const input = { issueKey: "LEL-1", action: "add", comment: "reason" };
+    const plan = await flagIssue(transport, input);
+    await assert.rejects(
+      flagIssue(transport, { ...input, confirm: plan.confirmation }),
+      { name: "JiraAmbiguousOutcome" }
+    );
+    assert.equal(transport.calls.filter((c) => c.mutation).length, 1);
+  }
 });

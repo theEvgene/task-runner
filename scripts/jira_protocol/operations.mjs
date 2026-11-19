@@ -270,7 +270,9 @@ async function createRequest(transport, stage, request) {
 
 function observedStatus(result) {
   const raw = Number(result?.response?.status);
-  return Number.isSafeInteger(raw) && raw >= 100 && raw <= 599 ? raw : "unknown";
+  return Number.isSafeInteger(raw) && raw >= 100 && raw <= 599
+    ? raw
+    : "unknown";
 }
 
 function observingTransport(transport, statuses) {
@@ -545,7 +547,8 @@ function restFieldPayload(fieldMeta, suppliedValue) {
       option &&
       typeof option === "object" &&
       (String(option.id ?? "") === String(resolved) ||
-        (option.value !== undefined && String(option.value) === String(resolved)))
+        (option.value !== undefined &&
+          String(option.value) === String(resolved)))
   );
   if (match) {
     if (match.id !== undefined && match.value !== undefined)
@@ -558,7 +561,9 @@ function restFieldPayload(fieldMeta, suppliedValue) {
 
 export async function getSubtaskCreateMeta(transport, { issueTypeId } = {}) {
   const requested =
-    issueTypeId === undefined || issueTypeId === null || String(issueTypeId).trim() === ""
+    issueTypeId === undefined ||
+    issueTypeId === null ||
+    String(issueTypeId).trim() === ""
       ? undefined
       : String(issueTypeId).trim();
   if (requested !== undefined && !/^[1-9]\d*$/.test(requested))
@@ -572,9 +577,7 @@ export async function getSubtaskCreateMeta(transport, { issueTypeId } = {}) {
   });
   const projects = payload?.projects;
   if (!Array.isArray(projects))
-    throw new JiraProtocolError(
-      "create metadata returned an unsupported body"
-    );
+    throw new JiraProtocolError("create metadata returned an unsupported body");
   const project = projects.find(
     (candidate) =>
       candidate?.key === CONTRACT.projectKey &&
@@ -600,9 +603,9 @@ export async function getSubtaskCreateMeta(transport, { issueTypeId } = {}) {
     .filter(
       (candidate) =>
         candidate &&
-        (candidate.id !== undefined &&
-          candidate.id !== null &&
-          String(candidate.id).trim() !== "")
+        candidate.id !== undefined &&
+        candidate.id !== null &&
+        String(candidate.id).trim() !== ""
     )
     .map((candidate) => ({
       id: String(candidate.id),
@@ -614,9 +617,10 @@ export async function getSubtaskCreateMeta(transport, { issueTypeId } = {}) {
     subtask = subtasks.find((candidate) => String(candidate.id) === requested);
     if (!subtask)
       throw new JiraProtocolError(
-        `requested issue-type-id ${requested} is not a live LEL subtask issue type; live subtask types: ${availableSubtaskTypes
-          .map((candidate) => candidate.id)
-          .join(", ") || "?"}`
+        `requested issue-type-id ${requested} is not a live LEL subtask issue type; live subtask types: ${
+          availableSubtaskTypes.map((candidate) => candidate.id).join(", ") ||
+          "?"
+        }`
       );
   } else {
     if (subtasks.length > 1)
@@ -632,9 +636,7 @@ export async function getSubtaskCreateMeta(transport, { issueTypeId } = {}) {
     subtask.id === null ||
     String(subtask.id).trim() === ""
   )
-    throw new JiraProtocolError(
-      "create metadata subtask issue type has no id"
-    );
+    throw new JiraProtocolError("create metadata subtask issue type has no id");
   const fieldsMeta =
     subtask.fields && typeof subtask.fields === "object" ? subtask.fields : {};
   return {
@@ -702,10 +704,14 @@ export async function createSubtask(
         ? String(parentState.fields.issuetype.id).trim()
         : "";
     if (!parentTypeId)
-      throw new JiraProtocolError("parent issue does not declare an issue type id");
+      throw new JiraProtocolError(
+        "parent issue does not declare an issue type id"
+      );
     if (
       parentTypeId === meta.subtaskType.id ||
-      meta.availableSubtaskTypes.some((candidate) => candidate.id === parentTypeId)
+      meta.availableSubtaskTypes.some(
+        (candidate) => candidate.id === parentTypeId
+      )
     )
       throw new JiraProtocolError(
         "parent issue is a subtask; a subtask cannot have a child subtask"
@@ -723,7 +729,10 @@ export async function createSubtask(
         `fields are absent from the live create metadata: ${unknownFields.join(", ")}`
       );
     const requiredFields = Object.entries(meta.fieldsMeta)
-      .filter(([id, field]) => field?.required && !["parent", "project", "issuetype"].includes(id))
+      .filter(
+        ([id, field]) =>
+          field?.required && !["parent", "project", "issuetype"].includes(id)
+      )
       .map(([id, field]) => ({ id, label: String(field?.name ?? id) }));
     const missing = requiredFields.filter(({ id }) => {
       if (id === "parent" || id === "project" || id === "issuetype")
@@ -869,7 +878,9 @@ export async function verifyCreatedSubtask(
   suppliedFields
 ) {
   if (typeof issueKey !== "string" || !/^LEL-\d+$/.test(issueKey))
-    throw new JiraProtocolError("a valid LEL issue key is required for readback");
+    throw new JiraProtocolError(
+      "a valid LEL issue key is required for readback"
+    );
   const expectedParent = assertIssueKey(parentKey);
   const expectedTypeId = String(subtaskType?.id ?? "");
   if (!expectedTypeId)
@@ -882,13 +893,9 @@ export async function verifyCreatedSubtask(
       "parent",
       ...Object.keys(suppliedFields),
     ];
-    issue = (
-      await getIssueState(
-        transport,
-        issueKey,
-        [...new Set(readbackFields)]
-      )
-    );
+    issue = await getIssueState(transport, issueKey, [
+      ...new Set(readbackFields),
+    ]);
   } catch (error) {
     throw new JiraAmbiguousOutcome("created subtask readback failed", {
       cause: error,
@@ -898,8 +905,7 @@ export async function verifyCreatedSubtask(
   const isExpectedProject =
     issue.fields.project?.key === CONTRACT.projectKey &&
     Number(issue.fields.project?.id) === CONTRACT.projectId;
-  const isExpectedType =
-    String(issue.fields.issuetype?.id) === expectedTypeId;
+  const isExpectedType = String(issue.fields.issuetype?.id) === expectedTypeId;
   const actualParentKey =
     issue.fields.parent && typeof issue.fields.parent === "object"
       ? issue.fields.parent.key
@@ -1081,17 +1087,17 @@ export async function flagIssue(
   try {
     const issue = await getIssueState(transport, key, ["customfield_10641"]);
     const after = await comments(transport, key);
-    const found = after.find(
+    const found = after.filter(
       (c) =>
         !oldIds.has(String(c.id)) &&
         (c.body === body || c.body === `${prefix}\n\n${text}`)
     );
-    if (state(issue.fields.customfield_10641) !== flag || !found)
+    if (state(issue.fields.customfield_10641) !== flag || found.length !== 1)
       throw new Error("readback mismatch");
     return {
       state: "Completed",
       ...plan,
-      readback: { flag, commentId: String(found.id) },
+      readback: { flag, commentId: String(found[0].id) },
     };
   } catch (error) {
     throw new JiraAmbiguousOutcome(
