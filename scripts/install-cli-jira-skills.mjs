@@ -19,6 +19,7 @@ const skillNames = [
   "cli-transition-jira-issue",
   "cli-transition-jira-status",
   "cli-extract-jira-content",
+  "cli-find-sibling-issues",
   "cli-flag-jira-issue",
   "cli-create-jira-subtask",
   "cli-create-jira-subtasks",
@@ -35,6 +36,7 @@ const runtimeFiles = [
   "scripts/jira_protocol/batch-execute.mjs",
   "scripts/jira_protocol/handoff.mjs",
   "scripts/jira_protocol/extract.mjs",
+  "scripts/jira_protocol/siblings.mjs",
   "scripts/jira_protocol/html-form.mjs",
   "docs/jira-protocol.md",
   "docs/jira-protocol-batch.md",
@@ -137,6 +139,7 @@ try {
       "batch-execute.mjs",
       "handoff.mjs",
       "extract.mjs",
+      "siblings.mjs",
       "html-form.mjs",
     ]) {
       await cp(

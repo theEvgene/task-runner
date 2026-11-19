@@ -1,6 +1,6 @@
 # Jira protocol agent skills
 
-Eight model-invoked, `cli-`-prefixed skills package the Jira protocol CLI by
+Nine model-invoked, `cli-`-prefixed skills package the Jira protocol CLI by
 operation:
 
 - `cli-create-lel-service-backlog-issue`
@@ -8,6 +8,7 @@ operation:
 - `cli-transition-jira-issue`
 - `cli-transition-jira-status`
 - `cli-extract-jira-content`
+- `cli-find-sibling-issues`
 - `cli-flag-jira-issue`
 - `cli-create-jira-subtask`
 - `cli-create-jira-subtasks`
@@ -47,16 +48,17 @@ assignment, `JIRA_ATL_TOKEN`. Installation neither obtains nor stores them.
 
 The skills use only the documented commands:
 
-| Skill      | Commands                              | Proven successful readback                                               |
-| ---------- | ------------------------------------- | ------------------------------------------------------------------------ |
-| create     | `create-epic`, optional `detail-view` | returned key is a field-verified LEL Epic on rapid view 298290's board or backlog |
-| subtask    | `create-subtask`                      | returned key is a field-verified LEL subtask whose parent key equals the requested parent |
+| Skill      | Commands                              | Proven successful readback                                                                                                 |
+| ---------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| create     | `create-epic`, optional `detail-view` | returned key is a field-verified LEL Epic on rapid view 298290's board or backlog                                          |
+| subtask    | `create-subtask`                      | returned key is a field-verified LEL subtask whose parent key equals the requested parent                                  |
 | subtasks   | `create-subtasks`                     | every batch entry is `Created` (field-verified, exact parent) or a proven `AlreadyExists`; no duplicate confirmed instance |
-| assign     | `assign`                              | direct issue read reports the exact assignee login                       |
-| transition | `transitions`, `transition`           | direct issue read reports the planned target status id                   |
-| route      | `transition-to-status`                | direct issue read reports the target status id after every verified step |
-| extract    | `extract`                             | REST-visible issue, comments, metadata inventories, and immediate parent |
-| flag       | `flag`                                | direct issue read reports the requested flag state plus a new comment id |
+| assign     | `assign`                              | direct issue read reports the exact assignee login                                                                         |
+| transition | `transitions`, `transition`           | direct issue read reports the planned target status id                                                                     |
+| route      | `transition-to-status`                | direct issue read reports the target status id after every verified step                                                   |
+| extract    | `extract`                             | REST-visible issue, comments, metadata inventories, and immediate parent                                                   |
+| siblings   | `siblings`                            | same-parent subtasks assigned to the exact login, unreadable children reported                                             |
+| flag       | `flag`                                | direct issue read reports the requested flag state plus a new comment id                                                   |
 
 Every write is a read-only plan followed by a separate invocation carrying the
 exact live-model-bound confirmation digest. `UnknownOutcome` is never
@@ -78,6 +80,10 @@ Important limitations:
 - `extract` proves completeness only for its declared caller-visible REST
   scope. Server-rendered Jira sections, Wiki pages, remote links, attachment
   bodies, and attachment text remain explicit unproven/not-retrieved gaps.
+- `siblings` examines only the listed subtasks of the immediate parent by
+  exact assignee login. It is not a JQL or duplicate search: unlisted,
+  unobserved, or unreadable children are reported, never silently dropped,
+  and an incomplete receipt never proves that no sibling exists.
 - `detail-view` remains a separate explicitly incomplete GreenHopper UI-model
   command and is not an extraction fallback.
 - The CLI has no safe reconciliation command after an ambiguous write. Keep the

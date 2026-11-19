@@ -135,6 +135,33 @@ pages, remote-link endpoints, attachment bodies, and attachment text are
 `unproven_not_retrieved` or `metadata_only_not_retrieved`. The extractor does
 not contact those systems or URLs.
 
+## Find sibling issues by assignee
+
+```powershell
+$env:NODE_USE_SYSTEM_CA = '1'
+node scripts/jira-protocol.mjs siblings --issue LEL-4122 --assignee example.user
+```
+
+The read-only search resolves the immediate `fields.parent` of the source
+issue, reads the parent's listed subtasks, and reads each listed child once
+by key for its caller-visible assignee. It returns only the children
+assigned to the exact login, each as key, summary, status, and
+`{origin}/browse/{key}` link. The source issue itself is never listed as its
+own sibling. A child matches when the login equals its REST `assignee.name`
+or legacy `assignee.key` exactly.
+
+`completeness.comprehensive` is true only when the parent, the child list,
+and every child read are complete. Unassigned children are listed under
+`unassigned` and never match; unreadable children are listed under
+`unreadable` with their reason and do not hide the readable rest. A missing
+`parent` or `subtasks` field is unobserved, never an empty value; explicit
+`parent: null` proves there are no siblings. A parent 404 is
+`not_found_or_not_visible`. A 401/403 on the source read is terminal; on a
+parent or child read it is an incomplete receipt with reason
+`access_denied`, never an empty or full result. The short entries carry no
+comments, attachments, or issue links and are not a substitute for
+`extract`.
+
 ## Read GreenHopper detail-view data
 
 ```powershell
@@ -393,14 +420,14 @@ fixture/live boundary for these flows are defined in
 
 ## Exit states
 
-| Exit | Meaning                                                                      |
-| ---: | ---------------------------------------------------------------------------- |
-|  `0` | read succeeded or a write was confirmed by readback                          |
-|  `2` | invalid input, unsupported response, or policy/HTTP failure                  |
-|  `3` | exact confirmation is required                                               |
-|  `4` | Quick Create or subtask create metadata requires more server-declared fields |
-|  `5` | a write may have happened but readback did not prove the outcome             |
-|  `6` | extraction returned evidence but its declared REST scope is incomplete       |
+| Exit | Meaning                                                                             |
+| ---: | ----------------------------------------------------------------------------------- |
+|  `0` | read succeeded or a write was confirmed by readback                                 |
+|  `2` | invalid input, unsupported response, or policy/HTTP failure                         |
+|  `3` | exact confirmation is required                                                      |
+|  `4` | Quick Create or subtask create metadata requires more server-declared fields        |
+|  `5` | a write may have happened but readback did not prove the outcome                    |
+|  `6` | extraction or sibling search returned evidence but its declared scope is incomplete |
 
 The CLI performs no live write unless an exact live-model-bound confirmation
 digest is supplied. Tests use injected transports and local data only.
