@@ -48,6 +48,30 @@ def worktree_dirty(mirror: Path, branch: str) -> bool | None:
     return False
 
 
+def branch_checked_out(mirror: Path, branch: str) -> bool | None:
+    """True when any worktree has `branch` checked out, False when absent.
+
+    Returns None when the worktree list is unreadable (fail closed). A clean
+    checkout still counts as present: moving its branch with `update-ref`
+    would leave the working tree behind, so the caller refuses even a clean
+    checkout rather than surprising the operator.
+    """
+
+    ok, output = git_ok(mirror, "worktree", "list", "--porcelain")
+    if not ok:
+        return None
+    for block in output.split("\n\n"):
+        branch_name = None
+        for line in block.splitlines():
+            if line.startswith("branch "):
+                branch_name = line[len("branch "):].strip()
+                if branch_name.startswith("refs/heads/"):
+                    branch_name = branch_name[len("refs/heads/"):]
+        if branch_name == branch:
+            return True
+    return False
+
+
 def reconcile_refs(mirror: Path, exported: dict) -> dict:
     """Move the two mirror refs to the observed SHAs; never force-push.
 
@@ -67,6 +91,12 @@ def reconcile_refs(mirror: Path, exported: dict) -> dict:
         if current == want:
             moved[role] = {"updated": False, "previous": current}
             continue
+        checked_out = branch_checked_out(mirror, branch)
+        if checked_out is None:
+            raise Stop("worktree-unreadable", detail=f"cannot read worktree for {branch}")
+        if checked_out:
+            raise Stop("worktree-checked-out", detail=(
+                f"{branch} is checked out; refusing to move it under a worktree"))
         dirty = worktree_dirty(mirror, branch)
         if dirty is None:
             raise Stop("worktree-unreadable", detail=f"cannot read worktree for {branch}")
@@ -168,6 +198,8 @@ def read_and_compare(github, mirror: Path, url: str, state: dict) -> dict:
         raise Stop("pr-conflict", detail=f"{url} names another direction")
     if str(record.get("headRefOid") or "").lower() != state["sourceSha"]:
         raise Stop("pr-conflict", detail=f"{url} head is not {state['sourceSha'][:12]}")
+    if str(record.get("baseRefOid") or "").lower() != state["targetSha"]:
+        raise Stop("pr-conflict", detail=f"{url} base is not {state['targetSha'][:12]}")
     refs = github.mirror_refs(mirror)
     base_head = refs.get(state["targetBranch"])
     if base_head != state["targetSha"]:

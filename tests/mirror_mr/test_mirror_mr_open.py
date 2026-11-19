@@ -232,6 +232,102 @@ class OpenMirrorTests(unittest.TestCase):
         state2 = json.loads(self.ws.github_state.read_text(encoding="utf-8"))
         self.assertEqual(len(state2["prs"]), 1)
 
+    def test_pr_base_oid_mismatch_refuses(self) -> None:
+        """A PR whose base OID is not the observed target SHA is not exact."""
+
+        job_id = self.export()
+        bundle = next(self.ws.shared.glob("mirror-mr-*.bundle"))
+        git("fetch", "-q", str(bundle),
+            f"{self.ws.base}:refs/heads/{BASE_BRANCH}",
+            f"{self.ws.feature}:refs/heads/{FEATURE_BRANCH}",
+            cwd=self.ws.mirror)
+        git("push", "-q", "origin", BASE_BRANCH, FEATURE_BRANCH,
+            cwd=self.ws.mirror)
+        state = json.loads(self.ws.github_state.read_text(encoding="utf-8"))
+        state["prs"]["1"] = {
+            "url": "https://github.fixture.invalid/x/pull/1", "number": 1,
+            "state": "open", "title": "mirror", "body": "mirror",
+            "headRefName": FEATURE_BRANCH, "baseRefName": BASE_BRANCH,
+            "headRefOid": self.ws.feature, "baseRefOid": "f" * 40}
+        state["nextNumber"] = 2
+        self.ws.github_state.write_text(json.dumps(state), encoding="utf-8")
+        proc, receipt = self.import_mr(job_id)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(receipt["reason"], "pr-conflict")
+        self.assertIn("base", receipt["detail"])
+        state2 = json.loads(self.ws.github_state.read_text(encoding="utf-8"))
+        self.assertEqual(len(state2["prs"]), 1)
+
+    def test_spoofed_job_command_refuses(self) -> None:
+        """A substring marker in another command never proves this import."""
+
+        command_file = self.ws.root / "spoof-command.txt"
+        command_file.write_text("echo lenovo_mr_export.py\n", encoding="utf-8")
+        job_id = self.ws.submit(command_file)
+        self.ws.run_job(job_id)
+        proc, receipt = self.import_mr(job_id)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(receipt["reason"], "queue-job-mismatch")
+        self.assertIsNone(receipt["prUrl"])
+        remote = git("ls-remote", "--heads", str(self.ws.github_origin))
+        self.assertEqual(remote, "")
+
+    def test_token_mismatched_artifacts_refuse(self) -> None:
+        """Sealed names that ignore the job's request token prove nothing."""
+
+        import sys as _sys
+        bridge_root = TESTS_DIR.parents[1] / "scripts" / "lan_bridge"
+        if str(bridge_root) not in _sys.path:
+            _sys.path.insert(0, str(bridge_root))
+        import lan_bridge as _bridge
+        from datetime import datetime, timezone as _tz
+
+        token = "0123456789abcdef"
+        data = self.ws.request(token)
+        job_id = self.ws.submit(data["commandFile"],
+                                return_file=Path(data["returnFile"]))
+        forged = {
+            "schema": "mirror-mr-export/1", "token": token,
+            "status": "opened", "title": "t", "description": "",
+            "sourceBranch": FEATURE_BRANCH, "targetBranch": BASE_BRANCH,
+            "sourceSha": self.ws.feature, "targetSha": self.ws.base,
+            "bundleName": "wrong.bundle",
+            "manifestName": f"mirror-mr-{token}.manifest.json",
+            "sha256": "a" * 64, "bytes": 10,
+            "manifestDigest": "b" * 64,
+        }
+        payload = _bridge.build_result_payload(
+            job_id, "ok", 0, stdout=json.dumps(forged),
+            stderr="", started_at=datetime.now(_tz.utc).isoformat(),
+            finished_at=datetime.now(_tz.utc).isoformat(),
+            output_truncated=False, files={})
+        _bridge.publish(str(self.ws.queue / "results"), job_id,
+                        _bridge.seal(payload, self.ws.key_bytes))
+        proc, receipt = self.import_mr(job_id)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(receipt["reason"], "request-malformed")
+        self.assertIsNone(receipt["prUrl"])
+
+    def test_checked_out_branch_refuses_before_move(self) -> None:
+        """A clean checkout of the target branch is never moved underneath."""
+
+        job_id = self.export()
+        other = git("commit-tree", git("mktree", cwd=self.ws.mirror,
+                                       input_text=""),
+                    "-m", "divergent", cwd=self.ws.mirror)
+        git("update-ref", f"refs/heads/{BASE_BRANCH}", other,
+            cwd=self.ws.mirror)
+        git("checkout", "-q", BASE_BRANCH, cwd=self.ws.mirror)
+        try:
+            proc, receipt = self.import_mr(job_id)
+        finally:
+            git("checkout", "-q", "--detach", "HEAD", cwd=self.ws.mirror)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(receipt["reason"], "worktree-checked-out")
+        head = git("rev-parse", "--verify", f"refs/heads/{BASE_BRANCH}",
+                   cwd=self.ws.mirror)
+        self.assertEqual(head, other)
+
     # -- interruption and unknown outcomes --------------------------------------
     def test_unknown_job_resumes_same_id(self) -> None:
         """No result yet is unknown (exit 3); the same id completes later."""

@@ -24,6 +24,8 @@ import argparse
 import importlib
 import json
 import os
+import re
+import shlex
 import sys
 import tempfile
 from pathlib import Path
@@ -32,15 +34,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dell_lan"))
 
 from mirror_mr_common import (DETAIL_MAX, EXPORT_SCHEMA, JOB_RE, RECEIPT_SCHEMA,
-                              SHA_RE, STATE_SCHEMA, Stop, check_branch,
+                              SHA_RE, STATE_SCHEMA, Stop, TOKEN_RE, check_branch,
                               load_mapping, parse_mr_url, resolve_mirror)
 from dell_mirror_publish import (adopt_or_create, push_refs,
                                  read_remote_refs, reconcile_refs)  # noqa: E402
 from dell_lan_common import (default_bridge_dir, fetch_verified, git_ok,
                              load_bridge, load_json, manifest_digest,
                              now_iso, read_key, result_failure, safe_name,
-                             sha256_file, verify_job,
+                             sha256_file,
                              write_json_atomic)  # noqa: E402
+
+MIRROR_REQUEST_NAME_RE = re.compile(r"^mirror-request-([0-9a-f]{16})\.json$")
 
 NEXT_ACTION = {
     "mirrored": "share the PR URL and receipt; no further action",
@@ -51,6 +55,9 @@ NEXT_ACTION = {
     "source-ref-conflict": "resolve the conflicting source ref by hand, then a new request",
     "destination-not-private": "make the mirror private, or remap to a private mirror",
     "evidence-gap": "do not treat the PR as equivalent; inspect the reported gap",
+    "queue-job-mismatch": "re-read the sealed job; only the exact mirror-export command proves this import",
+    "request-malformed": "re-read the sealed result; a payload whose token or artifacts ignore the job proves nothing",
+    "worktree-checked-out": "check out another ref in the mirror clone before retrying",
 }
 
 
@@ -103,7 +110,59 @@ def save_state(path: Path, state: dict) -> None:
     write_json_atomic(path, state)
 
 
-def verify_payload(payload: dict) -> dict:
+def verify_mirror_job(bridge, queue: Path, key: bytes, job_id: str) -> dict:
+    """Bind the sealed job to the exact mirror-export command (fail closed).
+
+    Mirrors ``verify_first_job``: a substring marker is never enough
+    (``echo lenovo_mr_export.py`` would pass it while executing nothing).
+    The sealed command must parse to exactly ``<python> <driver> --request
+    <request> --request-sha256 <digest>`` with an optional ``--flow-dir
+    <dir>`` pair, where the driver basename is ``lenovo_mr_export.py``,
+    every path is absolute, the request basename is
+    ``mirror-request-<16hex>.json`` and the digest is 64 hex. The parsed
+    request file token is stashed as ``_requestFileToken`` so the sealed
+    payload token can be bound to the exact file the job named.
+    """
+
+    try:
+        raw = bridge.read(str(queue / "jobs"), job_id)
+    except bridge.JobNotFoundError:
+        raise Stop("queue-job-missing", detail=job_id)
+    except (bridge.BridgeError, OSError) as error:
+        raise Stop("queue-job-unverifiable", detail=str(error)[:DETAIL_MAX])
+    try:
+        job = bridge.open_envelope(raw, key, "job", job_id)
+    except bridge.ProtocolError as error:
+        raise Stop("queue-job-unverifiable", detail=str(error)[:DETAIL_MAX])
+    command = str(job.get("command") or "")
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError as error:
+        raise Stop("queue-job-mismatch", detail=str(error)[:DETAIL_MAX])
+    if len(argv) not in (6, 8):
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    python, driver, flag_request, request_path, flag_digest, digest = argv[:6]
+    if not python or Path(driver).name != "lenovo_mr_export.py":
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    if not Path(driver).is_absolute() or not Path(request_path).is_absolute():
+        raise Stop("queue-job-mismatch", detail="driver and request paths must be absolute")
+    if flag_request != "--request" or flag_digest != "--request-sha256":
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    match = MIRROR_REQUEST_NAME_RE.fullmatch(Path(request_path).name)
+    if match is None:
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    if not re.fullmatch(r"[0-9a-f]{64}", digest.lower()):
+        raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    if len(argv) == 8:
+        if argv[6] != "--flow-dir" or not Path(argv[7]).is_absolute():
+            raise Stop("queue-job-mismatch", detail=command[:DETAIL_MAX])
+    job["_requestFileToken"] = match.group(1)
+    job["_requestDigest"] = digest.lower()
+    job["_requestPath"] = request_path
+    return job
+
+
+def verify_payload(payload: dict, job: dict | None = None) -> dict:
     failure = result_failure(payload)
     if failure is not None:
         raise Stop("export-job-failed", detail=json.dumps(failure)[:DETAIL_MAX])
@@ -130,6 +189,17 @@ def verify_payload(payload: dict) -> dict:
         raise Stop("export-malformed", detail="sha256 is not a digest")
     if not isinstance(exported.get("bytes"), int) or exported["bytes"] < 1:
         raise Stop("export-malformed", detail="bytes is not factual")
+    token = str(exported.get("token") or "").lower()
+    if not TOKEN_RE.match(token):
+        raise Stop("request-malformed", detail="token is not factual")
+    if exported.get("bundleName") != f"mirror-mr-{token}.bundle" \
+            or exported.get("manifestName") != f"mirror-mr-{token}.manifest.json":
+        raise Stop("request-malformed", detail="sealed artifacts do not match the token")
+    if job is not None:
+        request_token = job.get("_requestFileToken")
+        if request_token is not None and request_token != token:
+            raise Stop("request-malformed",
+                       detail="sealed token does not match the request file the job named")
     return exported
 
 
@@ -249,10 +319,10 @@ def main(argv=None) -> int:
         queue = Path(args.queue)
         key = read_key(bridge, queue, Path(args.key_file), args.key_format,
                        repos=[mirror], shared=Path(args.shared))
-        verify_job(bridge, queue, key, args.job_id, "lenovo_mr_export.py")
+        job = verify_mirror_job(bridge, queue, key, args.job_id)
         payload = fetch_verified(bridge, queue, key, args.job_id,
                                  args.fetch_timeout, args.poll)
-        exported = verify_payload(payload)
+        exported = verify_payload(payload, job)
         if state.get("sourceSha") not in (None, exported["sourceSha"].lower()) \
                 or state.get("targetSha") not in (None, exported["targetSha"].lower()):
             raise Stop("state-mismatch", detail="sealed SHAs moved under one job id")

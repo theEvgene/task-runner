@@ -104,16 +104,19 @@ python scripts/mirror_mr/dell_mirror_import.py \
   [--github-dir <fixture-double-dir>] [--provenance fixture|live]
 ```
 
-What it proves, in order: the sealed result is MAC-bound to this job id
-(same-id resume after any unknown outcome); the bundle bytes, SHA-256,
+What it proves, in order: the sealed job parses to the exact
+`lenovo_mr_export.py --request mirror-request-<16hex>.json --request-sha256
+<64hex>` command with absolute paths (a substring marker never suffices;
+same-id resume after any unknown outcome) and the sealed token and artifact
+names match that request file; the bundle bytes, SHA-256,
 manifest entry, and manifest digest match the seal; both SHAs resolve in
 the mirror; the destination is currently `private`; the target ref is
 created or fast-forwarded and the source ref is created or already equal
 (anything else is `target-not-fast-forward` / `source-ref-conflict`,
-never a force-push; a dirty checked-out branch refuses as
-`worktree-dirty`); both refs push cleanly; the open PR for the head/base
+never a force-push; a branch checked out in any worktree refuses as
+`worktree-checked-out`, a dirty one as `worktree-dirty`); both refs push cleanly; the open PR for the head/base
 pair is found or created exactly once (a same-name PR pointing elsewhere
-is `pr-conflict`); the PR head SHA, the mirror base head, and the
+is `pr-conflict`); the PR head SHA and PR base SHA, the mirror base head, and the
 observed SHAs are all equal (`comparison: exact`, else `evidence-gap`
 instead of success). The non-secret `--state` resumes an interrupted run
 at `fetched` / `verified` / `refs-published` / `pr-created`.
