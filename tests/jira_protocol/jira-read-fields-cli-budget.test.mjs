@@ -187,5 +187,9 @@ test("read-fields CLI keeps exit codes and redaction with generous budget", asyn
     });
     assert.equal(generous.status, 0, generous.stderr || generous.stdout);
     assertStdoutWithinBudget(generous.stdout, 100000);
+    assert.doesNotMatch(
+      generous.stdout + generous.stderr,
+      /loopback-session-secret/
+    );
   });
 });
