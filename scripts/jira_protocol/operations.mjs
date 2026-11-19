@@ -1039,23 +1039,45 @@ export async function flagIssue(
   );
   const prefix = flag ? "(flag) Flag added" : "(flagoff) Flag removed";
   const body = `${prefix}\n\n${escaped}`;
-  const { payload } = await transport.request({
-    method: "POST",
-    path: "/rest/greenhopper/1.0/xboard/issue/flag/flag.json",
-    json: {
-      issueKeys: [key],
-      flag,
-      comment: body,
-      commentVisibility: "",
-      formToken: tokens[0],
-      temporaryAttachments: [],
-    },
-    mutation: true,
-  });
-  if (Array.isArray(payload?.errorMessages) && payload.errorMessages.length)
-    throw new JiraAmbiguousOutcome(
-      "flag response reported errors; verify before retrying"
-    );
+  let writePayload;
+  let writeUnreadable = false;
+  try {
+    ({ payload: writePayload } = await transport.request({
+      method: "POST",
+      path: "/rest/greenhopper/1.0/xboard/issue/flag/flag.json",
+      json: {
+        issueKeys: [key],
+        flag,
+        comment: body,
+        commentVisibility: "",
+        formToken: tokens[0],
+        temporaryAttachments: [],
+      },
+      mutation: true,
+    }));
+  } catch (error) {
+    // Reproducible boundary (no live server cause evidenced): a 2xx flag
+    // write with an empty or non-JSON body surfaces here as an unreadable
+    // success from JiraTransport. The write may have applied, so perform
+    // exactly one safe flag-only readback below; never retry the write.
+    if (
+      error instanceof JiraAmbiguousOutcome &&
+      /unreadable success/.test(error.message)
+    ) {
+      writeUnreadable = true;
+    } else {
+      throw error;
+    }
+  }
+  if (!writeUnreadable) {
+    if (
+      Array.isArray(writePayload?.errorMessages) &&
+      writePayload.errorMessages.length
+    )
+      throw new JiraAmbiguousOutcome(
+        "flag response reported errors; verify before retrying"
+      );
+  }
   try {
     const issue = await getIssueState(transport, key, ["customfield_10641"]);
     const after = await comments(transport, key);
