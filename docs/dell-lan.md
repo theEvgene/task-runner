@@ -18,8 +18,7 @@ publishes it through the owner-provided external flow. Content crosses on the
 owner-provided LAN share that also hosts the queue; authenticity travels
 inside the HMAC-signed job payload as SHA-256 values.
 
-Every step below is one exact command. Nothing here adds a transport, a
-cryptography variant, a publication receipt, or a second writer.
+The commands below use the existing transport and one writer.
 
 Canonical drivers: `scripts/dell_lan/` (stdlib only). Tests:
 `<python> -m unittest discover -s tests/dell_lan -v` (disposable fixtures:
