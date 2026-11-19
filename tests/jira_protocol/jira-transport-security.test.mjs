@@ -4,6 +4,7 @@ import {
   JiraAmbiguousOutcome,
   JiraTransport,
 } from "../../scripts/jira_protocol/protocol.mjs";
+import { createUnreadableMutationTransport } from "./helpers/ambiguous-write.mjs";
 
 test("post-write redirects and unreadable bodies retain unknown outcome", async () => {
   let calls = 0;
@@ -20,19 +21,7 @@ test("post-write redirects and unreadable bodies retain unknown outcome", async 
     transport.request({ method: "POST", path: "/write", mutation: true }),
     JiraAmbiguousOutcome
   );
-  const broken = new JiraTransport({
-    origin: "http://127.0.0.1:9123",
-    cookie: "fixture-cookie",
-    allowTestOrigin: true,
-    fetchImpl: async () => ({
-      status: 200,
-      ok: true,
-      url: "",
-      text: async () => {
-        throw new Error("broken");
-      },
-    }),
-  });
+  const broken = createUnreadableMutationTransport({ brokenBody: true }).transport;
   await assert.rejects(
     broken.request({ method: "POST", path: "/write", mutation: true }),
     JiraAmbiguousOutcome

@@ -2,51 +2,64 @@
 import assert from "node:assert/strict";
 import { flagIssue } from "../../scripts/jira_protocol/operations.mjs";
 import { JiraAmbiguousOutcome } from "../../scripts/jira_protocol/protocol.mjs";
+import {
+  assertSingleMutation,
+  createSequencedTransport,
+} from "./helpers/ambiguous-write.mjs";
+
+function flagPrefix(action) {
+  return action === "add" ? "(flag) Flag added" : "(flagoff) Flag removed";
+}
+
+function flagState(action, written) {
+  const flagged = written === (action === "add");
+  return flagged ? [{ value: "Impediment" }] : null;
+}
+
+function issueState(key, flagValue) {
+  return { response: { payload: { key, fields: { customfield_10641: flagValue } } } };
+}
+
+function commentsState(list) {
+  return {
+    response: {
+      payload: {
+        startAt: 0,
+        total: list.length,
+        comments: list,
+      },
+    },
+  };
+}
+
+function flagSteps(action, { afterComments }) {
+  const before = [{ id: "1", body: "old" }];
+  return [
+    issueState("LEL-1", flagState(action, false)),
+    commentsState(before),
+    { response: { payload: '<input name="formToken" value="secret">' } },
+    { response: { payload: {} } },
+    issueState("LEL-1", flagState(action, true)),
+    commentsState(afterComments),
+  ];
+}
+
+function flagBody(action) {
+  return `${flagPrefix(action)}\n\nA & B`;
+}
 
 for (const action of ["add", "remove"])
   test(`flag ${action} requires confirmation and verifies a new comment`, async () => {
-    const calls = [];
-    let written = false;
-    const transport = {
-      async request(request) {
-        calls.push(request);
-        if (request.path.endsWith("/comment"))
-          return {
-            payload: {
-              startAt: 0,
-              total: written ? 2 : 1,
-              comments: [
-                { id: "1", body: "old" },
-                ...(written
-                  ? [
-                      {
-                        id: "2",
-                        body: `${action === "add" ? "(flag) Flag added" : "(flagoff) Flag removed"}\n\nA & B`,
-                      },
-                    ]
-                  : []),
-              ],
-            },
-          };
-        if (request.path.includes("GHBulk"))
-          return { payload: '<input name="formToken" value="secret">' };
-        if (request.mutation) {
-          written = true;
-          return { payload: {} };
-        }
-        return {
-          payload: {
-            key: "LEL-1",
-            fields: {
-              customfield_10641:
-                written === (action === "add")
-                  ? [{ value: "Impediment" }]
-                  : null,
-            },
-          },
-        };
-      },
-    };
+    const afterComments = [
+      { id: "1", body: "old" },
+      { id: "2", body: flagBody(action) },
+    ];
+    const steps = [
+      ...flagSteps(action, { afterComments }),
+      issueState("LEL-1", flagState(action, true)),
+    ];
+    const { transport, calls, mutationCount, requestOrder } =
+      createSequencedTransport(steps);
     const input = { issueKey: "LEL-1", action, comment: " A & B " };
     const plan = await flagIssue(transport, input);
     assert.equal(calls.length, 0);
@@ -58,14 +71,21 @@ for (const action of ["add", "remove"])
     const write = calls.find((c) => c.mutation);
     assert.equal(
       write.json.comment,
-      `${action === "add" ? "(flag) Flag added" : "(flagoff) Flag removed"}\n\nA &amp; B`
+      `${flagPrefix(action)}\n\nA &amp; B`
     );
     assert.equal(write.json.formToken, "secret");
     await assert.rejects(
       flagIssue(transport, { ...input, confirm: plan.confirmation }),
       /already/
     );
-    assert.equal(calls.filter((c) => c.mutation).length, 1);
+    assert.equal(mutationCount(), 1);
+    assertSingleMutation(calls);
+    assert.deepEqual(requestOrder().slice(0, 4), [
+      "GET /rest/api/2/issue/LEL-1",
+      "GET /rest/api/2/issue/LEL-1/comment",
+      "GET /secure/GHBulkCommentDialog.jspa",
+      "POST /rest/greenhopper/1.0/xboard/issue/flag/flag.json",
+    ]);
   });
 
 test("flag rejects blank comments", async () => {
@@ -76,33 +96,17 @@ test("flag rejects blank comments", async () => {
 });
 
 test("flag reports an ambiguous outcome when the new comment is absent", async () => {
-  let written = false;
-  const transport = {
-    async request(request) {
-      if (request.path.endsWith("/comment"))
-        return { payload: { startAt: 0, total: 0, comments: [] } };
-      if (request.path.includes("GHBulk"))
-        return { payload: '<input name="formToken" value="secret">' };
-      if (request.mutation) {
-        written = true;
-        return { payload: {} };
-      }
-      return {
-        payload: {
-          key: "LEL-1",
-          fields: {
-            customfield_10641: written ? [{ value: "Impediment" }] : null,
-          },
-        },
-      };
-    },
-  };
+  const { transport, calls, mutationCount } = createSequencedTransport(
+    flagSteps("add", { afterComments: [] })
+  );
   const input = { issueKey: "LEL-1", action: "add", comment: "reason" };
   const plan = await flagIssue(transport, input);
   await assert.rejects(
     flagIssue(transport, { ...input, confirm: plan.confirmation }),
     { name: "JiraAmbiguousOutcome" }
   );
+  assert.equal(mutationCount(), 1);
+  assertSingleMutation(calls);
 });
 
 function unreadableWriteTransport({
