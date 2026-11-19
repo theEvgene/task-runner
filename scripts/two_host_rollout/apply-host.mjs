@@ -1,14 +1,22 @@
 #!/usr/bin/env node
 // One-host rollout step for issue #133. Runs locally on Dell and, via the
-// signed queue, on Lenovo with the identical argv. Never contacts the
-// network: the published revision arrives as --target-sha, origin/main is
-// read from the local clone only.
-//
+// signed queue, on Lenovo with the identical argv.
+// When --is-latest true the script runs `git fetch -q origin` itself with the
+// host git credentials and requires target == fetched origin/main: freshness
+// is proven by that authenticated fetch/readback, never by trusting the
+// caller flag. A pinned older revision (--is-latest false) never fetches for
+// freshness and never claims to be latest.
 // Latest main: clean checkout, main ancestry, finish on branch main with
-// HEAD == target, no detached HEAD. Older pinned revision: clean checkout,
-// detached HEAD at target, main ref untouched, never declared current.
-// Local changes, foreign installs, and divergent commits are never
-// overwritten. Secrets never enter argv or receipts.
+// HEAD == origin/main == target, no detached HEAD. Older pinned revision:
+// clean checkout, detached HEAD at target, main ref untouched, never declared
+// current.
+// Ownership is preflighted against the working tree before any checkout
+// mutation (same bytes the installer hashes), the target blobs are proven
+// present first, and ownership is revalidated immediately after mutation;
+// local changes, foreign installs, and divergent commits are never
+// overwritten and no destructive git reset is attempted. Post-mutation
+// install failures report the new HEAD readback instead of hiding the
+// mutation. Secrets never enter argv or receipts.
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -132,6 +140,44 @@ function git(args) {
   return execFileSync("git", args, { cwd: checkout, encoding: "utf8" }).trim();
 }
 
+function gitBytes(args) {
+  return execFileSync("git", args, { cwd: checkout });
+}
+
+function refreshGitReadback() {
+  try {
+    receipt.branch = (() => {
+      try {
+        return git(["symbolic-ref", "--short", "HEAD"]);
+      } catch {
+        return "detached";
+      }
+    })();
+  } catch {
+    receipt.branch = "detached";
+  }
+  try {
+    receipt.head = git(["rev-parse", "--verify", "HEAD"]).toLowerCase();
+  } catch {
+    /* keep previous head on read failure */
+  }
+  try {
+    receipt.clean = git(["status", "--porcelain"]) === "";
+  } catch {
+    /* keep previous clean flag */
+  }
+  try {
+    receipt.originMain = git(["rev-parse", "--verify", originRef]).toLowerCase();
+  } catch {
+    /* keep previous originMain */
+  }
+}
+
+function finishWithFreshReadback(code, verdict, reason, detail = "") {
+  refreshGitReadback();
+  finish(code, verdict, reason, `${detail}; branch=${receipt.branch} head=${receipt.head} clean=${receipt.clean}`.slice(0, 400));
+}
+
 function finish(code, verdict, reason, detail = "") {
   receipt.verdict = verdict;
   receipt.reason = reason;
@@ -164,53 +210,6 @@ function finish(code, verdict, reason, detail = "") {
   process.exit(code);
 }
 
-let branch = null;
-let head = null;
-let originMain = null;
-let clean = null;
-let ancestorOk = false;
-try {
-  try {
-    branch = git(["symbolic-ref", "--short", "HEAD"]);
-  } catch {
-    branch = null;
-  }
-  head = git(["rev-parse", "--verify", "HEAD"]).toLowerCase();
-  originMain = git(["rev-parse", "--verify", originRef]).toLowerCase();
-  clean = git(["status", "--porcelain"]) === "";
-  try {
-    execFileSync("git", ["merge-base", "--is-ancestor", head, target], {
-      cwd: checkout,
-    });
-    ancestorOk = true;
-  } catch {
-    ancestorOk = head === target;
-  }
-} catch (error) {
-  finish(1, "refused", "git-failed", error.message);
-}
-receipt.branch = branch ?? "detached";
-receipt.head = head;
-receipt.originMain = originMain;
-receipt.clean = clean;
-
-const plan = decideUpdate({
-  branch,
-  head,
-  originMain,
-  target,
-  dirty: !clean,
-  isLatest,
-  ancestorOk,
-});
-if (!plan.ok)
-  finish(
-    1,
-    "refused",
-    plan.reason,
-    `${plan.detail}; branch=${branch ?? "detached"} head=${head} clean=${clean}`
-  );
-
 function freshHashes() {
   const hashes = {};
   for (const relative of RUNTIME_FILES) {
@@ -221,23 +220,34 @@ function freshHashes() {
   return hashes;
 }
 
-function installedState() {
-  const names = [
-    "cli-create-lel-service-backlog-issue",
-    "cli-assign-jira-issue",
-    "cli-transition-jira-issue",
-    "cli-transition-jira-status",
-    "cli-extract-jira-content",
-    "cli-flag-jira-issue",
-    "cli-create-jira-subtask",
-    "cli-create-jira-subtasks",
-  ];
-  let fresh;
-  try {
-    fresh = freshHashes();
-  } catch {
-    return { state: "runtime-incomplete", names, fresh: null };
+function targetHashes() {
+  const hashes = {};
+  for (const relative of RUNTIME_FILES) {
+    let bytes;
+    try {
+      bytes = gitBytes(["show", `${target}:${relative}`]);
+    } catch {
+      throw new Error(`target is missing runtime file: ${relative}`);
+    }
+    hashes[relative] = createHash("sha256").update(bytes).digest("hex");
   }
+  return hashes;
+}
+
+const SKILL_NAMES = [
+  "cli-create-lel-service-backlog-issue",
+  "cli-assign-jira-issue",
+  "cli-transition-jira-issue",
+  "cli-transition-jira-status",
+  "cli-extract-jira-content",
+  "cli-flag-jira-issue",
+  "cli-create-jira-subtask",
+  "cli-create-jira-subtasks",
+];
+
+function assessSkills(fresh) {
+  const names = SKILL_NAMES;
+  if (!fresh) return { state: "runtime-incomplete", names, fresh: null };
   const states = [];
   for (const name of names) {
     const dir = join(skillsDir, name);
@@ -293,6 +303,115 @@ function installedState() {
   };
 }
 
+let branch = null;
+let head = null;
+let originMain = null;
+let clean = null;
+let ancestorOk = false;
+try {
+  try {
+    branch = git(["symbolic-ref", "--short", "HEAD"]);
+  } catch {
+    branch = null;
+  }
+  head = git(["rev-parse", "--verify", "HEAD"]).toLowerCase();
+  originMain = git(["rev-parse", "--verify", originRef]).toLowerCase();
+  clean = git(["status", "--porcelain"]) === "";
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", head, target], {
+      cwd: checkout,
+    });
+    ancestorOk = true;
+  } catch {
+    ancestorOk = head === target;
+  }
+} catch (error) {
+  finish(1, "refused", "git-failed", error.message);
+}
+// Freshness is enforced here by an authenticated fetch, never by trusting
+// the caller flag alone: when latest is requested the local origin/main ref
+// is refreshed from origin first, then target must equal the fetched tip.
+if (isLatest) {
+  try {
+    execFileSync("git", ["fetch", "-q", "origin"], {
+      cwd: checkout,
+      encoding: "utf8",
+    });
+  } catch (error) {
+    finish(1, "refused", "git-failed", `fetch origin failed: ${error.message}`);
+  }
+  try {
+    originMain = git(["rev-parse", "--verify", originRef]).toLowerCase();
+  } catch (error) {
+    finish(1, "refused", "git-failed", error.message);
+  }
+  // The target object may have arrived only via this fetch: recompute
+  // ancestry after the fetch instead of trusting the pre-fetch probe.
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", head, target], {
+      cwd: checkout,
+    });
+    ancestorOk = true;
+  } catch {
+    ancestorOk = head === target;
+  }
+}
+receipt.branch = branch ?? "detached";
+receipt.head = head;
+receipt.originMain = originMain;
+receipt.clean = clean;
+
+// Target must carry the runtime: read the target blobs without touching the
+// checkout. A target missing runtime refuses before any mutation.
+try {
+  targetHashes();
+} catch (error) {
+  finish(1, "refused", "git-failed", error.message);
+}
+
+// Preflight ownership against the current checkout BEFORE any mutation.
+// Foreign (no manifest) or partially installed skills refuse here with the
+// checkout untouched. Hashes come from the working tree (the same bytes the
+// installer hashes), so CRLF-normalized checkouts do not false-positive:
+// a skill current for the old runtime but stale for the new target passes
+// here and is caught by the post-mutation revalidation with the new HEAD
+// visible. Missing skills proceed to mutation then install.
+let currentFresh;
+try {
+  currentFresh = freshHashes();
+} catch {
+  finish(1, "refused", "git-failed", "runtime incomplete before update");
+}
+const preflight = assessSkills(currentFresh);
+if (
+  preflight.state === "ownership-conflict" ||
+  preflight.state === "partial-install"
+) {
+  finish(
+    1,
+    "refused",
+    preflight.state,
+    `${preflight.detail ?? "skills dir is not managed"}; branch=${branch ?? "detached"} head=${head} clean=${clean} (no checkout change)`
+  );
+}
+
+const plan = decideUpdate({
+  branch,
+  head,
+  originMain,
+  target,
+  dirty: !clean,
+  isLatest,
+  ancestorOk,
+});
+if (!plan.ok)
+  finish(
+    1,
+    "refused",
+    plan.reason,
+    `${plan.detail}; branch=${branch ?? "detached"} head=${head} clean=${clean}`
+  );
+
 try {
   if (plan.action === "fast-forward") {
     execFileSync("git", ["merge", "--ff-only", target], {
@@ -315,7 +434,10 @@ try {
     });
   }
 } catch (error) {
-  finish(
+  // A failed mutation may still have moved HEAD (e.g. checkout-main-ff
+  // checked out main before merge failed): report the actual readback,
+  // never a destructive reset.
+  finishWithFreshReadback(
     1,
     "refused",
     isLatest ? "diverged" : "git-failed",
@@ -323,20 +445,29 @@ try {
   );
 }
 
-const install = installedState();
+// Revalidate immediately after the checkout mutation: the target runtime
+// may differ from the pre-mutation checkout, so a stale or foreign install
+// that passed no earlier check refuses here with the new HEAD visible.
+let postFresh;
+try {
+  postFresh = freshHashes();
+} catch {
+  finishWithFreshReadback(1, "refused", "git-failed", "runtime incomplete after update");
+}
+const postCheck = assessSkills(postFresh);
 if (
-  install.state === "ownership-conflict" ||
-  install.state === "partial-install" ||
-  install.state === "runtime-incomplete"
+  postCheck.state === "ownership-conflict" ||
+  postCheck.state === "partial-install" ||
+  postCheck.state === "runtime-incomplete"
 ) {
-  finish(
+  finishWithFreshReadback(
     1,
     "refused",
-    install.state === "runtime-incomplete" ? "git-failed" : install.state,
-    install.detail ?? "skills dir is not managed"
+    postCheck.state === "runtime-incomplete" ? "git-failed" : postCheck.state,
+    postCheck.detail ?? "skills dir is not managed"
   );
 }
-if (install.state === "missing") {
+if (postCheck.state === "missing") {
   mkdirSync(skillsDir, { recursive: true });
   const run = spawnSync(
     process.execPath,
@@ -344,7 +475,10 @@ if (install.state === "missing") {
     { encoding: "utf8" }
   );
   if (run.status !== 0) {
-    finish(
+    // The checkout already moved: surface the new HEAD, do not reset it
+    // away. Rerun of the same revision is safe after fixing the installer
+    // input; no automatic rollback is attempted.
+    finishWithFreshReadback(
       1,
       "refused",
       "install-failed",
@@ -361,7 +495,7 @@ const leftovers = readdirSync(skillsDir).filter(
   (e) => e.includes(".install-") || e.endsWith(".bak")
 );
 if (leftovers.length > 0)
-  finish(
+  finishWithFreshReadback(
     1,
     "refused",
     "install-failed",
@@ -379,13 +513,16 @@ try {
   receipt.originMain = git(["rev-parse", "--verify", originRef]).toLowerCase();
   if (
     isLatest &&
-    (receipt.branch !== "main" || receipt.head !== target || !receipt.clean)
+    (receipt.branch !== "main" ||
+      receipt.head !== target ||
+      receipt.originMain !== target ||
+      !receipt.clean)
   ) {
     finish(
       1,
       "refused",
       "revision-mismatch",
-      `after update: branch=${receipt.branch} head=${receipt.head} clean=${receipt.clean}`
+      `after update: branch=${receipt.branch} head=${receipt.head} originMain=${receipt.originMain} clean=${receipt.clean}`
     );
   }
   if (!isLatest && (receipt.head !== target || !receipt.clean)) {
@@ -396,15 +533,21 @@ try {
       `after update: branch=${receipt.branch} head=${receipt.head} clean=${receipt.clean}`
     );
   }
-  const final = installedState();
+  let finalFresh;
+  try {
+    finalFresh = freshHashes();
+  } catch {
+    finish(1, "refused", "git-failed", "runtime incomplete after update");
+  }
+  const final = assessSkills(finalFresh);
   if (final.state !== "current")
-    finish(
+    finishWithFreshReadback(
       1,
       "refused",
       "install-failed",
       `skills not current after install: ${final.state}`
     );
-  receipt.skills = { dir: skillsDir, state: "current", files: install.names };
+  receipt.skills = { dir: skillsDir, state: "current", files: SKILL_NAMES };
 } catch (error) {
   finish(1, "refused", "git-failed", error.message);
 }

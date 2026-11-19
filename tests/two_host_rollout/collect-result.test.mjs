@@ -131,6 +131,7 @@ function hostReceipt(over = {}) {
     isLatest: true,
     branch: "main",
     head: t,
+    originMain: t,
     clean: true,
     skills: { state: "current" },
     ...over,

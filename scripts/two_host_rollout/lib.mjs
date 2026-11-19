@@ -190,8 +190,12 @@ export function verifyLenovoPayload(payload, { target, isLatest }) {
     return { ok: true, refused: true, receipt };
   if (String(receipt.head ?? "").toLowerCase() !== t || receipt.clean !== true)
     return fail("revision-mismatch", "receipt head/clean mismatch");
-  if (Boolean(isLatest) && receipt.branch !== "main")
-    return fail("wrong-branch", "latest receipt is not on main");
+  if (Boolean(isLatest)) {
+    if (receipt.branch !== "main")
+      return fail("wrong-branch", "latest receipt is not on main");
+    if (String(receipt.originMain ?? "").toLowerCase() !== t)
+      return fail("revision-mismatch", "latest receipt originMain != target");
+  }
   if (receipt.skills?.state !== "current")
     return fail(
       "skills-not-current",

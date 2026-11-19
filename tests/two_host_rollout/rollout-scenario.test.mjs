@@ -106,6 +106,7 @@ test("verify-readback accepts a matching pair and rejects drift", () => {
     isLatest: true,
     branch,
     head: target,
+    originMain: target,
     clean: true,
     skills: { state: "current" },
   });

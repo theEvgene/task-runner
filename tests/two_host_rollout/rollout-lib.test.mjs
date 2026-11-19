@@ -158,6 +158,7 @@ test("verified lenovo payload: transport first, receipt authoritative", () => {
     isLatest: true,
     branch: "main",
     head: t,
+    originMain: t,
     clean: true,
     skills: { state: "current" },
     ...over,
@@ -221,6 +222,15 @@ test("verified lenovo payload: transport first, receipt authoritative", () => {
       { target: t, isLatest: true }
     ).reason,
     "wrong-branch"
+  );
+  assert.equal(
+    verifyLenovoPayload(
+      { status: "completed", exit_code: 0, timed_out: false,
+        output_truncated: false,
+        stdout: JSON.stringify(host({ originMain: "b".repeat(40) })) },
+      { target: t, isLatest: true }
+    ).reason,
+    "revision-mismatch"
   );
   assert.equal(
     verifyLenovoPayload(

@@ -102,6 +102,16 @@ for (const [index, host] of hosts.entries()) {
     );
     process.exit(1);
   }
+  if (isLatest && String(host.originMain ?? "").toLowerCase() !== target) {
+    console.log(
+      JSON.stringify({
+        verdict: "mismatch",
+        reason: "revision-mismatch",
+        detail: `${label}: originMain != target`,
+      })
+    );
+    process.exit(1);
+  }
   if (host.skills?.state !== "current") {
     console.log(
       JSON.stringify({
