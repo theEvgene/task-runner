@@ -24,11 +24,12 @@ import {
   parseBatchFile,
 } from "./jira_protocol/batch.mjs";
 import { extractIssue } from "./jira_protocol/extract.mjs";
+import { findSiblingIssues } from "./jira_protocol/siblings.mjs";
 
 function usage(message) {
   throw new JiraProtocolError(
     message ??
-      "usage: jira-protocol <extract|detail-view|transitions|transition|transition-to-status|assign|flag|create-epic|create-subtask|create-subtasks> [options]"
+      "usage: jira-protocol <extract|siblings|detail-view|transitions|transition|transition-to-status|assign|flag|create-epic|create-subtask|create-subtasks> [options]"
   );
 }
 
@@ -79,7 +80,9 @@ function only(values, allowed) {
   const accepted = new Set([...allowed, "help"]);
   for (const key of Object.keys(values)) {
     if (
-      (key === "field" || key === "allow-duplicate" || key === "resolve-unknown") &&
+      (key === "field" ||
+        key === "allow-duplicate" ||
+        key === "resolve-unknown") &&
       values[key].length === 0
     )
       continue;
@@ -123,6 +126,15 @@ async function main() {
     const result = await extractIssue(transport(), values.issue, {
       pageSize: values["page-size"],
       maxPages: values["max-pages"],
+    });
+    emit(result);
+    return result.completeness.comprehensive ? 0 : 6;
+  }
+  if (command === "siblings") {
+    only(values, ["issue", "assignee"]);
+    const result = await findSiblingIssues(transport(), {
+      issueKey: values.issue,
+      assignee: values.assignee,
     });
     emit(result);
     return result.completeness.comprehensive ? 0 : 6;
@@ -189,7 +201,11 @@ async function main() {
   }
   if (command === "flag") {
     only(values, ["issue", "action", "comment", "comment-file", "confirm"]);
-    const comment = await resolveFileBackedText(values, "comment", "comment-file");
+    const comment = await resolveFileBackedText(
+      values,
+      "comment",
+      "comment-file"
+    );
     const result = await flagIssue(transport(), {
       issueKey: values.issue,
       action: values.action,
@@ -208,7 +224,11 @@ async function main() {
       "confirm",
       "field",
     ]);
-    const summary = await resolveFileBackedText(values, "summary", "summary-file");
+    const summary = await resolveFileBackedText(
+      values,
+      "summary",
+      "summary-file"
+    );
     const description = await resolveFileBackedText(
       values,
       "description",
@@ -235,7 +255,11 @@ async function main() {
       "confirm",
       "field",
     ]);
-    const summary = await resolveFileBackedText(values, "summary", "summary-file");
+    const summary = await resolveFileBackedText(
+      values,
+      "summary",
+      "summary-file"
+    );
     const description = await resolveFileBackedText(
       values,
       "description",

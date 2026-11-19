@@ -18,6 +18,7 @@ const names = [
   "cli-transition-jira-issue",
   "cli-transition-jira-status",
   "cli-extract-jira-content",
+  "cli-find-sibling-issues",
   "cli-flag-jira-issue",
   "cli-create-jira-subtask",
   "cli-create-jira-subtasks",
@@ -65,7 +66,10 @@ test("transition does not invent workflow paths, columns, or form submission", a
 
 test("status route uses only live edges and re-discovers every step", async () => {
   const text = await readFile(skill(names[3]), "utf8");
-  assert.match(text, /jira-protocol\.mjs transition-to-status[\s\\]+--issue LEL-1234/);
+  assert.match(
+    text,
+    /jira-protocol\.mjs transition-to-status[\s\\]+--issue LEL-1234/
+  );
   assert.match(text, /--confirm <confirmation>/);
   assert.match(text, /never synthesizes a path from a static map/);
   assert.match(text, /re-discovers before every step/);
@@ -87,8 +91,24 @@ test("extract binds the REST command, completeness ledger, and external gaps", a
   assert.match(text, /HTTP 401\/403 is terminal/);
 });
 
-test("flag binds the required comment, refusal replay, and recovery boundary", async () => {
+test("sibling search binds exact assignee, short entries, and incompleteness", async () => {
   const text = await readFile(skill(names[5]), "utf8");
+  assert.match(text, /jira-protocol\.mjs siblings --issue LEL-1234/);
+  assert.match(text, /--assignee/);
+  assert.match(text, /never listed as its own sibling/);
+  assert.match(text, /assignee\.name/);
+  assert.match(text, /assignee\.key/);
+  assert.match(text, /unassigned/);
+  assert.match(text, /unreadable/);
+  assert.match(text, /access_denied/);
+  assert.match(text, /not_found_or_not_visible/);
+  assert.match(text, /completeness\.comprehensive/);
+  assert.match(text, /401\/403 on the source read is terminal/);
+  assert.match(text, /never merge these short entries/);
+});
+
+test("flag binds the required comment, refusal replay, and recovery boundary", async () => {
+  const text = await readFile(skill(names[6]), "utf8");
   assert.match(text, /jira-protocol\.mjs flag[\s\\]+--issue LEL-1234/);
   assert.match(text, /--comment-file/);
   assert.match(text, /--confirm <confirmation>/);
@@ -100,7 +120,7 @@ test("flag binds the required comment, refusal replay, and recovery boundary", a
 });
 
 test("subtask binds parent linkage, confirmation, readback, and recovery boundary", async () => {
-  const text = await readFile(skill(names[6]), "utf8");
+  const text = await readFile(skill(names[7]), "utf8");
   assert.match(text, /duplicate search: unavailable in this CLI/);
   assert.match(text, /MissingRequiredFields/);
   assert.match(text, /--confirm <confirmation>/);
@@ -111,8 +131,11 @@ test("subtask binds parent linkage, confirmation, readback, and recovery boundar
 });
 
 test("subtask batch matches live children and resumes without duplicates", async () => {
-  const text = await readFile(skill(names[7]), "utf8");
-  assert.match(text, /jira-protocol\.mjs create-subtasks[\s\\]+--parent LEL-1234/);
+  const text = await readFile(skill(names[8]), "utf8");
+  assert.match(
+    text,
+    /jira-protocol\.mjs create-subtasks[\s\\]+--parent LEL-1234/
+  );
   assert.match(text, /--confirm <confirmation>/);
   assert.match(text, /--allow-duplicate/);
   assert.match(text, /UnknownOutcome/);
@@ -136,6 +159,7 @@ test("installer source names the actual runtime and records its hashes", async (
     "scripts/jira_protocol/batch.mjs",
     "scripts/jira_protocol/handoff.mjs",
     "scripts/jira_protocol/extract.mjs",
+    "scripts/jira_protocol/siblings.mjs",
     "scripts/jira_protocol/html-form.mjs",
     "docs/jira-protocol.md",
     "docs/jira-protocol-handoff.md",

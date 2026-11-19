@@ -1,0 +1,4 @@
+interface:
+  display_name: "Find Sibling Issues (CLI)"
+  short_description: "List same-parent subtasks for one exact assignee login"
+  default_prompt: "Use $cli-find-sibling-issues to list the sibling subtasks assigned to one login, reporting incomplete or unreadable children."
