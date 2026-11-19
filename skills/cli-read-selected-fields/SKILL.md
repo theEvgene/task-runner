@@ -26,10 +26,12 @@ and `subtasks`. Unknown names are rejected with the supported list. The
 command requests only the mapped REST fields
 (`flagged` reads `customfield_10641`) from one issue resource, never pages
 comments, and never extracts the parent issue. `commentsFetched` is always
-false; `parentFetched` is true only when `parent` was requested. For a
-queue-limited transport add `--max-bytes N`; exceeding it emits a truncated
+false; `parentFetched` is true only when `parent` was requested and observed
+(unobserved parent keeps it false). For a
+queue-limited transport add `--max-bytes N` (actual UTF-8 stdout bytes,
+compact JSON plus newline); exceeding it emits a truncated
 skeleton with `completeness.truncated: true` instead of a cut payload
-claimed as complete.
+claimed as complete, and the command fails when even the skeleton cannot fit.
 
 ## Read the receipt
 

@@ -22,6 +22,10 @@ export const FIELD_REST_MAP = Object.freeze({
 
 const FLAG_FIELD = "customfield_10641";
 
+function utf8Bytes(text) {
+  return Buffer.byteLength(text, "utf8");
+}
+
 function incomplete(reason, details = {}) {
   return { status: "incomplete", reason, ...details };
 }
@@ -288,7 +292,9 @@ export async function readCompactFields(
       out[name] = { state: shaped.state, value: shaped.value };
       categories[name] = complete();
     } else {
-      out[name] = { state: "unobserved", value: null };
+      // Preserve observable valid items (e.g. valid subtasks alongside
+      // malformed children) while still marking the category incomplete.
+      out[name] = { state: "unobserved", value: shaped.value ?? null };
       const reason =
         shaped.reason ?? "field_unobserved_permission_or_configuration";
       categories[name] = incomplete(reason, {
@@ -301,6 +307,9 @@ export async function readCompactFields(
   }
   const comprehensive = Object.values(categories).every(categoryComplete);
   const restQuery = restFields.join(",");
+  const parentFetched =
+    requested.includes("parent") &&
+    categories.parent?.status === "complete";
   return {
     schema: "jira-protocol-result/2",
     operation: "read-fields",
@@ -315,7 +324,7 @@ export async function readCompactFields(
     requested,
     fields: out,
     commentsFetched: false,
-    parentFetched: requested.includes("parent"),
+    parentFetched,
     completeness: {
       comprehensive,
       categories,
@@ -329,7 +338,7 @@ export async function readCompactFields(
     provenance: {
       issueResource: `/rest/api/2/issue/{key}?fields=${restQuery}`,
       commentsFetched: false,
-      parentFetched: requested.includes("parent"),
+      parentFetched,
       parentDepth: 0,
       attachmentBodiesFetched: false,
       wikiFetched: false,
@@ -346,7 +355,10 @@ export function formatForQueue(result, { maxBytes } = {}) {
   if (limit !== Number.POSITIVE_INFINITY && limit <= 0)
     throw new JiraProtocolError("max-bytes must be a positive integer");
   const full = JSON.stringify(result);
-  if (full.length <= limit) return { json: full, truncated: false };
+  // Measure UTF-8 bytes, not UTF-16 code units: the queue budget applies to
+  // the actual bytes written. Reserve one byte for the trailing newline the
+  // CLI emits so the final stdout payload obeys the budget.
+  if (utf8Bytes(full) + 1 <= limit) return { json: full, truncated: false };
   const skeleton = {
     ...result,
     fields: Object.fromEntries(
@@ -378,7 +390,12 @@ export function formatForQueue(result, { maxBytes } = {}) {
       ],
     },
   };
-  return { json: JSON.stringify(skeleton), truncated: true };
+  const skeletonJson = JSON.stringify(skeleton);
+  if (utf8Bytes(skeletonJson) + 1 > limit)
+    throw new JiraProtocolError(
+      `truncated receipt still exceeds max-bytes budget (${utf8Bytes(skeletonJson) + 1} > ${limit}); refusing to emit oversized output`
+    );
+  return { json: skeletonJson, truncated: true };
 }
 
 export { FLAG_FIELD };

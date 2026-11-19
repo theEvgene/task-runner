@@ -154,13 +154,22 @@ async function main() {
       if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)
         throw new JiraProtocolError("max-bytes must be a positive integer");
       const { json, truncated } = formatForQueue(result, { maxBytes });
+      // Write compact JSON so the measured UTF-8 bytes match the actual
+      // stdout payload; pretty-printing would inflate past the budget.
+      const output = `${json}\n`;
+      if (Buffer.byteLength(output, "utf8") > maxBytes)
+        throw new JiraProtocolError(
+          "queue output still exceeds max-bytes budget; refusing to emit oversized output"
+        );
       if (truncated) {
         process.stderr.write(
           `jira-protocol read-fields: output truncated at ${maxBytes} bytes; receipt is incomplete\n`
         );
-        process.stdout.write(`${JSON.stringify(JSON.parse(json), null, 2)}\n`);
+        process.stdout.write(output);
         return 6;
       }
+      process.stdout.write(output);
+      return result.completeness.comprehensive ? 0 : 6;
     }
     emit(result);
     return result.completeness.comprehensive ? 0 : 6;

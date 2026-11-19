@@ -182,8 +182,9 @@ test("queue truncation never claims completeness and keeps no secrets", () => {
   };
   const kept = formatForQueue(result, { maxBytes: 100000 });
   assert.equal(kept.truncated, false);
-  const cut = formatForQueue(result, { maxBytes: 10 });
+  const cut = formatForQueue(result, { maxBytes: 600 });
   assert.equal(cut.truncated, true);
+  assert.ok(Buffer.byteLength(`${cut.json}\n`, "utf8") <= 600);
   const skeleton = JSON.parse(cut.json);
   assert.equal(skeleton.completeness.comprehensive, false);
   assert.equal(skeleton.completeness.truncated, true);
@@ -196,4 +197,93 @@ test("queue truncation never claims completeness and keeps no secrets", () => {
       entry.startsWith("output-truncated-at-")
     )
   );
+  assert.throws(() => formatForQueue(result, { maxBytes: 10 }), /exceeds max-bytes/);
+});
+
+test("queue budget uses UTF-8 bytes and fails explicitly when skeleton cannot fit", () => {
+  const cyrillic = "а".repeat(100);
+  assert.equal(cyrillic.length, 100);
+  assert.equal(Buffer.byteLength(cyrillic, "utf8"), 200);
+  const result = {
+    schema: "jira-protocol-result/2",
+    operation: "read-fields",
+    dataContract: { kind: "compact-selected-fields", comprehensive: true },
+    key: "LEL-42",
+    requested: ["summary"],
+    fields: { summary: { state: "value", value: cyrillic } },
+    completeness: {
+      comprehensive: true,
+      categories: { summary: { status: "complete" } },
+      gaps: [],
+      visibilityLimits: [],
+      truncated: false,
+      omitted: [],
+    },
+  };
+  const full = JSON.stringify(result);
+  // 100 Cyrillic chars: UTF-16 length fits 550 but UTF-8 bytes do not.
+  assert.ok(full.length <= 550);
+  assert.ok(Buffer.byteLength(full, "utf8") + 1 > 550);
+  const cut = formatForQueue(result, { maxBytes: 550 });
+  assert.equal(cut.truncated, true);
+  assert.ok(Buffer.byteLength(`${cut.json}\n`, "utf8") <= 550);
+  assert.equal(JSON.parse(cut.json).completeness.truncated, true);
+  // Budget 500 cannot even fit the skeleton: fail explicitly, never claim complete.
+  assert.throws(() => formatForQueue(result, { maxBytes: 500 }), /exceeds max-bytes/);
+});
+
+test("parentFetched is false when requested parent is unobserved", async () => {
+  const transport = transportFor(basePayload({ summary: "Child" }));
+  const result = await readCompactFields(transport, {
+    issueKey: "LEL-42",
+    fields: "summary,parent",
+  });
+  assert.deepEqual(result.fields.parent, { state: "unobserved", value: null });
+  assert.equal(result.parentFetched, false);
+  assert.equal(result.provenance.parentFetched, false);
+  assert.equal(result.completeness.comprehensive, false);
+  assert.ok(
+    result.completeness.gaps.some((entry) => entry.category === "parent")
+  );
+});
+
+test("parentFetched stays true when null parent proves absence", async () => {
+  const transport = transportFor(basePayload({ summary: "Top", parent: null }));
+  const result = await readCompactFields(transport, {
+    issueKey: "LEL-42",
+    fields: "summary,parent",
+  });
+  assert.deepEqual(result.fields.parent, { state: "empty", value: null });
+  assert.equal(result.parentFetched, true);
+  assert.equal(result.provenance.parentFetched, true);
+  assert.equal(result.completeness.comprehensive, true);
+});
+
+test("malformed child preserves valid subtasks while marking incomplete", async () => {
+  const transport = transportFor(
+    basePayload({
+      subtasks: [
+        {
+          key: "LEL-43",
+          fields: { summary: "Sub one", status: { name: "Open" } },
+        },
+        { key: null, fields: { summary: "Bad" } },
+      ],
+    })
+  );
+  const result = await readCompactFields(transport, {
+    issueKey: "LEL-42",
+    fields: "subtasks",
+  });
+  assert.equal(result.fields.subtasks.state, "unobserved");
+  assert.deepEqual(result.fields.subtasks.value, [
+    { key: "LEL-43", summary: "Sub one", status: "Open" },
+  ]);
+  assert.equal(result.completeness.comprehensive, false);
+  const gap = result.completeness.gaps.find(
+    (entry) => entry.category === "subtasks"
+  );
+  assert.ok(gap);
+  assert.equal(gap.reason, "malformed_child_entries");
+  assert.deepEqual(gap.invalidIndexes, [1]);
 });
