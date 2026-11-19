@@ -182,18 +182,30 @@ class ConsumerBundleVerifyTests(unittest.TestCase):
         self.assertNotIn("import", result)
 
     def test_no_toolkit_fallback_in_default_resolution(self):
-        source = (SCRIPTS / "dell_lan_common.py").read_text(encoding="utf-8")
-        for name in ("default_bridge_dir", "default_flow_dir"):
-            start = source.index(f"def {name}(")
-            try:
-                end = source.index("\ndef ", start + 1)
-            except ValueError:
-                end = len(source)
-            body = source[start:end]
-            self.assertNotIn("personal-agent-toolkit", body,
-                             f"{name} must not fall back into another checkout")
-            self.assertNotIn("t-bank", body,
-                             f"{name} must not fall back into another checkout")
+        # The defaults live in dell_lan_paths.py after the file token guard
+        # split; dell_lan_common.py re-exports them. Check every module
+        # that defines them so the split cannot hide a fallback.
+        candidates = [SCRIPTS / "dell_lan_paths.py", SCRIPTS / "dell_lan_common.py"]
+        found = 0
+        for path in candidates:
+            if not path.is_file():
+                continue
+            source = path.read_text(encoding="utf-8")
+            for name in ("default_bridge_dir", "default_flow_dir"):
+                start = source.find(f"def {name}(")
+                if start == -1:
+                    continue
+                found += 1
+                try:
+                    end = source.index("\ndef ", start + 1)
+                except ValueError:
+                    end = len(source)
+                body = source[start:end]
+                self.assertNotIn("personal-agent-toolkit", body,
+                                 f"{name} in {path.name} must not fall back into another checkout")
+                self.assertNotIn("t-bank", body,
+                                 f"{name} in {path.name} must not fall back into another checkout")
+        self.assertGreater(found, 0, "default resolvers must be defined")
 
 
 if __name__ == "__main__":
