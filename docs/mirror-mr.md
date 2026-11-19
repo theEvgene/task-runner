@@ -155,6 +155,79 @@ URL and number, and both SHAs. Exit `0` mirrored, `1` refused, `2` usage,
   Strip mirror/project names before pasting into an audience not entitled
   to the remote; SHAs, verdicts, and digests carry no topology.
 
+## Merged-MR historical comparison (issue #143)
+
+The open route above refuses a merged MR (`mr-not-open` on Lenovo). For an
+already merged MR whose change the default branch already contains, run the
+historical route instead: it replays the original base..head change on
+uniquely named review-only refs and opens one PR labelled as a review
+copy. Transport, privacy, idempotency, and recovery guarantees are the
+same as the open route; the destination's default branch is never moved
+and this PR must never be merged.
+
+Request with `--mode merged` (default stays `open`, which preserves the
+open-route contract byte for byte):
+
+```text
+python scripts/mirror_mr/dell_mirror_request.py \
+  --mr-url https://<host>/<group/project>/-/merge_requests/<iid> \
+  --mapping-file <abs-mapping.json> --token <16hex> \
+  --shared <lan-share> --lenovo-checkout <abs-lenovo-checkout> \
+  --python <abs-python-on-lenovo> --mode merged \
+  [--lenovo-flow-dir <abs-reader-seam>] \
+  --request-name mirror-request-<16hex>.json --command-file <command-file>
+```
+
+The sealed job runs `scripts/mirror_mr/lenovo_mr_history_export.py`: it
+reads the merged MR (`read_merged_mr` from `--flow-dir`, else the `glab`
+fallback; an open MR refuses as `mr-not-merged` so the two routes cannot
+be confused), retrieves the historical base/head objects plus any
+recorded squash commit even when the source branch was deleted, and
+exports them in one hashed bundle. The authoritative comparison is the
+unified diff of the original head against its base plus the file list,
+hashed as `authoritativeDigest`. A missing base, a missing head with no
+retrievable object, or an empty comparison refuses as
+`history-unavailable`. A refusal deletes the staged bundle and manifest.
+
+Import with `scripts/mirror_mr/dell_mr_history_import.py` (same flags as
+the open-route import, same `--state` resume and `--github-dir` seam):
+
+- It binds the sealed job to the exact `lenovo_mr_history_export.py`
+  command (an open-route job refuses as `queue-job-mismatch`), verifies
+  bundle bytes, SHA-256, manifest entry, and manifest digest, and fetches
+  every wanted SHA into the mirror.
+- It recomputes `git diff base..head` (paths plus patch bytes) in the
+  mirror and compares the digest and file list to `authoritativeDigest`.
+  A recorded squash commit is recomputed the same way and is never
+  assumed identical: the published representation is `original-head` when
+  the head matches, `squash` only when the head does not match and the
+  squash does, otherwise `evidence-gap` instead of success.
+- It publishes `mirror-mr/<iid>/base-<short>` and
+  `mirror-mr/<iid>/head-<short>` (deterministic per MR and history, so a
+  rerun reuses them). An existing ref at another SHA is
+  `history-ref-conflict`, never an overwrite; a checked-out branch
+  refuses as `worktree-checked-out`. The default branch is untouched.
+- The PR title is `[Review copy] MR !<iid> (merged): <subject>` and the
+  body names the original MR URL, merged status, historical base/head
+  SHAs, the squash SHA when recorded, the representation used, the review
+  refs, the authoritative digest and file list, and the do-not-merge
+  notice. Adoption and readback (PR state, head/base ref names and OIDs,
+  mirror refs, recomputed diff) mirror the open route; a mismatch is
+  `pr-conflict` or `evidence-gap`, never a second PR.
+
+Completion: receipt `mirror-mr-history-receipt/1` with `verdict: mirrored`
+(or `reconciled`), `representation: original-head|squash`,
+`historicalBase`, `historicalHead`, `authoritativeDigest`,
+`comparison: exact`, PR URL/number, head/base refs, and `ancestry`.
+Exit `0` mirrored, `1` refused, `2` usage, `3` unknown (same id resumes;
+`pr-write-unknown` after a partial write reconciles the persisted PR).
+
+Limitations: history the connected host can no longer retrieve (pruned
+objects, an unreadable MR, or no retrievable equivalent) stops without
+publishing; a squash that cannot be proven equivalent is reported, not
+used; the route never moves the default branch, never force-pushes, and
+never merges the review PR.
+
 ## Local verification
 
 ```text
@@ -166,4 +239,7 @@ real signed queue, fixture reader/doubles at the documented seams
 (`gitlab_mr_reader`, `github_ops`); no network, no live services. Covers
 the open-MR path, identity/digest verification, repeated invocation,
 stale/moved refs, public destination, non-fast-forward/conflicting refs,
-interrupted writes, and unknown same-ID jobs.
+interrupted writes, and unknown same-ID jobs, plus the merged-MR history
+path: deleted source ref, squash/non-squash histories, a differing
+squash, missing objects, idempotent rerun, conflicting history refs,
+interrupted writes, unknown same-ID jobs, and open-route job isolation.

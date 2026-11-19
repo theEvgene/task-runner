@@ -1,10 +1,11 @@
 """Fixture GitLab MR reader seam for the mirror-mr tests (never production).
 
 Implements the narrow surface `lenovo_mr_export.py` consumes from
-`--flow-dir`: `read_open_mr(host, project, iid)` returns the MR record for
-one integer IID from the disposable fixture state file
-(`MIRROR_FIXTURE_GITLAB`). The record carries snake_case fields; the
-driver normalises them. Raises `ReaderError` for anything unreadable.
+`--flow-dir` (`read_open_mr`) and the surface
+`lenovo_mr_history_export.py` consumes (`read_merged_mr`). Both return
+the MR record for one integer IID from the disposable fixture state
+file (`MIRROR_FIXTURE_GITLAB`). Records carry snake_case fields; the
+drivers normalise them. Raises `ReaderError` for anything unreadable.
 """
 
 from __future__ import annotations
@@ -29,6 +30,18 @@ def _state() -> dict:
 
 
 def read_open_mr(host: str, project: str, iid: int) -> dict:
+    state = _state()
+    if host != state.get("host") or project != state.get("project"):
+        raise ReaderError(f"unknown fixture target: {host}/{project}")
+    record = state.get("mrs", {}).get(str(iid))
+    if not isinstance(record, dict):
+        raise ReaderError(f"unknown fixture MR !{iid}")
+    return record
+
+
+def read_merged_mr(host: str, project: str, iid: int) -> dict:
+    """The merged-MR record for the historical route (issue #143)."""
+
     state = _state()
     if host != state.get("host") or project != state.get("project"):
         raise ReaderError(f"unknown fixture target: {host}/{project}")

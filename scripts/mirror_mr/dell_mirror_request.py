@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dell side: write one mirror request for an open GitLab MR (issue #142).
+"""Dell side: write one mirror request for an open or merged GitLab MR.
 
 Validates the MR URL, the repository-to-mirror mapping, and the request
 file layout, then writes the request JSON on the shared LAN path and the
@@ -53,6 +53,9 @@ def parse(argv=None):
                         help="UTF-8 command file for the bridge")
     parser.add_argument("--repo", default=None,
                         help="Dell checkout that must not contain the shared dir")
+    parser.add_argument("--mode", default="open", choices=("open", "merged"),
+                        help="open: current revisions (issue #142); "
+                             "merged: historical comparison (issue #143)")
     return parser.parse_args(argv)
 
 
@@ -84,7 +87,10 @@ def validated(args) -> tuple[dict, Path, Path]:
     if not safe_name(args.request_name):
         raise Stop("usage", code=2, detail="--request-name must be one contained file name")
     token = args.token
-    request = {
+    mode = str(getattr(args, "mode", "open") or "open")
+    driver = "lenovo_mr_history_export.py" if mode == "merged" \
+        else "lenovo_mr_export.py"
+    request: dict = {
         "schema": REQUEST_SCHEMA,
         "token": token,
         "mrUrl": meta["url"],
@@ -97,8 +103,10 @@ def validated(args) -> tuple[dict, Path, Path]:
         "bundleName": f"mirror-mr-{token}.bundle",
         "manifestName": f"mirror-mr-{token}.manifest.json",
     }
+    if mode == "merged":
+        request["mode"] = "merged"
     command = command_line([
-        args.python, str(driver_dir / "lenovo_mr_export.py"),
+        args.python, str(driver_dir / driver),
         "--request", str(out_dir / args.request_name),
         "--request-sha256", sha256_bytes((json.dumps(
             request, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")),
