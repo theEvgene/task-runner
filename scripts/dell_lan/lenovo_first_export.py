@@ -157,18 +157,20 @@ def _driver_sha256() -> str:
 
 
 def _common_sha256() -> str:
-    """SHA-256 of the actually imported ``dell_lan_common`` dependency.
+    """SHA-256 of the actually imported ``dell_lan_common`` dependency set.
 
     The Lenovo seal covers both the driver and the shared dependency it
-    actually executed with, so a tampered ``dell_lan_common.py`` on Lenovo
-    (for example one that neuters hashing) cannot borrow the driver's
-    identity. An unreadable dependency seals as ``""`` and fails closed
+    actually executed with, so a tampered ``dell_lan_common.py`` file set on
+    Lenovo (for example one that neuters hashing) cannot borrow the driver's
+    identity. The digest covers the same file set as the Dell-side pin
+    (``dell_lan_common.py``, ``dell_lan_paths.py``, ``dell_lan_queue.py``).
+    An unreadable dependency seals as ``""`` and fails closed
     on the Dell side.
     """
 
     try:
         import dell_lan_common as common_mod
-        return sha256_file(Path(str(getattr(common_mod, "__file__", ""))))
+        return common_mod.common_file_digest()
     except (OSError, ValueError):
         return ""
 

@@ -39,6 +39,12 @@ const RUNTIME_FILES = [
   "scripts/jira-protocol.mjs",
   "scripts/jira_protocol/protocol.mjs",
   "scripts/jira_protocol/operations.mjs",
+  "scripts/jira_protocol/operations-shared.mjs",
+  "scripts/jira_protocol/operations-transition.mjs",
+  "scripts/jira_protocol/operations-assign.mjs",
+  "scripts/jira_protocol/operations-epic.mjs",
+  "scripts/jira_protocol/operations-subtask.mjs",
+  "scripts/jira_protocol/operations-flag.mjs",
   "scripts/jira_protocol/route.mjs",
   "scripts/jira_protocol/batch.mjs",
   "scripts/jira_protocol/batch-parse.mjs",
@@ -49,6 +55,7 @@ const RUNTIME_FILES = [
   "scripts/jira_protocol/extract.mjs",
   "scripts/jira_protocol/html-form.mjs",
   "docs/jira-protocol.md",
+  "docs/jira-protocol-subtasks.md",
   "docs/jira-protocol-batch.md",
   "docs/jira-protocol-handoff.md",
 ];
@@ -270,11 +277,14 @@ function assessSkills(fresh) {
     }
     const expected = { ...fresh };
     expected["references/jira-protocol.md"] = fresh["docs/jira-protocol.md"];
+    expected["references/jira-protocol-subtasks.md"] =
+      fresh["docs/jira-protocol-subtasks.md"];
     expected["references/jira-protocol-batch.md"] =
       fresh["docs/jira-protocol-batch.md"];
     expected["references/jira-protocol-handoff.md"] =
       fresh["docs/jira-protocol-handoff.md"];
     delete expected["docs/jira-protocol.md"];
+    delete expected["docs/jira-protocol-subtasks.md"];
     delete expected["docs/jira-protocol-batch.md"];
     delete expected["docs/jira-protocol-handoff.md"];
     const keys = Object.keys(expected);

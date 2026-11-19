@@ -29,6 +29,12 @@ const runtimeFiles = [
   "scripts/jira-protocol.mjs",
   "scripts/jira_protocol/protocol.mjs",
   "scripts/jira_protocol/operations.mjs",
+  "scripts/jira_protocol/operations-shared.mjs",
+  "scripts/jira_protocol/operations-transition.mjs",
+  "scripts/jira_protocol/operations-assign.mjs",
+  "scripts/jira_protocol/operations-epic.mjs",
+  "scripts/jira_protocol/operations-subtask.mjs",
+  "scripts/jira_protocol/operations-flag.mjs",
   "scripts/jira_protocol/route.mjs",
   "scripts/jira_protocol/batch.mjs",
   "scripts/jira_protocol/batch-parse.mjs",
@@ -41,6 +47,7 @@ const runtimeFiles = [
   "scripts/jira_protocol/read-fields.mjs",
   "scripts/jira_protocol/html-form.mjs",
   "docs/jira-protocol.md",
+  "docs/jira-protocol-subtasks.md",
   "docs/jira-protocol-batch.md",
   "docs/jira-protocol-handoff.md",
   "docs/jira-protocol-read-fields.md",
@@ -111,6 +118,8 @@ try {
     hashes[relative] = await digest(source);
   }
   hashes["references/jira-protocol.md"] = hashes["docs/jira-protocol.md"];
+  hashes["references/jira-protocol-subtasks.md"] =
+    hashes["docs/jira-protocol-subtasks.md"];
   hashes["references/jira-protocol-batch.md"] =
     hashes["docs/jira-protocol-batch.md"];
   hashes["references/jira-protocol-handoff.md"] =
@@ -118,6 +127,7 @@ try {
   hashes["references/jira-protocol-read-fields.md"] =
     hashes["docs/jira-protocol-read-fields.md"];
   delete hashes["docs/jira-protocol.md"];
+  delete hashes["docs/jira-protocol-subtasks.md"];
   delete hashes["docs/jira-protocol-batch.md"];
   delete hashes["docs/jira-protocol-handoff.md"];
   delete hashes["docs/jira-protocol-read-fields.md"];
@@ -137,6 +147,12 @@ try {
     for (const moduleName of [
       "protocol.mjs",
       "operations.mjs",
+      "operations-shared.mjs",
+      "operations-transition.mjs",
+      "operations-assign.mjs",
+      "operations-epic.mjs",
+      "operations-subtask.mjs",
+      "operations-flag.mjs",
       "route.mjs",
       "batch.mjs",
       "batch-parse.mjs",
@@ -157,6 +173,10 @@ try {
     await cp(
       sources["docs/jira-protocol.md"],
       join(stage, "references", "jira-protocol.md")
+    );
+    await cp(
+      sources["docs/jira-protocol-subtasks.md"],
+      join(stage, "references", "jira-protocol-subtasks.md")
     );
     await cp(
       sources["docs/jira-protocol-batch.md"],

@@ -119,8 +119,9 @@ pin means no import), and fetches the bundle
 once into an exclusively claimed empty path. `--bridge-dir` defaults to this
 repository's `scripts/lan_bridge` (override with `DELL_LAN_BRIDGE_DIR`).
 All five `--expected-*-sha256` pins are required trust inputs: the SHA-256 of
-the trusted `lenovo_first_export.py`, `dell_first_import.py`,
-`dell_lan_common.py` (both sides), and `lan_bridge.py` copies.
+the trusted `lenovo_first_export.py`, `dell_first_import.py` file set
+(`dell_first_import.py` plus `dell_first_import_verify.py`),
+`dell_lan_common.py` file set (both sides), and `lan_bridge.py` copies.
 A missing or malformed pin is refused before any copy (exit `2`, no
 receipt-derived success); a sealed or executing digest that differs is
 `driver-stale` (exit `1`, nothing created).
@@ -167,9 +168,9 @@ token: a job naming `first-request-A.json` whose result claims token `B` is
 `scripts/dell_lan/dell_lan_common.py`); a missing or older revision is
 `driver-stale` and no copy is created. The result also carries the SHA-256
 of the Lenovo driver file that actually ran (`driverSha256`) plus the SHA-256
-of the `dell_lan_common` dependency it actually imported
+of the `dell_lan_common` dependency set it actually imported
 (`driverCommonSha256`), computed by
-that driver from its own `__file__` and the imported module at execution time.
+that driver from its file set at execution time.
 
 A self-reported version and digest do not prove either checkout is current:
 they only fail closed against known-stale drivers. Freshness is established
@@ -179,9 +180,9 @@ operator supplies out-of-band:
 - Trust inputs: `--expected-lenovo-driver-sha256` is the SHA-256 of the
   trusted `lenovo_first_export.py` copy on Lenovo;
   `--expected-dell-driver-sha256` is the SHA-256 of the trusted
-  `dell_first_import.py` copy on Dell;
+  `dell_first_import.py` file set on Dell;
   `--expected-lenovo-common-sha256` / `--expected-dell-common-sha256` pin
-  the trusted `dell_lan_common.py` on each side;
+  the trusted `dell_lan_common.py` file set on each side;
   `--expected-bridge-sha256` pins the trusted `lan_bridge.py` actually
   loaded on Dell. The operator computes all five from the
   current verified checkout on each machine (for example with `sha256sum`
@@ -189,11 +190,11 @@ operator supplies out-of-band:
   never travel the queue, the share, or a receipt as authority — they are
   the authority the sealed and executing digests are checked against.
 - Binding actual execution: on Lenovo, `lenovo_first_export.py` hashes its
-  own file and the actually imported `dell_lan_common` module at runtime
+  own file and the actually imported `dell_lan_common` file set at runtime
   into the sealed `driverSha256`/`driverCommonSha256`; the sealed envelope
   (MAC, kind/id) plus the exact command-shape check above ties those digests
-  to this job. On Dell, `dell_first_import.py` hashes its own file, the
-  actually imported `dell_lan_common` module, and the actually loaded
+  to this job. On Dell, `dell_first_import.py` hashes its own file set, the
+  actually imported `dell_lan_common` file set, and the actually loaded
   `lan_bridge.py` before any
   queue read or copy. Any comparison failing is `driver-stale`:
   nothing is created.
@@ -263,7 +264,7 @@ operator supplies out-of-band:
   equals `--expected-lenovo-driver-sha256`, whose sealed
   `driverCommonSha256` equals `--expected-lenovo-common-sha256`, and whose
   own executing
-  `dell_first_import.py` / `dell_lan_common.py` / `lan_bridge.py` digests
+  `dell_first_import.py` / `dell_lan_common.py` file sets / `lan_bridge.py` digests
   equal `--expected-dell-driver-sha256` /
   `--expected-dell-common-sha256` / `--expected-bridge-sha256`
   (see "Driver freshness"). Run both sides from the current verified
