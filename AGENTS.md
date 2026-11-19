@@ -11,6 +11,7 @@ Externally invoked agents start here explicitly; this repo assumes no global aut
 - Monitor a GitLab MR pipeline via the signed Dell-to-Lenovo queue -> `docs/pipeline-observer.md`.
 - Prepare an existing GitLab MR for Ready on Lenovo -> `docs/mr-ready.md`.
 - Verify the target base and create a task worktree -> `docs/fresh-base.md`.
+- Roll out one published revision to Dell and Lenovo and verify both hosts -> `docs/two-host-rollout.md` (separate authorization required for any live run).
 - Send one signed command through the LAN queue -> `docs/lan-bridge.md`.
 - Run Lenovo-hosted Jira/DCO scripts through the signed queue -> `docs/lenovo-hosted-scripts.md` (generic `lan_bridge` submit/fetch/observe; credentials stay in the Lenovo host environment; DCO plan/state stay Lenovo-local; Jira keeps its two-phase confirm flow).
 - Mute or read the default Windows playback mute state on Lenovo through the signed queue -> `docs/lenovo-audio.md`.

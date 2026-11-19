@@ -18,8 +18,10 @@ const USAGE = [
   "Options:",
   "  --all                  check every tracked file (git ls-files) instead of staged files",
   "  --base <sha> --head <sha>",
-  "                         check only files changed between the merge base of",
-  "                         <base> and <head> and <head> (a pull request scope)",
+  "                         check final contents (at <head>) of files added or",
+  "                         changed between the merge base of <base> and <head>",
+  "                         and <head>; files already over the limit at the base",
+  "                         without growing are reported separately and pass",
   "  --exclude <pattern>    skip files matching a glob; repeatable, * also matches /",
   "  --exclude-from <file>  read extra globs from a file (one per line, # comments)",
   "  --cwd <dir>            run inside another repository checkout",
@@ -130,13 +132,61 @@ export function resolveScopeMergeBase({ base, head, cwd = process.cwd() }) {
   return mergeBase;
 }
 
+export function parseNameStatusZ(output) {
+  // Parses NUL-separated `git diff --name-status -z -M` output into
+  // post-image entries. Renames and copies contribute only their new path
+  // but keep the old path, so the base size can be resolved rename-aware.
+  // NUL separation keeps paths with spaces intact.
+  const tokens = output.split("\0").filter((entry) => entry.length > 0);
+  const entries = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const status = tokens[index];
+    if (status.startsWith("R") || status.startsWith("C")) {
+      const oldFile = tokens[index + 1];
+      const file = tokens[index + 2];
+      if (oldFile !== undefined && file !== undefined) {
+        entries.push({ file, oldFile });
+      }
+      index += 2;
+    } else {
+      const file = tokens[index + 1];
+      if (file !== undefined) entries.push({ file });
+      index += 1;
+    }
+  }
+  const seen = new Set();
+  const unique = [];
+  for (const entry of entries) {
+    if (!seen.has(entry.file)) {
+      seen.add(entry.file);
+      unique.push(entry);
+    }
+  }
+  return unique;
+}
+
 export function listChangedFiles({ base, head, cwd = process.cwd() }) {
+  return listChangedEntries({ base, head, cwd }).entries.map(
+    (entry) => entry.file,
+  );
+}
+
+export function listChangedEntries({ base, head, cwd = process.cwd() }) {
   const mergeBase = resolveScopeMergeBase({ base, head, cwd });
   let output;
   try {
     output = execFileSync(
       "git",
-      ["diff", "--name-only", "--diff-filter=d", "-z", mergeBase, head, "--"],
+      [
+        "diff",
+        "--name-status",
+        "-z",
+        "-M",
+        "--diff-filter=ACMRT",
+        mergeBase,
+        head,
+        "--",
+      ],
       {
         cwd,
         encoding: "utf8",
@@ -148,7 +198,148 @@ export function listChangedFiles({ base, head, cwd = process.cwd() }) {
       `cannot list files changed between ${mergeBase} and ${head}`,
     );
   }
-  return [...new Set(output.split("\0").filter((entry) => entry.length > 0))];
+  return { mergeBase, entries: parseNameStatusZ(output) };
+}
+
+function gitBlobSize({ rev, file, cwd }) {
+  // Size in bytes of <file> at <rev>, or null when the path is absent there
+  // (a file new at <head>, or gone before it). A lookup miss is an expected
+  // scope outcome, never a reason to pass or fail the whole check.
+  try {
+    const output = execFileSync("git", ["cat-file", "-s", `${rev}:${file}`], {
+      cwd,
+      encoding: "utf8",
+      maxBuffer: 4096,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const size = Number.parseInt(output.trim(), 10);
+    return Number.isSafeInteger(size) && size >= 0 ? size : null;
+  } catch {
+    return null;
+  }
+}
+
+function isBinaryBlob({ rev, file, cwd }) {
+  // Binary status of the blob itself at <rev>, matching staged/--all mode
+  // (NUL byte or non-UTF-8 sample). Inspects only the HEAD blob for the
+  // skip decision, so a binary base replaced by oversized text at HEAD is
+  // not skipped. Any git failure here is a broken scope, never a pass.
+  let buffer;
+  try {
+    buffer = execFileSync("git", ["cat-file", "-p", `${rev}:${file}`], {
+      cwd,
+      encoding: "buffer",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    throw new Error(`cannot inspect ${file} at ${rev}`);
+  }
+  return isBinarySample(
+    buffer.subarray(0, Math.min(buffer.length, BINARY_SAMPLE_BYTES)),
+  );
+}
+
+export function checkDiffFiles({
+  base = null,
+  head = null,
+  excludes = [],
+  cwd = process.cwd(),
+} = {}) {
+  // Range gate on final contents: every added or changed path is sized at
+  // <head>, so a file that exceeds the limit in any commit of the range but
+  // is fixed before <head> passes, while a file grown over the limit by the
+  // range fails even when every intermediate state was fine. Deleted paths
+  // are already excluded by the diff filter; a path missing at <head> is
+  // skipped the same fail-safe way.
+  const { mergeBase, entries } = listChangedEntries({ base, head, cwd });
+  const violations = [];
+  const baseline = [];
+  for (const { file, oldFile } of entries) {
+    if (isExcluded(file, excludes)) continue;
+    const headSize = gitBlobSize({ rev: head, file, cwd });
+    if (headSize === null) continue;
+    if (estimateTokens(headSize) <= MAX_TOKENS) continue;
+    if (isBinaryBlob({ rev: head, file, cwd })) continue;
+    // A binary at the base was skipped there, so it never counts as a
+    // pre-existing text exceedance: binary base to oversized text HEAD is a
+    // new violation, not a baseline entry.
+    let basePath = null;
+    let baseSize = gitBlobSize({ rev: mergeBase, file, cwd });
+    if (baseSize !== null) {
+      basePath = file;
+    } else if (oldFile) {
+      baseSize = gitBlobSize({ rev: mergeBase, file: oldFile, cwd });
+      if (baseSize !== null) basePath = oldFile;
+    }
+    if (baseSize === null) {
+      violations.push({
+        file,
+        tokens: estimateTokens(headSize),
+        status: "new",
+      });
+    } else if (isBinaryBlob({ rev: mergeBase, file: basePath, cwd })) {
+      violations.push({
+        file,
+        tokens: estimateTokens(headSize),
+        status: "new",
+      });
+    } else if (headSize > baseSize) {
+      violations.push({
+        file,
+        tokens: estimateTokens(headSize),
+        status: "grown",
+        baseTokens: estimateTokens(baseSize),
+      });
+    } else {
+      baseline.push({
+        file,
+        tokens: estimateTokens(headSize),
+        baseTokens: estimateTokens(baseSize),
+      });
+    }
+  }
+  return { mergeBase, violations, baseline };
+}
+
+export function formatDiffReport({
+  violations,
+  baseline,
+  base,
+  head,
+  mergeBase,
+}) {
+  const short = (sha) => String(sha).slice(0, 12);
+  const lines = [];
+  if (violations.length > 0) {
+    lines.push(
+      "",
+      `ERROR: The following files changed between the merge base ${short(mergeBase)} of ${short(base)} and ${short(head)} exceed the ${MAX_TOKENS}-token limit (final content at ${short(head)}):`,
+      "",
+    );
+    for (const { file, tokens, status, baseTokens } of violations) {
+      const detail =
+        status === "new"
+          ? "new in this range"
+          : `grown from ~${baseTokens} tokens at base`;
+      lines.push(`  ${file} (~${tokens} tokens, ${detail})`);
+    }
+    lines.push(
+      "",
+      "Please split these files into smaller modules or test files.",
+    );
+  }
+  if (baseline.length > 0) {
+    lines.push(
+      "",
+      `NOTE: already over the limit in ${short(mergeBase)} and not grown in this range:`,
+      "",
+    );
+    for (const { file, tokens, baseTokens } of baseline) {
+      lines.push(`  ${file} (~${tokens} tokens, base ~${baseTokens} tokens)`);
+    }
+  }
+  return lines.length === 0 ? "" : `${lines.join("\n")}\n`;
 }
 
 export function listSelectedFiles({
@@ -284,10 +475,33 @@ if (
     console.log(USAGE);
   } else if (options) {
     try {
-      const { violations, errors } = checkFiles(options);
-      if (errors.length) throw new Error(errors.join("\n"));
-      process.stdout.write(formatReport(violations, options.maxTokens));
-      process.exitCode = violations.length > 0 ? 1 : 0;
+      // Validate the mode combination at the actual CLI entry: the diff
+      // branch below never calls listSelectedFiles, so its identical guard
+      // there would not run for --all with --base/--head.
+      if (options.all && (options.base || options.head)) {
+        throw new Error("--all cannot be combined with --base/--head");
+      }
+      if ((options.base && !options.head) || (!options.base && options.head)) {
+        throw new Error("--base and --head must be given together");
+      }
+      if (options.base && options.head) {
+        const { mergeBase, violations, baseline } = checkDiffFiles(options);
+        process.stdout.write(
+          formatDiffReport({
+            violations,
+            baseline,
+            base: options.base,
+            head: options.head,
+            mergeBase,
+          }),
+        );
+        process.exitCode = violations.length > 0 ? 1 : 0;
+      } else {
+        const { violations, errors } = checkFiles(options);
+        if (errors.length) throw new Error(errors.join("\n"));
+        process.stdout.write(formatReport(violations, options.maxTokens));
+        process.exitCode = violations.length > 0 ? 1 : 0;
+      }
     } catch (error) {
       console.error(`check-file-tokens: ${error.message}`);
       process.exitCode = 1;
