@@ -1,10 +1,15 @@
 # Lenovo owned/unknown job recovery — `LenovoJobRecovery.exe`
 
+One compiled Windows exe, no BAT. Double-click (no arguments) opens an
+interactive console: it asks once for the job ID, runs verification, then
+recovers only when allowed, prints the outcome in plain words, and waits
+for Enter. With arguments it keeps the automation CLI unchanged.
 Small Windows executable that prepares an evidence-gated recovery for one
 retained Lenovo queue job. It performs **no queue mutation itself**: the only
 writer is the canonical worker (`scripts/lenovo_worker/worker.py
 --reconcile-id/--reconcile-proof`), invoked solely after every fail-closed
-gate passes.
+gate passes. Only the typed ID is ever touched; other jobs are never listed,
+claimed, or sealed.
 
 Canonical sources mirrored (read-only, never modified):
 `docs/lenovo-worker-shortcut.md`,
@@ -22,21 +27,21 @@ no network): `scripts\lenovo_worker\job_recovery\build-go.bat` pins
 instead of silently building. `-trimpath` strips checkout-local paths and
 `-buildvcs=false` omits VCS stamping, so the same sources built with these
 settings are byte-identical. Sources are split across small files (`main.go`,
-`jsonx.go`, `bridge.go`, `custody.go`, `validate.go`, `recovery.go`,
-`proof.go`, `settle.go`, `procs.go`, `receipts.go`, `selftest.go`,
-`sanitize.go`, `refusal.go`) so each stays under the file token guard; all compile into
+`interactive.go`, `workercompat.go`, `jsonx.go`, `bridge.go`, `custody.go`,
+`validate.go`, `recovery.go`, `proof.go`, `settle.go`, `procs.go`,
+`receipts.go`, `selftest.go`, `sanitize.go`, `refusal.go`) so each stays
+under the file token guard; all compile into
 the one exe.
 
 Reproduce: install Go 1.24.7, run `build-go.bat` (any caller cwd works; it
 builds from its own directory), then rebuild from a clean checkout
 (`git worktree add <dir> <commit>`) and compare full SHA-256
 (`certutil -hashfile LenovoJobRecovery.exe SHA256`). Both must equal
-`0a0daedd120342a8e6265e708c430643e071d5c236d1f961307110fde3d25f48`
+`8951b6f6f018716b9da4538993aa2f6f4506cfa9649bdd9c76b6f709f9e99914`
 (`go version go1.24.7 windows/amd64`; current commit sources plus the
 deterministic build settings). A mismatch means the sources, toolchain, or
-flags moved: do not ship the exe. The previous blessed bytes (`d095b357…`)
-predate the deterministic flags (their Go build ID differs while all code
-bytes match) and are superseded.
+flags moved: do not ship the exe. The previous blessed bytes (`0a0daedd…`)
+predate the interactive single-exe change and are superseded.
 
 ## What it does
 
@@ -107,7 +112,20 @@ tool never acts on a baked-in real id.
 Modes: `--verify-only` (authenticate + gates, write nothing, spawn
 nothing), default dry-run (gates + write proof), `--invoke` (full path +
 verify), `--self-test` (fixture-only checks, no config/key/queue access).
-Exits: `0` ready/reconciled, `2` refused/failed.
+No arguments = interactive: prompt once for the ID, run verify-only
+internally, then the `--invoke` path only when verification passes.
+Human text goes to stderr; stdout stays JSON receipts. Ends with
+`Press Enter to close...` on every path. Exits: `0` ready/reconciled,
+`2` refused/failed.
+
+Interactive sequencing: one prompt, one ID, verify first. A bad ID
+refuses `job-id-invalid` with nothing written. A failed verification
+stops before any proof or worker spawn. Only a passed verification
+continues to proof + canonical worker + post-verify. The console shows
+`NOT recovered` with the reason, or `RECOVERED` only after the exact
+settlement check passes. An outdated installed worker refuses
+`worker-incompatible` before any spawn: copy `scripts/lenovo_worker`
+from the same revision as the exe and re-run for the same ID.
 
 Receipts are single JSON lines on stdout (`lenovo-job-recovery/1`)
 carrying only digests/pids/reasons: no key, no password, no host, no
@@ -115,20 +133,34 @@ absolute path. Every external error is passed through path sanitization
 before it reaches a receipt or stderr, so OS messages that embed absolute
 paths (config/key/proof/interpreter locations) are redacted.
 
+## Dependencies (actual)
+
+Runtime (Lenovo, for use): Windows 10+ amd64, the shipped
+`LenovoJobRecovery.exe` (stdlib only, no installed runtime), a canonical
+`scripts/lenovo_worker` checkout at the same revision (provides
+`worker.py --reconcile-id/--reconcile-proof` and
+`job_reconciliation.py` v2 typed proof), a Python 3 interpreter named by
+the local config, and the local JSON config
+`%LOCALAPPDATA%\task-runner\lenovo-worker.json` (absolute `queueDir`,
+local `keyFile`, `workerDir`, `python`). No network fetch, no service,
+no admin.
+Build only: Go 1.24.7 exactly (`build-go.bat` pins
+`GOTOOLCHAIN=local GOPROXY=off GOOS=windows GOARCH=amd64 GOAMD64=v1
+CGO_ENABLED=0`, `go build -trimpath -buildvcs=false`).
+
 ## Use on Lenovo (owner at the keyboard, live queue)
 
-1. Copy `scripts\lenovo_worker\job_recovery\` to Lenovo; rebuild with
-   `build-go.bat` (or trust the shipped exe after checking its SHA-256
-   against the task report).
-2. Dry-run first (no queue write except the proof file outside the queue):
-   `LenovoJobRecovery.exe --job-id <id> --verify-only`
-   then `LenovoJobRecovery.exe --job-id <id>` (writes
-   `%TEMP%\lenovo-recovery\<id>.proof.json`).
-3. Settle: `LenovoJobRecovery.exe --job-id <id> --invoke`. Expect `outcome:
-reconciled`.
-4. Re-run `--invoke` with the same `--job-id` to confirm idempotent
-   `replay: true`.
-5. Verify the same id with the bridge `fetch` (result `error`/`unknown`).
+1. Copy `scripts\lenovo_worker\` (same revision as the exe) plus
+   `LenovoJobRecovery.exe` to Lenovo; or rebuild there with
+   `build-go.bat` and compare SHA-256 against the task report.
+2. Double-click `LenovoJobRecovery.exe`, type one job ID once, read the
+   outcome (`RECOVERED` vs `NOT recovered` + reason), press Enter.
+   The exe verifies first and recovers only when allowed; nothing else
+   is touched.
+3. Automation keeps working: `LenovoJobRecovery.exe --job-id <id>
+   --verify-only`, then `--invoke`; re-run `--invoke` to confirm
+   idempotent `replay: true`.
+4. Verify the same id with the bridge `fetch` (result `error`/`unknown`).
 
 Do NOT delete/re-submit the job. Validate on a TEST queue per
 `docs/lenovo-worker-shortcut.md` before the live id. Never pass the key
@@ -137,10 +169,10 @@ anywhere; the exe reads it only via the config.
 ## Local verification (fixtures only — live queue untouched, no secrets)
 
 ```text
-<python> -m unittest tests.lenovo_worker.test_job_recovery_exe -v
+<python> -m unittest tests.lenovo_worker.test_job_recovery_exe tests.lenovo_worker.test_job_recovery_single -v
 ```
 
-Covers: exe `--self-test` 13/13 (incl. canonical-exact tamper refusal,
+Covers: exe `--self-test` 16/16 (incl. canonical-exact tamper refusal,
 path sanitization, strict base64); `--job-id` required (omitted/garbage
 refuses `job-id-invalid`, writes nothing); `--verify-only` + dry-run proof
 that the canonical bridge opens (schema v2, generation/resources/typed
@@ -148,7 +180,10 @@ evidence bindings) and the canonical worker settles to the truthful
 non-success with a fully-bound release; `--invoke` reconciles, re-invoke
 is `replay: true` with unchanged bytes, same-proof canonical re-accept
 exits 0; authenticated result tamper refuses `verify-failed` (never
-replay); proof-write OS errors and UNC key refusals carry no absolute
+replay); outdated `job_reconciliation.py` refuses `worker-incompatible`
+before any spawn; interactive no-args prompts once (bad ID refuses
+`job-id-invalid` and waits; good ID verifies then invokes only when
+allowed); proof-write OS errors and UNC key refusals carry no absolute
 paths; live-owner refuses with no result file; UNC queue passes the
 config gate and refuses as `queue-missing`, key inside the share and UNC
 keys refuse as `key-misplaced` (key stays local).
