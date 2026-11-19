@@ -14,6 +14,17 @@ without separate authorization.
   `repositories\task-runner` resolved on Lenovo), Lenovo Node path.
 - Skills dirs on each host, queue dir + 32-byte key file, LAN share dir.
 
+## Freshness (before choosing isLatest)
+
+`isLatest true` is allowed only when the target equals the actual remote
+tip observed on Lenovo immediately before the rollout: run
+`git ls-remote <origin-url> refs/heads/main` on Lenovo through the same
+signed queue (or reuse a prior verified readback receipt for the same
+target) and compare. Never derive `isLatest` on Dell. A stale Lenovo
+checkout must `git fetch origin` first: a stale `origin/main` ref that
+happens to equal an old target never counts as latest. A pinned older
+revision always uses `isLatest false`.
+
 ## Steps
 
 1. Verify the published target on Lenovo (`git ls-remote` there or a
@@ -22,11 +33,32 @@ without separate authorization.
    `node scripts/two_host_rollout/request-rollout.mjs --node <abs> ...`.
    Submit with `scripts/lan_bridge/lan_bridge.py submit --dialect powershell
 --expected-cwd <lenovo-checkout>` and observe the SAME id every 30 s for
-   10 min (`docs/lan-bridge.md` observation rule).
+   10 min (`docs/lan-bridge.md` observation rule: `fetch --timeout 600
+   --poll 30` or `get.py --window 60 --poll 30 --max-windows 10`). A
+   short-timeout expiry is **unknown** with the same-id resume action:
+   never resubmit while unknown.
 3. Run the Dell host step locally with the same target:
    `node scripts/two_host_rollout/apply-host.mjs --checkout <dell> ...`.
-4. Verify both receipts:
-   `node scripts/two_host_rollout/verify-readback.mjs --dell-receipt ...`.
+4. Collect the Lenovo receipt ONLY from the MAC-verified same-job fetch
+   stdout (never hand-copy a receipt file):
+   `node scripts/two_host_rollout/collect-lenovo-result.mjs --queue
+   <queue> --key-file <key> --job-id <JOBID> --target-sha <sha> --is-latest
+   true|false --out <lenovo.receipt.json> --bridge
+   scripts/lan_bridge/lan_bridge.py --python <python> --fetch-timeout 600
+   --poll 30`.
+   The script binds the sealed job command to this rollout, checks
+   transport (`timed_out`, `output_truncated`, status) then the stdout
+   receipt (schema, target, flag, per-host rules), and writes `--out`.
+   Exit `0` collected (a refused host verdict is still saved and combines
+   to `partial`); exit `1` terminal mismatch/failure (NEW id only after a
+   fix, never automatic); exit `3` unknown (slot stays occupied, re-fetch
+   the SAME id).
+5. Combine both receipts:
+   `node scripts/two_host_rollout/verify-readback.mjs --dell-receipt
+   <dell.receipt.json> --lenovo-receipt <lenovo.receipt.json
+   (collect --out)> --target-sha <sha> --is-latest true|false`.
+   Report `updated` only when both receipts verify against the same
+   target.
 
 ## Per-host rules (enforced by apply-host)
 
@@ -45,6 +77,6 @@ without separate authorization.
 ## Verification (local only)
 
 ```text
-node --test tests/two_host_rollout/
+node --test tests/two_host_rollout/rollout-lib.test.mjs tests/two_host_rollout/rollout-scenario.test.mjs tests/two_host_rollout/apply-host.test.mjs tests/two_host_rollout/collect-result.test.mjs
 node scripts/check-file-tokens.mjs --all
 ```

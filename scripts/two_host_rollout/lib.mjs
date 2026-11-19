@@ -2,6 +2,7 @@
 // Pure rollout policy for issue #133. No git, no fs, no network here:
 // apply-host.mjs supplies facts, tests supply fixtures.
 export const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/i;
+export const JOB_RE = /^[0-9a-f]{32}$/;
 export const HOST_SCHEMA = "two-host-rollout-host/1";
 export const REQUEST_SCHEMA = "two-host-rollout-request/1";
 
@@ -126,4 +127,75 @@ export function combineHostResults(hosts, target) {
   if (refused)
     return { verdict: "partial", reason: refused.reason ?? "refused" };
   return { verdict: "partial", reason: "host-failed" };
+}
+
+// Authenticated Lenovo stdout receipt check for issue #133. The payload is
+// the MAC-verified result envelope bound to the requested job id (verified
+// inside lan_bridge.py fetch, never here): transport first, receipt
+// authoritative. Both completed/ok and error statuses proceed to receipt
+// parsing when stdout is complete (the worker seals status error for any
+// nonzero process exit, so refused host receipts arrive as error
+// envelopes). timed_out is terminal worker timeout (NEW id),
+// output_truncated is terminal incomplete (NEW id with larger max-output).
+// A verified refused receipt is a verified terminal per-host outcome: it is
+// accepted here and reported as partial by the combiner, never as success.
+export function verifyLenovoPayload(payload, { target, isLatest }) {
+  const fail = (reason, detail = "") => ({
+    ok: false,
+    reason,
+    detail: String(detail).slice(0, 400),
+  });
+  const t = String(target ?? "").toLowerCase();
+  if (!SHA_RE.test(t)) return fail("bad-target", "target is not a SHA");
+  if (!payload || typeof payload !== "object")
+    return fail("receipt-missing", "no verified payload");
+  if (payload.timed_out)
+    return fail(
+      "worker-timeout",
+      "terminal worker timeout: fix limits, then a NEW job id"
+    );
+  if (payload.output_truncated)
+    return fail(
+      "output-truncated",
+      "terminal incomplete stdout: rerun as a NEW id with larger --max-output"
+    );
+  if (!["completed", "ok", "error"].includes(payload.status))
+    return fail(
+      "unknown-status",
+      `verified envelope, unrecognized status=${String(payload.status)}`
+    );
+  const stdout = payload.stdout;
+  if (typeof stdout !== "string" || stdout.trim() === "")
+    return fail("receipt-missing", "verified envelope carries no stdout");
+  let receipt;
+  try {
+    receipt = JSON.parse(stdout);
+  } catch (error) {
+    return fail("receipt-unparsable", error.message);
+  }
+  if (receipt?.schema !== HOST_SCHEMA)
+    return fail("receipt-malformed", "bad schema");
+  if (!["updated", "already-current", "refused"].includes(receipt.verdict))
+    return fail("receipt-malformed", `bad verdict ${receipt.verdict}`);
+  try {
+    assertNoSecrets("lenovo receipt", stdout);
+  } catch (error) {
+    return fail("receipt-secret", error.message);
+  }
+  if (String(receipt.targetSha ?? "").toLowerCase() !== t)
+    return fail("revision-mismatch", "receipt target != requested target");
+  if (Boolean(receipt.isLatest) !== Boolean(isLatest))
+    return fail("revision-mismatch", "receipt isLatest != requested flag");
+  if (receipt.verdict === "refused")
+    return { ok: true, refused: true, receipt };
+  if (String(receipt.head ?? "").toLowerCase() !== t || receipt.clean !== true)
+    return fail("revision-mismatch", "receipt head/clean mismatch");
+  if (Boolean(isLatest) && receipt.branch !== "main")
+    return fail("wrong-branch", "latest receipt is not on main");
+  if (receipt.skills?.state !== "current")
+    return fail(
+      "skills-not-current",
+      `skills ${receipt.skills?.state ?? "unknown"}`
+    );
+  return { ok: true, refused: false, receipt };
 }

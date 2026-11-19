@@ -5,6 +5,7 @@ import {
   combineHostResults,
   decideUpdate,
   assertNoSecrets,
+  verifyLenovoPayload,
 } from "../../scripts/two_host_rollout/lib.mjs";
 
 test("latest fast-forward matrix", () => {
@@ -146,4 +147,96 @@ test("partial success is never reported as full", () => {
   );
   assert.equal(partial.verdict, "partial");
   assert.equal(partial.reason, "dirty-checkout");
+});
+
+test("verified lenovo payload: transport first, receipt authoritative", () => {
+  const t = "a".repeat(40);
+  const host = (over = {}) => ({
+    schema: "two-host-rollout-host/1",
+    verdict: "updated",
+    targetSha: t,
+    isLatest: true,
+    branch: "main",
+    head: t,
+    clean: true,
+    skills: { state: "current" },
+    ...over,
+  });
+  const ok = verifyLenovoPayload(
+    { status: "completed", exit_code: 0, timed_out: false,
+      output_truncated: false, stdout: JSON.stringify(host()) },
+    { target: t, isLatest: true }
+  );
+  assert.equal(ok.ok, true);
+  // A refused host receipt arrives as an error envelope yet stays a
+  // verified terminal outcome: accepted here, partial at combine time.
+  const refused = verifyLenovoPayload(
+    { status: "error", exit_code: 1, timed_out: false,
+      output_truncated: false,
+      stdout: JSON.stringify(host({ verdict: "refused", reason: "dirty-checkout" })) },
+    { target: t, isLatest: true }
+  );
+  assert.equal(refused.ok, true);
+  assert.equal(refused.refused, true);
+  // Terminal transport states never verify: NEW id only, never a retry here.
+  assert.equal(
+    verifyLenovoPayload(
+      { status: "completed", exit_code: 0, timed_out: true,
+        output_truncated: false, stdout: JSON.stringify(host()) },
+      { target: t, isLatest: true }
+    ).reason,
+    "worker-timeout"
+  );
+  assert.equal(
+    verifyLenovoPayload(
+      { status: "completed", exit_code: 0, timed_out: false,
+        output_truncated: true, stdout: JSON.stringify(host()) },
+      { target: t, isLatest: true }
+    ).reason,
+    "output-truncated"
+  );
+  assert.equal(
+    verifyLenovoPayload(
+      { status: "weird", exit_code: 0, timed_out: false,
+        output_truncated: false, stdout: JSON.stringify(host()) },
+      { target: t, isLatest: true }
+    ).reason,
+    "unknown-status"
+  );
+  // Receipt binding: wrong target, wrong flag, wrong branch, stale skills.
+  assert.equal(
+    verifyLenovoPayload(
+      { status: "completed", exit_code: 0, timed_out: false,
+        output_truncated: false,
+        stdout: JSON.stringify(host({ targetSha: "b".repeat(40) })) },
+      { target: t, isLatest: true }
+    ).reason,
+    "revision-mismatch"
+  );
+  assert.equal(
+    verifyLenovoPayload(
+      { status: "completed", exit_code: 0, timed_out: false,
+        output_truncated: false,
+        stdout: JSON.stringify(host({ branch: "detached" })) },
+      { target: t, isLatest: true }
+    ).reason,
+    "wrong-branch"
+  );
+  assert.equal(
+    verifyLenovoPayload(
+      { status: "completed", exit_code: 0, timed_out: false,
+        output_truncated: false,
+        stdout: JSON.stringify(host({ skills: { state: "partial-install" } })) },
+      { target: t, isLatest: true }
+    ).reason,
+    "skills-not-current"
+  );
+  assert.equal(
+    verifyLenovoPayload(
+      { status: "completed", exit_code: 0, timed_out: false,
+        output_truncated: false, stdout: "not-json" },
+      { target: t, isLatest: true }
+    ).reason,
+    "receipt-unparsable"
+  );
 });

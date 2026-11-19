@@ -271,3 +271,130 @@ test("pinned older revision checks out detached and leaves main alone", () => {
   })();
   assert.equal(v.verdict, "updated");
 });
+
+test("stale origin ref refuses a newer tip as latest until fetch proves freshness", () => {
+  const made = makeCheckout();
+  const { remote, work } = made;
+  const root = made.root;
+  // Advance the remote without touching the checkout: the local
+  // origin/main ref goes stale, modelling a target branch that moved.
+  const seed = join(root, "seed");
+  git(["clone", "-q", remote, seed], root);
+  writeFileSync(join(seed, "v2.txt"), "v2\n");
+  git(["add", "-A"], seed);
+  commitAs(seed, "v2");
+  git(["push", "-q", "origin", "main"], seed);
+  const tip = git(["rev-parse", "HEAD"], seed);
+  // Stale checkout: the newer tip is not its origin/main, so latest
+  // with that target refuses instead of passing off old state.
+  const stale = runApply([
+    "--checkout",
+    work,
+    "--target-sha",
+    tip,
+    "--is-latest",
+    "true",
+    "--skills-dir",
+    join(work, "..", "s"),
+    "--receipt",
+    join(work, "..", "r.json"),
+  ]);
+  assert.equal(stale.code, 1);
+  assert.equal(stale.json.reason, "revision-mismatch");
+  // Freshness: fetch, then the same revision rolls forward on main.
+  git(["fetch", "-q", "origin"], work);
+  const receipt = join(work, "..", "fresh.json");
+  const fresh = runApply([
+    "--checkout",
+    work,
+    "--target-sha",
+    tip,
+    "--is-latest",
+    "true",
+    "--skills-dir",
+    join(work, "..", "skills"),
+    "--receipt",
+    receipt,
+  ]);
+  assert.equal(fresh.code, 0, JSON.stringify(fresh.json));
+  assert.equal(fresh.json.verdict, "updated");
+  assert.equal(git(["symbolic-ref", "--short", "HEAD"], work), "main");
+  assert.equal(
+    git(["rev-parse", "HEAD"], work).toLowerCase(),
+    tip.toLowerCase()
+  );
+});
+
+test("foreign skill install refuses ownership-conflict and is left untouched", () => {
+  const { work } = makeCheckout();
+  const target = git(["rev-parse", "HEAD"], work);
+  const skills = join(work, "..", "skills");
+  const foreign = join(skills, SKILL_DIRS[0]);
+  mkdirSync(foreign, { recursive: true });
+  writeFileSync(join(foreign, "foreign.txt"), "not managed\n");
+  const r = runApply([
+    "--checkout",
+    work,
+    "--target-sha",
+    target,
+    "--is-latest",
+    "true",
+    "--skills-dir",
+    skills,
+    "--receipt",
+    join(work, "..", "r.json"),
+  ]);
+  assert.equal(r.code, 1);
+  assert.equal(r.json.reason, "ownership-conflict");
+  assert.equal(readFileSync(join(foreign, "foreign.txt"), "utf8"), "not managed\n");
+  assert.equal(existsSync(join(foreign, "runtime-manifest.json")), false);
+});
+
+test("success removes staging leftovers and rerun is already-current", () => {
+  const { work } = makeCheckout();
+  writeFileSync(join(work, "v2.txt"), "v2\n");
+  git(["add", "-A"], work);
+  commitAs(work, "v2");
+  git(["push", "-q", "origin", "main"], work);
+  const target = git(["rev-parse", "HEAD"], work);
+  git(["reset", "-q", "--hard", "HEAD~1"], work);
+  const skills = join(work, "..", "skills");
+  mkdirSync(skills, { recursive: true });
+  writeFileSync(join(skills, "stale.install-123"), "staging\n");
+  writeFileSync(join(skills, "old.bak"), "staging\n");
+  const receipt = join(work, "..", "dell.json");
+  const first = runApply([
+    "--checkout",
+    work,
+    "--target-sha",
+    target,
+    "--is-latest",
+    "true",
+    "--skills-dir",
+    skills,
+    "--receipt",
+    receipt,
+  ]);
+  assert.equal(first.code, 0, JSON.stringify(first.json));
+  assert.equal(first.json.verdict, "updated");
+  for (const name of SKILL_DIRS)
+    assert.ok(existsSync(join(skills, name, "runtime-manifest.json")));
+  assert.equal(existsSync(join(skills, "stale.install-123")), false);
+  assert.equal(existsSync(join(skills, "old.bak")), false);
+  const second = runApply([
+    "--checkout",
+    work,
+    "--target-sha",
+    target,
+    "--is-latest",
+    "true",
+    "--skills-dir",
+    skills,
+    "--receipt",
+    receipt,
+  ]);
+  assert.equal(second.code, 0);
+  assert.equal(second.json.verdict, "already-current");
+  assert.equal(existsSync(join(skills, "stale.install-123")), false);
+  assert.equal(existsSync(join(skills, "old.bak")), false);
+});
