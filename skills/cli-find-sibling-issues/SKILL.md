@@ -30,10 +30,15 @@ issue itself is never listed as its own sibling.
 Check `completeness.comprehensive` and every entry in
 `completeness.categories` (`parent`, `childList`, `childReads`). A complete
 empty `matches` array proves no visible sibling carries that login; an
-incomplete receipt never stands in for that proof. Unassigned children are
-listed under `unassigned` by key and never match. Unreadable children are
-listed under `unreadable` with their key and reason
-(`not_found_or_not_visible`, `access_denied`, or `retrieval_unknown`) and do
+incomplete receipt never stands in for that proof. Only explicit
+`assignee: null` lists a child under `unassigned` by key and never matches.
+A missing assignee, a malformed assignee, an assignee object without a
+usable `name`/`key`, or a matching child without summary/status lists the
+child under `unreadable` with its key and reason and makes the receipt
+incomplete. Unreadable children are listed under `unreadable` with their key and reason
+(`not_found_or_not_visible`, `access_denied`, `retrieval_unknown`,
+`assignee_unobserved`, `malformed_assignee`,
+`assignee_identity_unobserved`, or `incomplete_child_content`) and do
 not hide the readable rest. A missing `parent` or `subtasks` field is
 unobserved due to permission or configuration, not an empty value. An
 explicit `parent: null` proves the source has no parent and therefore no

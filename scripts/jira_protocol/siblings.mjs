@@ -26,14 +26,34 @@ function categoryComplete(category) {
 }
 
 // Both supported assignee identities: the REST `name` and the legacy `key`.
-// An absent assignee and an assignee without either identity are both
-// reported as unassigned, never matched.
-function assigneeLogins(assignee) {
+// Only an explicit `assignee: null` proves the child is unassigned. A missing
+// `assignee` field is unobserved (permission or configuration), a non-object
+// assignee is malformed, and an object without a usable `name`/`key` leaves
+// the identity unobserved. All three are unreadable, never unassigned.
+function classifyAssignee(fields) {
+  if (!Object.hasOwn(fields, "assignee"))
+    return { state: "unobserved", reason: "assignee_unobserved" };
+  const assignee = fields.assignee;
+  if (assignee === null) return { state: "unassigned" };
   if (!assignee || typeof assignee !== "object" || Array.isArray(assignee))
-    return [];
-  return [assignee.name, assignee.key].filter(
+    return { state: "malformed", reason: "malformed_assignee" };
+  const logins = [assignee.name, assignee.key].filter(
     (value) => typeof value === "string" && value.length > 0
   );
+  if (logins.length === 0)
+    return { state: "unobserved", reason: "assignee_identity_unobserved" };
+  return { state: "assigned", logins };
+}
+
+function childContentReason(payload) {
+  const fields =
+    payload.fields && typeof payload.fields === "object" ? payload.fields : {};
+  if (typeof fields.summary !== "string") return "incomplete_child_content";
+  const status = fields.status;
+  if (!status || typeof status !== "object" || Array.isArray(status))
+    return "incomplete_child_content";
+  if (typeof status.name !== "string") return "incomplete_child_content";
+  return null;
 }
 
 function childEntry(payload, origin) {
@@ -288,13 +308,26 @@ export async function findSiblingIssues(
         });
       continue;
     }
-    const logins = assigneeLogins(child.payload.fields?.assignee);
-    if (logins.length === 0) {
+    const fields =
+      child.payload.fields && typeof child.payload.fields === "object"
+        ? child.payload.fields
+        : {};
+    const classification = classifyAssignee(fields);
+    if (classification.state === "unassigned") {
       unassigned.push(childKey);
       continue;
     }
-    if (logins.includes(login))
-      matches.push(childEntry(child.payload, transport.origin));
+    if (classification.state !== "assigned") {
+      unreadable.push({ key: childKey, reason: classification.reason });
+      continue;
+    }
+    if (!classification.logins.includes(login)) continue;
+    const contentReason = childContentReason(child.payload);
+    if (contentReason) {
+      unreadable.push({ key: childKey, reason: contentReason });
+      continue;
+    }
+    matches.push(childEntry(child.payload, transport.origin));
   }
 
   return finish(receipt, {

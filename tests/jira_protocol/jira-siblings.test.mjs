@@ -333,3 +333,89 @@ test("source denial stays terminal and bad keys are rejected", async () => {
     /assignee must be a Jira login/
   );
 });
+
+test("explicit null stays unassigned while missing and malformed identities are unreadable", async () => {
+  const missing = child("LEL-44", 44, {
+    assignee: { name: "dev.user", key: "dev.user" },
+  });
+  delete missing.fields.assignee;
+  const malformed = child("LEL-45", 45, {
+    assignee: { name: "dev.user", key: "dev.user" },
+  });
+  malformed.fields.assignee = "dev.user";
+  const emptyIdentity = child("LEL-46", 46, {
+    assignee: { name: "dev.user", key: "dev.user" },
+  });
+  emptyIdentity.fields.assignee = { name: "", key: "" };
+  const result = await findSiblingIssues(
+    new SiblingTransport({
+      issues: {
+        "LEL-42": issue("LEL-42", 42, {
+          parent: { id: "7", key: "LEL-7" },
+        }),
+        "LEL-7": parentWith("LEL-42", "LEL-43", "LEL-44", "LEL-45", "LEL-46"),
+        "LEL-43": child("LEL-43", 43, { assignee: null }),
+        "LEL-44": missing,
+        "LEL-45": malformed,
+        "LEL-46": emptyIdentity,
+      },
+    }),
+    { issueKey: "LEL-42", assignee: "dev.user" }
+  );
+  assert.deepEqual(result.unassigned, ["LEL-43"]);
+  assert.deepEqual(
+    result.unreadable.map((entry) => [entry.key, entry.reason]),
+    [
+      ["LEL-44", "assignee_unobserved"],
+      ["LEL-45", "malformed_assignee"],
+      ["LEL-46", "assignee_identity_unobserved"],
+    ]
+  );
+  assert.deepEqual(result.matches, []);
+  assert.equal(result.completeness.comprehensive, false);
+  assert.equal(
+    result.completeness.categories.childReads.reason,
+    "child_reads_incomplete"
+  );
+});
+
+test("matching child without summary or status is unreadable, not a match", async () => {
+  const noSummary = child("LEL-43", 43, {
+    assignee: { name: "dev.user", key: "dev.user" },
+  });
+  delete noSummary.fields.summary;
+  const noStatus = child("LEL-44", 44, {
+    assignee: { name: "dev.user", key: "dev.user" },
+  });
+  delete noStatus.fields.status;
+  const result = await findSiblingIssues(
+    new SiblingTransport({
+      issues: {
+        "LEL-42": issue("LEL-42", 42, {
+          parent: { id: "7", key: "LEL-7" },
+        }),
+        "LEL-7": parentWith("LEL-42", "LEL-43", "LEL-44", "LEL-45"),
+        "LEL-43": noSummary,
+        "LEL-44": noStatus,
+        "LEL-45": child("LEL-45", 45, {
+          assignee: { name: "dev.user", key: "dev.user" },
+          summary: "Good sibling",
+        }),
+      },
+    }),
+    { issueKey: "LEL-42", assignee: "dev.user" }
+  );
+  assert.deepEqual(
+    result.matches.map((entry) => entry.key),
+    ["LEL-45"]
+  );
+  assert.deepEqual(
+    result.unreadable.map((entry) => [entry.key, entry.reason]),
+    [
+      ["LEL-43", "incomplete_child_content"],
+      ["LEL-44", "incomplete_child_content"],
+    ]
+  );
+  assert.deepEqual(result.unassigned, []);
+  assert.equal(result.completeness.comprehensive, false);
+});

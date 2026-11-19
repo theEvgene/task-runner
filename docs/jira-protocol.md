@@ -151,9 +151,14 @@ own sibling. A child matches when the login equals its REST `assignee.name`
 or legacy `assignee.key` exactly.
 
 `completeness.comprehensive` is true only when the parent, the child list,
-and every child read are complete. Unassigned children are listed under
-`unassigned` and never match; unreadable children are listed under
-`unreadable` with their reason and do not hide the readable rest. A missing
+and every child read are complete. Only an explicit `assignee: null` proves
+a child is unassigned and lists it under `unassigned`, never matched; a
+missing `assignee` field (`assignee_unobserved`), a non-object assignee
+(`malformed_assignee`), an object without a usable `name`/`key`
+(`assignee_identity_unobserved`), or a matching child without a usable
+summary/status (`incomplete_child_content`) lists the child under
+`unreadable` with its reason and makes the receipt incomplete. Unreadable
+children do not hide the readable rest. A missing
 `parent` or `subtasks` field is unobserved, never an empty value; explicit
 `parent: null` proves there are no siblings. A parent 404 is
 `not_found_or_not_visible`. A 401/403 on the source read is terminal; on a
