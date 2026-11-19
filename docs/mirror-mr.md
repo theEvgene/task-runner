@@ -228,6 +228,32 @@ publishing; a squash that cannot be proven equivalent is reported, not
 used; the route never moves the default branch, never force-pushes, and
 never merges the review PR.
 
+## Single entry (issue #144)
+
+`python scripts/mirror_mr/mirror_mr.py` is the one command for both routes.
+It validates the MR URL and mapping, submits one signed job per attempt,
+polls the SAME id through the existing import driver, and prints the
+verified PR link. It adds no transport or PR logic.
+
+```text
+python scripts/mirror_mr/mirror_mr.py --mr-url <url> \
+  --mapping-file <abs-mapping> --shared <lan-share> \
+  --mirror-dir <abs-mirror-clone> --queue <queue-dir> \
+  --key-file <key-path> --lenovo-checkout <abs-lenovo-checkout> \
+  --python <abs-lenovo-python> --state <outside-mirror-state> \
+  --receipt <outside-mirror-receipt> [--mode auto|open|merged]
+```
+
+`--mode auto` (default) determines live status through the signed export:
+open completes the open route, merged retries once as history with a NEW
+job id. `--mode open|merged` pins one route. Discover queue/key/Python
+per `docs/lan-bridge-config.md`; never invent paths or credentials. A
+non-private mirror, ambiguous mapping, or unreadable input refuses before
+any job; an unknown outcome (exit `3`) reruns the identical command with
+the identical `--state` and never submits a replacement. Success prints
+the receipt JSON (PR URL, MR status, SHAs/digest) and exits `0`; the PR is
+for review only and is never merged.
+
 ## Local verification
 
 ```text
