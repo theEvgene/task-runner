@@ -34,7 +34,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dell_lan"))
 
 from mirror_mr_common import (DETAIL_MAX, EXPORT_SCHEMA, JOB_RE, RECEIPT_SCHEMA,
-                              SHA_RE, STATE_SCHEMA, Stop, TOKEN_RE, check_branch,
+                              SHA_RE, STATE_SCHEMA, Stop, TOKEN_RE,
+                              check_branch, check_export_identity,
                               load_mapping, parse_mr_url, resolve_mirror)
 from dell_mirror_publish import (adopt_or_create, push_refs,
                                  read_remote_refs, reconcile_refs)  # noqa: E402
@@ -323,6 +324,7 @@ def main(argv=None) -> int:
         payload = fetch_verified(bridge, queue, key, args.job_id,
                                  args.fetch_timeout, args.poll)
         exported = verify_payload(payload, job)
+        check_export_identity(exported, args.mr_url, meta["iid"])
         if state.get("sourceSha") not in (None, exported["sourceSha"].lower()) \
                 or state.get("targetSha") not in (None, exported["targetSha"].lower()):
             raise Stop("state-mismatch", detail="sealed SHAs moved under one job id")

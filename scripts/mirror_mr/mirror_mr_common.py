@@ -37,7 +37,8 @@ DETAIL_MAX = _DETAIL_MAX
 
 __all__ = ["Stop", "REQUEST_SCHEMA", "EXPORT_SCHEMA", "MAPPING_SCHEMA",
            "STATE_SCHEMA", "RECEIPT_SCHEMA", "parse_mr_url", "mapping_key",
-           "load_mapping", "resolve_mirror", "check_branch"]
+           "load_mapping", "resolve_mirror", "check_branch",
+           "check_export_identity"]
 
 
 def parse_mr_url(url: str) -> dict:
@@ -125,6 +126,13 @@ def check_branch(value: str, label: str) -> str:
             or value.startswith(("-", "/")) or value.endswith("/"):
         raise Stop("ref-invalid", detail=f"{label} is not a safe branch name")
     return value
+
+
+def check_export_identity(exported: dict, mr_url: str, iid: int) -> None:
+    if str(exported.get("mrUrl") or "") != mr_url \
+            or int(exported.get("mrIid") or 0) != int(iid):
+        raise Stop("request-malformed",
+                   detail="sealed MR != requested MR")
 
 
 def main(argv=None) -> int:  # pragma: no cover - import surface only

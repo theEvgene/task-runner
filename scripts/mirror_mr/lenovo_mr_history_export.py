@@ -28,10 +28,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dell_lan"))
 
 from mirror_mr_common import (DETAIL_MAX, REQUEST_SCHEMA, SHA_RE,
-                              Stop, check_branch)
+                              Stop, check_branch, parse_mr_url)
 from dell_lan_common import (git, git_ok, load_json, manifest_digest, now_iso,
                              safe_name, sha256_bytes, sha256_file,
                              write_json_atomic)  # noqa: E402
+from urllib.parse import quote as _quote
 
 HISTORY_EXPORT_SCHEMA = "mirror-mr-history-export/1"
 
@@ -89,7 +90,7 @@ def read_mr(request: dict, flow_dir: str | None) -> dict:
             raise Stop("mr-unreadable", detail=str(error)[:DETAIL_MAX])
         if not isinstance(observed, dict):
             raise Stop("mr-unreadable", detail="reader returned no MR record")
-        return normalise(observed)
+        return normalise(observed, request)
     return via_glab(request)
 
 
@@ -105,7 +106,7 @@ def _sha(record: dict, *names: str) -> str | None:
     return None
 
 
-def normalise(record: dict) -> dict:
+def normalise(record: dict, request: dict | None = None) -> dict:
     status = str(record.get("status") or record.get("state") or "").lower()
     if status in ("opened", "open"):
         raise Stop("mr-not-merged", detail=(
@@ -118,9 +119,18 @@ def normalise(record: dict) -> dict:
     target = check_branch(str(record.get("targetBranch")
                               or record.get("target_branch") or ""),
                           "target branch")
-    head = _sha(record, "sourceSha", "source_sha", "sha", "head_sha")
+    if request is not None:
+        _check_identity(record, request)
+    diff_refs = record.get("diff_refs") \
+        if isinstance(record.get("diff_refs"), dict) else {}
+    head = _sha(record, "sourceSha", "source_sha", "sha", "head_sha") \
+        or _sha(diff_refs, "head_sha", "headSha")
     base = _sha(record, "targetSha", "target_sha", "baseSha", "diffBaseSha",
-                "base_sha")
+                "base_sha") or _sha(diff_refs, "base_sha", "baseSha")
+    if base is None:
+        # start_sha is the fork point, not the diff base; use it only when
+        # the diff base itself is absent.
+        base = _sha(diff_refs, "start_sha", "startSha")
     if head is None or base is None:
         raise Stop("mr-unreadable", detail="merged MR has no exact revisions")
     squash = None
@@ -143,18 +153,50 @@ def normalise(record: dict) -> dict:
             "squashSha": squash, "mergeCommitSha": merge_commit}
 
 
-def via_glab(request: dict) -> dict:
+def _check_identity(record: dict, request: dict) -> None:
+    want_iid = int(request.get("mrIid"))
+    got_iid = record.get("iid")
+    if got_iid is not None and int(got_iid) != want_iid:
+        raise Stop("mr-unreadable", detail=(
+            f"MR iid {got_iid} != requested {want_iid}"))
+    web_url = str(record.get("web_url") or "")
+    if web_url:
+        try:
+            meta = parse_mr_url(web_url)
+        except Stop:
+            raise Stop("mr-unreadable", detail="MR web_url is not usable")
+        if meta["iid"] != want_iid or meta["host"] != request["gitlabHost"] \
+                or meta["project"].lower() != request["gitlabProject"].lower():
+            raise Stop("mr-unreadable", detail=(
+                f"MR {web_url} != requested {request.get('mrUrl')}"))
+
+
+def _enc_project(project: str) -> str:
+    return _quote(project, safe="")
+
+
+def glab_api(endpoint: str, host: str) -> dict:
     proc = subprocess.run(
-        ["glab", "mr", "view", request["mrUrl"], "--output", "json"],
+        ["glab", "api", endpoint, "--hostname", host],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         check=False)
     if proc.returncode != 0:
         raise Stop("mr-unreadable",
                    detail=(proc.stderr or proc.stdout).strip()[:DETAIL_MAX])
     try:
-        return normalise(json.loads(proc.stdout or "{}"))
+        data = json.loads(proc.stdout or "{}")
     except json.JSONDecodeError as error:
         raise Stop("mr-unreadable", detail=str(error)[:DETAIL_MAX])
+    if not isinstance(data, dict):
+        raise Stop("mr-unreadable", detail="GitLab API returned no MR record")
+    return data
+
+
+def via_glab(request: dict) -> dict:
+    endpoint = (f"projects/{_enc_project(request['gitlabProject'])}"
+                f"/merge_requests/{int(request['mrIid'])}")
+    record = glab_api(endpoint, request["gitlabHost"])
+    return normalise(record, request)
 
 
 def ensure_object(checkout: Path, sha: str, token: str, label: str) -> bool:
@@ -166,6 +208,32 @@ def ensure_object(checkout: Path, sha: str, token: str, label: str) -> bool:
     if not ok:
         return False
     try:
+        ok, _ = git_ok(checkout, "cat-file", "-e", f"{sha}^{{commit}}")
+        return ok
+    finally:
+        git_ok(checkout, "update-ref", "-d", tmp)
+
+
+def ensure_head(checkout: Path, sha: str, iid: int, token: str) -> bool:
+    """Retrieve the historical head even when its branch was deleted.
+
+    GitLab keeps ``refs/merge-requests/<iid>/head`` after the source
+    branch is gone. A SHA fetch is tried first; the MR head ref is the
+    fallback, accepted only when it resolves to exactly the observed SHA.
+    """
+
+    if ensure_object(checkout, sha, token, "head"):
+        return True
+    tmp = f"refs/tmp/mirror-mr/{token}/mr-head"
+    ok, _ = git_ok(checkout, "fetch", "-q", "origin",
+                    f"refs/merge-requests/{int(iid)}/head:{tmp}")
+    if not ok:
+        return False
+    try:
+        ok, resolved = git_ok(checkout, "rev-parse", "--verify",
+                              f"{tmp}^{{commit}}")
+        if not ok or resolved.strip().lower() != sha.lower():
+            return False
         ok, _ = git_ok(checkout, "cat-file", "-e", f"{sha}^{{commit}}")
         return ok
     finally:
@@ -194,11 +262,12 @@ def export(request: dict, observed: dict) -> dict:
         raise Stop("checkout-unavailable", detail=str(checkout)[:DETAIL_MAX])
     base, head = observed["baseSha"], observed["headSha"]
     squash = observed.get("squashSha")
+    iid = int(request["mrIid"])
     git_ok(checkout, "fetch", "-q", "origin")
     if not ensure_object(checkout, base, token, "base"):
         raise Stop("history-unavailable",
                    detail=f"historical base {base[:12]} is not retrievable")
-    if not ensure_object(checkout, head, token, "head"):
+    if not ensure_head(checkout, head, iid, token):
         raise Stop("history-unavailable",
                    detail=f"historical head {head[:12]} is not retrievable; "
                           "the source objects are gone")

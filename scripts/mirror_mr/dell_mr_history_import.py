@@ -24,8 +24,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dell_lan"))
 
-from mirror_mr_common import (DETAIL_MAX, JOB_RE, Stop,
-                              TOKEN_RE, check_branch, load_mapping,
+from mirror_mr_common import (DETAIL_MAX, JOB_RE, Stop, TOKEN_RE, check_branch,
+                              check_export_identity, load_mapping,
                               parse_mr_url, resolve_mirror)
 from dell_mirror_publish import read_remote_refs  # noqa: E402
 from dell_mr_history_publish import (adopt_or_create_history,
@@ -291,6 +291,7 @@ def main(argv=None) -> int:
         payload = fetch_verified(bridge, queue, key, args.job_id,
                                  args.fetch_timeout, args.poll)
         exported = verify_payload(payload, job)
+        check_export_identity(exported, args.mr_url, meta["iid"])
         if state.get("baseSha") not in (None, exported["baseSha"]) \
                 or state.get("headSha") not in (None, exported["headSha"]):
             raise Stop("state-mismatch", detail="sealed SHAs moved under one job id")

@@ -29,10 +29,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dell_lan"))
 
 from mirror_mr_common import (DETAIL_MAX, EXPORT_SCHEMA, REQUEST_SCHEMA, SHA_RE,
-                              Stop, check_branch)
+                              Stop, check_branch, parse_mr_url)
 from dell_lan_common import (git, git_ok, load_json, manifest_digest, now_iso,
                              safe_name, sha256_bytes, sha256_file,
                              write_json_atomic)  # noqa: E402
+from urllib.parse import quote as _quote
 
 
 def parse(argv=None):
@@ -83,11 +84,12 @@ def read_mr(request: dict, flow_dir: str | None) -> dict:
             raise Stop("mr-unreadable", detail=str(error)[:DETAIL_MAX])
         if not isinstance(observed, dict):
             raise Stop("mr-unreadable", detail="reader returned no MR record")
-        return normalise(observed)
+        return normalise(observed, request)
     return via_glab(request)
 
 
-def normalise(record: dict) -> dict:
+def normalise(record: dict, request: dict | None = None,
+                live_target_sha: str | None = None) -> dict:
     status = str(record.get("status") or record.get("state") or "").lower()
     if status not in ("opened", "open"):
         raise Stop("mr-not-open", detail=f"MR state is {status or 'unknown'}")
@@ -95,11 +97,32 @@ def normalise(record: dict) -> dict:
                               or record.get("source_branch") or ""), "source branch")
     target = check_branch(str(record.get("targetBranch")
                               or record.get("target_branch") or ""), "target branch")
-    source_sha = str(record.get("sourceSha") or record.get("source_sha")
-                     or record.get("sha") or record.get("head_sha") or "").lower()
-    target_sha = str(record.get("targetSha") or record.get("target_sha") or "").lower()
-    if not SHA_RE.match(source_sha) or not SHA_RE.match(target_sha):
+    if request is not None:
+        _check_identity(record, request)
+    diff_refs = record.get("diff_refs") \
+        if isinstance(record.get("diff_refs"), dict) else {}
+    head_candidates = {
+        str(record.get("sha") or "").lower(),
+        str(record.get("head_sha") or "").lower(),
+        str(diff_refs.get("head_sha") or "").lower(),
+        str(record.get("sourceSha") or record.get("source_sha") or "").lower(),
+    } - {""}
+    if len(head_candidates) > 1:
+        raise Stop("mr-moved", detail=(
+            "MR head moved between reads; re-read before any retry"))
+    source_sha = next(iter(head_candidates), "")
+    if live_target_sha:
+        target_sha = live_target_sha.lower()
+    else:
+        target_sha = str(record.get("targetSha") or record.get("target_sha")
+                         or "").lower()
+    if not SHA_RE.match(source_sha):
         raise Stop("mr-unreadable", detail="reader returned no exact revisions")
+    if not SHA_RE.match(target_sha or ""):
+        # diff_refs.base_sha/start_sha record the diff base, not the live
+        # target tip; refusing is correct until the live tip is known.
+        raise Stop("mr-unreadable", detail=(
+            "live target tip is unknown; diff_refs base is not the target"))
     return {"status": "opened",
             "title": str(record.get("title") or ""),
             "description": str(record.get("description") or ""),
@@ -107,18 +130,68 @@ def normalise(record: dict) -> dict:
             "sourceSha": source_sha, "targetSha": target_sha}
 
 
-def via_glab(request: dict) -> dict:
+def _check_identity(record: dict, request: dict) -> None:
+    want_iid = int(request.get("mrIid"))
+    got_iid = record.get("iid")
+    if got_iid is not None and int(got_iid) != want_iid:
+        raise Stop("mr-unreadable", detail=(
+            f"MR iid {got_iid} != requested {want_iid}"))
+    web_url = str(record.get("web_url") or "")
+    if web_url:
+        try:
+            meta = parse_mr_url(web_url)
+        except Stop:
+            raise Stop("mr-unreadable", detail="MR web_url is not usable")
+        if meta["iid"] != want_iid or meta["host"] != request["gitlabHost"] \
+                or meta["project"].lower() != request["gitlabProject"].lower():
+            raise Stop("mr-unreadable", detail=(
+                f"MR {web_url} != requested {request.get('mrUrl')}"))
+
+
+def _enc_project(project: str) -> str:
+    return _quote(project, safe="")
+
+
+def glab_api(endpoint: str, host: str) -> dict:
     proc = subprocess.run(
-        ["glab", "mr", "view", request["mrUrl"], "--output", "json"],
+        ["glab", "api", endpoint, "--hostname", host],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         check=False)
     if proc.returncode != 0:
         raise Stop("mr-unreadable",
                    detail=(proc.stderr or proc.stdout).strip()[:DETAIL_MAX])
     try:
-        return normalise(json.loads(proc.stdout or "{}"))
+        data = json.loads(proc.stdout or "{}")
     except json.JSONDecodeError as error:
         raise Stop("mr-unreadable", detail=str(error)[:DETAIL_MAX])
+    if not isinstance(data, dict):
+        raise Stop("mr-unreadable", detail="GitLab API returned no MR record")
+    return data
+
+
+def fetch_branch_tip(request: dict, branch: str) -> str:
+    endpoint = (f"projects/{_enc_project(request['gitlabProject'])}"
+                f"/repository/branches/{_quote(branch, safe='')}")
+    data = glab_api(endpoint, request["gitlabHost"])
+    tip = ""
+    commit = data.get("commit") if isinstance(data.get("commit"), dict) else {}
+    tip = str(commit.get("id") or data.get("commit_id") or "").lower()
+    if not SHA_RE.match(tip):
+        raise Stop("mr-unreadable", detail=(
+            f"live target branch {branch} has no commit id"))
+    return tip
+
+
+def via_glab(request: dict) -> dict:
+    endpoint = (f"projects/{_enc_project(request['gitlabProject'])}"
+                f"/merge_requests/{int(request['mrIid'])}")
+    record = glab_api(endpoint, request["gitlabHost"])
+    target_branch = str(record.get("target_branch") or "")
+    if not target_branch:
+        # Legacy flat fixture shape without branch names cannot route here.
+        return normalise(record, request)
+    live_tip = fetch_branch_tip(request, target_branch)
+    return normalise(record, request, live_tip)
 
 
 def resolve(request: dict, observed: dict) -> dict:
