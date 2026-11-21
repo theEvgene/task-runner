@@ -14,13 +14,19 @@
 // mutation (same bytes the installer hashes), the target blobs are proven
 // present first, and ownership is revalidated immediately after mutation;
 // local changes, foreign installs, and divergent commits are never
-// overwritten and no destructive git reset is attempted. Post-mutation
-// install failures report the new HEAD readback instead of hiding the
-// mutation. Secrets never enter argv or receipts.
+// overwritten and no destructive git reset is attempted. Two managed
+// models are recognized with the same basis before any change (see
+// skills-assess.mjs): proven junctions into this checkout (they follow it
+// across revisions, no reinstall) and managed copies with a current
+// manifest and matching payload (proven stale copies are reinstalled
+// through the same installer after ownership is re-proven against the
+// pre-mutation runtime). Foreign links, changed copies, mixed models and
+// partial installs refuse before any overwrite. Post-mutation install
+// failures report the new HEAD readback instead of hiding the mutation.
+// Secrets never enter argv or receipts.
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
-  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -30,6 +36,10 @@ import {
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HOST_SCHEMA, assertNoSecrets, decideUpdate } from "./lib.mjs";
+import {
+  assessAllSkills,
+  buildExpectedManifest,
+} from "./skills-assess.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");
@@ -258,67 +268,12 @@ const SKILL_NAMES = [
 ];
 
 function assessSkills(fresh) {
-  const names = SKILL_NAMES;
-  if (!fresh) return { state: "runtime-incomplete", names, fresh: null };
-  const states = [];
-  for (const name of names) {
-    const dir = join(skillsDir, name);
-    if (!existsSync(dir)) {
-      states.push("missing");
-      continue;
-    }
-    let manifest;
-    try {
-      manifest = JSON.parse(
-        readFileSync(join(dir, "runtime-manifest.json"), "utf8")
-      );
-    } catch {
-      return {
-        state: "ownership-conflict",
-        names,
-        fresh,
-        detail: `${name}: no managed manifest`,
-      };
-    }
-    const expected = { ...fresh };
-    expected["references/jira-protocol.md"] = fresh["docs/jira-protocol.md"];
-    expected["references/jira-protocol-subtasks.md"] =
-      fresh["docs/jira-protocol-subtasks.md"];
-    expected["references/jira-protocol-batch.md"] =
-      fresh["docs/jira-protocol-batch.md"];
-    expected["references/jira-protocol-handoff.md"] =
-      fresh["docs/jira-protocol-handoff.md"];
-    expected["references/jira-protocol-read-fields.md"] =
-      fresh["docs/jira-protocol-read-fields.md"];
-    delete expected["docs/jira-protocol.md"];
-    delete expected["docs/jira-protocol-subtasks.md"];
-    delete expected["docs/jira-protocol-batch.md"];
-    delete expected["docs/jira-protocol-handoff.md"];
-    delete expected["docs/jira-protocol-read-fields.md"];
-    const keys = Object.keys(expected);
-    if (
-      manifest.schema !== "cli-jira-skill-runtime/1" ||
-      keys.some((k) => manifest.files?.[k] !== expected[k])
-    ) {
-      return {
-        state: "ownership-conflict",
-        names,
-        fresh,
-        detail: `${name}: foreign or stale install`,
-      };
-    }
-    states.push("current");
-  }
-  if (states.every((s) => s === "current"))
-    return { state: "current", names, fresh };
-  if (states.every((s) => s === "missing"))
-    return { state: "missing", names, fresh };
-  return {
-    state: "partial-install",
-    names,
+  return assessAllSkills({
+    skillsDir,
+    checkout,
     fresh,
-    detail: "some skills installed, some missing",
-  };
+    names: SKILL_NAMES,
+  });
 }
 
 let branch = null;
@@ -388,12 +343,17 @@ try {
 }
 
 // Preflight ownership against the current checkout BEFORE any mutation.
-// Foreign (no manifest) or partially installed skills refuse here with the
-// checkout untouched. Hashes come from the working tree (the same bytes the
-// installer hashes), so CRLF-normalized checkouts do not false-positive:
-// a skill current for the old runtime but stale for the new target passes
-// here and is caught by the post-mutation revalidation with the new HEAD
-// visible. Missing skills proceed to mutation then install.
+// Foreign (no manifest, foreign link, changed copy, mixed models) or
+// partially installed skills refuse here with the checkout untouched.
+// Managed junctions into this checkout pass: they follow the checkout
+// across revisions with no reinstall. Managed copies current for the old
+// runtime pass; their update for the new target happens post-mutation
+// through the compatible reinstall route. Hashes come from the working
+// tree (the same bytes the installer hashes), so CRLF-normalized
+// checkouts do not false-positive: a skill current for the old runtime
+// but stale for the new target passes here and is caught by the
+// post-mutation revalidation with the new HEAD visible. Missing skills
+// proceed to mutation then install.
 let currentFresh;
 try {
   currentFresh = freshHashes();
@@ -403,12 +363,15 @@ try {
 const preflight = assessSkills(currentFresh);
 if (
   preflight.state === "ownership-conflict" ||
-  preflight.state === "partial-install"
+  preflight.state === "partial-install" ||
+  preflight.state === "stale-managed"
 ) {
   finish(
     1,
     "refused",
-    preflight.state,
+    preflight.state === "stale-managed"
+      ? "ownership-conflict"
+      : preflight.state,
     `${preflight.detail ?? "skills dir is not managed"}; branch=${branch ?? "detached"} head=${head} clean=${clean} (no checkout change)`
   );
 }
@@ -466,6 +429,10 @@ try {
 // Revalidate immediately after the checkout mutation: the target runtime
 // may differ from the pre-mutation checkout, so a stale or foreign install
 // that passed no earlier check refuses here with the new HEAD visible.
+// Managed junctions need no reinstall (they follow the checkout); proven
+// stale copies (manifests matching the pre-mutation runtime) are removed
+// and reinstalled through the same installer below. Anything unproven
+// refuses with the skills dir untouched.
 let postFresh;
 try {
   postFresh = freshHashes();
@@ -485,7 +452,43 @@ if (
     postCheck.detail ?? "skills dir is not managed"
   );
 }
-if (postCheck.state === "missing") {
+function manifestsEqual(a, b) {
+  const left = a ?? {};
+  const right = b ?? {};
+  const keys = Object.keys(left);
+  return (
+    keys.length === Object.keys(right).length &&
+    keys.every((k) => left[k] === right[k])
+  );
+}
+let reinstalledStale = false;
+if (postCheck.state === "stale-managed") {
+  if (plan.action === "already-current" || postCheck.model !== "copy") {
+    finishWithFreshReadback(
+      1,
+      "refused",
+      "ownership-conflict",
+      `${postCheck.detail ?? "skills dir is not managed"} (clear stale dirs manually, then rerun; nothing was overwritten)`
+    );
+  }
+  const oldExpected = buildExpectedManifest(currentFresh);
+  const proven = (postCheck.perSkill ?? []).every(
+    (s) => s.state === "copy-stale" && manifestsEqual(s.manifest, oldExpected)
+  );
+  if (!proven) {
+    finishWithFreshReadback(
+      1,
+      "refused",
+      "ownership-conflict",
+      `${postCheck.detail ?? "skills dir is not managed"} (ownership changed during update; nothing in skills dir was overwritten)`
+    );
+  }
+  for (const s of postCheck.perSkill) {
+    rmSync(join(skillsDir, s.name), { recursive: true, force: true });
+  }
+  reinstalledStale = true;
+}
+if (postCheck.state === "missing" || reinstalledStale) {
   mkdirSync(skillsDir, { recursive: true });
   const run = spawnSync(
     process.execPath,
@@ -565,7 +568,12 @@ try {
       "install-failed",
       `skills not current after install: ${final.state}`
     );
-  receipt.skills = { dir: skillsDir, state: "current", files: SKILL_NAMES };
+  receipt.skills = {
+    dir: skillsDir,
+    state: "current",
+    model: final.model ?? "copy",
+    files: SKILL_NAMES,
+  };
 } catch (error) {
   finish(1, "refused", "git-failed", error.message);
 }
