@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -491,4 +493,112 @@ test("cli: remote probe is time-bounded so a hung network reads as unreachable",
   assert.match(text, /ls-remote/);
   assert.match(text, /LS_REMOTE_TIMEOUT_MS/);
   assert.match(text, /timeout:\s*LS_REMOTE_TIMEOUT_MS/);
+});
+
+const MANAGED_SKILLS = [
+  "cli-create-lel-service-backlog-issue",
+  "cli-assign-jira-issue",
+  "cli-transition-jira-issue",
+  "cli-transition-jira-status",
+  "cli-extract-jira-content",
+  "cli-find-sibling-issues",
+  "cli-read-selected-fields",
+  "cli-flag-jira-issue",
+  "cli-create-jira-subtask",
+  "cli-create-jira-subtasks",
+];
+
+// Issue #159: proven junctions (release-installer model) report current
+// with their targets and keep the checkout ready.
+test("cli: managed junctions report current with link targets and stay ready", () => {
+  const { work } = makeCheckout();
+  for (const name of MANAGED_SKILLS) {
+    mkdirSync(join(work, "skills", name), { recursive: true });
+    writeFileSync(join(work, "skills", name, "SKILL.md"), `# ${name}\n`);
+  }
+  git(["add", "-A"], work);
+  commitAs(work, "skill shells");
+  git(["push", "-q", "origin", "main"], work);
+  const target = git(["rev-parse", "HEAD"], work);
+  const skills = join(work, "..", "skills");
+  mkdirSync(skills, { recursive: true });
+  for (const name of MANAGED_SKILLS) {
+    symlinkSync(join(work, "skills", name), join(skills, name), "junction");
+  }
+  const r = run([
+    "--checkout",
+    work,
+    "--target-sha",
+    target,
+    "--is-latest",
+    "true",
+    "--skills-dir",
+    skills,
+  ]);
+  assert.equal(r.code, 0, JSON.stringify(r.json));
+  const entry = r.json.checkouts[0];
+  assert.equal(entry.skills.state, "current");
+  assert.equal(entry.skills.perSkill.length, 10);
+  for (const s of entry.skills.perSkill) {
+    assert.equal(s.state, "current");
+    assert.ok(s.linkTarget, `${s.name} names its junction target`);
+  }
+  assert.equal(entry.status, "ready");
+  assert.equal(r.json.selection.outcome, "justified-choice");
+});
+
+// Issue #159: proven-but-stale copies are distinguished from foreign ones:
+// full per-skill list, not-ready, never silent success.
+test("cli: stale managed copies report stale-managed with a basis per skill", () => {
+  const { work } = makeCheckout();
+  const target = git(["rev-parse", "HEAD"], work);
+  const skills = join(work, "..", "skills");
+  for (const name of MANAGED_SKILLS) {
+    const dir = join(skills, name);
+    mkdirSync(dir, { recursive: true });
+    const payload = `payload ${name}\n`;
+    writeFileSync(join(dir, "payload.txt"), payload);
+    const hash = createHash("sha256").update(payload).digest("hex");
+    writeFileSync(
+      join(dir, "runtime-manifest.json"),
+      JSON.stringify({ schema: "cli-jira-skill-runtime/1", files: { "payload.txt": hash } })
+    );
+  }
+  const r = run([
+    "--checkout",
+    work,
+    "--target-sha",
+    target,
+    "--is-latest",
+    "true",
+    "--skills-dir",
+    skills,
+  ]);
+  const entry = r.json.checkouts[0];
+  assert.equal(entry.skills.state, "stale-managed");
+  assert.equal(entry.skills.perSkill.length, 10);
+  for (const s of entry.skills.perSkill) {
+    assert.equal(s.state, "stale");
+    assert.ok(s.detail, `${s.name} names its basis`);
+  }
+  assert.equal(entry.status, "not-ready");
+  assert.equal(entry.reason, "skills-not-current");
+});
+
+test("pure: stale-managed skills are not-ready, never ready", () => {
+  const t = "a".repeat(40);
+  const r = classifyCheckout(
+    {
+      branch: "main",
+      head: t,
+      originMain: t,
+      originReachable: true,
+      clean: true,
+      ancestorOk: true,
+      skillsState: "stale-managed",
+    },
+    { target: t, isLatest: true }
+  );
+  assert.equal(r.status, "not-ready");
+  assert.equal(r.reason, "skills-not-current");
 });
