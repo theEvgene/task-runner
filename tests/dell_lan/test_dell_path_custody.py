@@ -23,6 +23,7 @@ SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "dell_lan"
 sys.path.insert(0, str(SCRIPTS))
 
 import dell_lan_common as common  # noqa: E402  (script module under test)
+import dell_lan_queue as queue_mod  # noqa: E402  (read_key lookup home)
 
 from dell_fixture import Workspace  # noqa: E402  (shared disposable fixture)
 
@@ -131,7 +132,7 @@ class ContainmentTests(unittest.TestCase):
             self.assertIsNone(common.containment(self.key, self.shared))
 
     def test_read_key_refuses_an_unproven_root(self):
-        with mock.patch.object(common, "containment", lambda *args: None):
+        with mock.patch.object(queue_mod, "containment", lambda *args: None):
             with self.assertRaises(common.Stop) as caught:
                 common.read_key(object(), self.root / "queue", self.key, "raw",
                                 repos=[self.root / "checkout"],

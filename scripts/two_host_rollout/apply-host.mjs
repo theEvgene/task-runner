@@ -39,6 +39,12 @@ const RUNTIME_FILES = [
   "scripts/jira-protocol.mjs",
   "scripts/jira_protocol/protocol.mjs",
   "scripts/jira_protocol/operations.mjs",
+  "scripts/jira_protocol/operations-shared.mjs",
+  "scripts/jira_protocol/operations-transition.mjs",
+  "scripts/jira_protocol/operations-assign.mjs",
+  "scripts/jira_protocol/operations-epic.mjs",
+  "scripts/jira_protocol/operations-subtask.mjs",
+  "scripts/jira_protocol/operations-flag.mjs",
   "scripts/jira_protocol/route.mjs",
   "scripts/jira_protocol/batch.mjs",
   "scripts/jira_protocol/batch-parse.mjs",
@@ -47,10 +53,14 @@ const RUNTIME_FILES = [
   "scripts/jira_protocol/batch-execute.mjs",
   "scripts/jira_protocol/handoff.mjs",
   "scripts/jira_protocol/extract.mjs",
+  "scripts/jira_protocol/siblings.mjs",
+  "scripts/jira_protocol/read-fields.mjs",
   "scripts/jira_protocol/html-form.mjs",
   "docs/jira-protocol.md",
+  "docs/jira-protocol-subtasks.md",
   "docs/jira-protocol-batch.md",
   "docs/jira-protocol-handoff.md",
+  "docs/jira-protocol-read-fields.md",
 ];
 
 function usage(message) {
@@ -240,6 +250,8 @@ const SKILL_NAMES = [
   "cli-transition-jira-issue",
   "cli-transition-jira-status",
   "cli-extract-jira-content",
+  "cli-find-sibling-issues",
+  "cli-read-selected-fields",
   "cli-flag-jira-issue",
   "cli-create-jira-subtask",
   "cli-create-jira-subtasks",
@@ -270,13 +282,19 @@ function assessSkills(fresh) {
     }
     const expected = { ...fresh };
     expected["references/jira-protocol.md"] = fresh["docs/jira-protocol.md"];
+    expected["references/jira-protocol-subtasks.md"] =
+      fresh["docs/jira-protocol-subtasks.md"];
     expected["references/jira-protocol-batch.md"] =
       fresh["docs/jira-protocol-batch.md"];
     expected["references/jira-protocol-handoff.md"] =
       fresh["docs/jira-protocol-handoff.md"];
+    expected["references/jira-protocol-read-fields.md"] =
+      fresh["docs/jira-protocol-read-fields.md"];
     delete expected["docs/jira-protocol.md"];
+    delete expected["docs/jira-protocol-subtasks.md"];
     delete expected["docs/jira-protocol-batch.md"];
     delete expected["docs/jira-protocol-handoff.md"];
+    delete expected["docs/jira-protocol-read-fields.md"];
     const keys = Object.keys(expected);
     if (
       manifest.schema !== "cli-jira-skill-runtime/1" ||

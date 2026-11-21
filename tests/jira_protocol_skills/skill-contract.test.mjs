@@ -155,6 +155,12 @@ test("installer source names the actual runtime and records its hashes", async (
     "scripts/jira-protocol.mjs",
     "scripts/jira_protocol/protocol.mjs",
     "scripts/jira_protocol/operations.mjs",
+    "scripts/jira_protocol/operations-shared.mjs",
+    "scripts/jira_protocol/operations-transition.mjs",
+    "scripts/jira_protocol/operations-assign.mjs",
+    "scripts/jira_protocol/operations-epic.mjs",
+    "scripts/jira_protocol/operations-subtask.mjs",
+    "scripts/jira_protocol/operations-flag.mjs",
     "scripts/jira_protocol/route.mjs",
     "scripts/jira_protocol/batch.mjs",
     "scripts/jira_protocol/handoff.mjs",
@@ -162,6 +168,7 @@ test("installer source names the actual runtime and records its hashes", async (
     "scripts/jira_protocol/siblings.mjs",
     "scripts/jira_protocol/html-form.mjs",
     "docs/jira-protocol.md",
+    "docs/jira-protocol-subtasks.md",
     "docs/jira-protocol-handoff.md",
   ]) {
     assert.match(text, new RegExp(file.replace(/[./-]/g, "\\$&")));

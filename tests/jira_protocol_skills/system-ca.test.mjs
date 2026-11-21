@@ -70,9 +70,16 @@ test("skills and runtime add no TLS bypass or error-handling shim", async () => 
   const targets = [
     ...names.map((name) => skill(name)),
     doc("jira-protocol.md"),
+    doc("jira-protocol-subtasks.md"),
     script("jira-protocol.mjs"),
     script("jira_protocol/protocol.mjs"),
     script("jira_protocol/operations.mjs"),
+    script("jira_protocol/operations-shared.mjs"),
+    script("jira_protocol/operations-transition.mjs"),
+    script("jira_protocol/operations-assign.mjs"),
+    script("jira_protocol/operations-epic.mjs"),
+    script("jira_protocol/operations-subtask.mjs"),
+    script("jira_protocol/operations-flag.mjs"),
     script("jira_protocol/extract.mjs"),
     script("jira_protocol/html-form.mjs"),
   ];

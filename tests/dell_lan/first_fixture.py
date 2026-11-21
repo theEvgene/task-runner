@@ -58,12 +58,21 @@ def lenovo_digest() -> str:
     return hashlib.sha256((SCRIPTS / "lenovo_first_export.py").read_bytes()).hexdigest()
 
 
+def _combined_digest(names: tuple[str, ...]) -> str:
+    digest = hashlib.sha256()
+    for name in names:
+        digest.update((SCRIPTS / name).read_bytes())
+    return digest.hexdigest()
+
+
 def dell_digest() -> str:
-    return hashlib.sha256((SCRIPTS / "dell_first_import.py").read_bytes()).hexdigest()
+    return _combined_digest(("dell_first_import.py", "dell_first_import_verify.py"))
 
 
 def common_digest() -> str:
-    return hashlib.sha256((SCRIPTS / "dell_lan_common.py").read_bytes()).hexdigest()
+    return _combined_digest(
+        ("dell_lan_common.py", "dell_lan_paths.py", "dell_lan_queue.py")
+    )
 
 
 def bridge_digest() -> str:
