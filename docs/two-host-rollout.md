@@ -92,15 +92,25 @@ declared current. Final verification on both hosts is branch `main` with
   target, `main` ref untouched, never declared current.
 - Ownership is preflighted against the working tree before any checkout
   mutation (same bytes the installer hashes) with the target blobs proven
-  present first, and revalidated immediately after mutation:
-  `ownership-conflict` (foreign/stale skills, never overwritten) refuses
-  with the checkout untouched when detected pre-mutation, and with the new
-  `HEAD` readback when detected post-mutation. No destructive `git reset
---hard` rollback is attempted; post-update `install-failed` reports the
-  moved `HEAD` instead of hiding it.
+  present first, and revalidated immediately after mutation.
+  Two managed models are recognized with the same basis before any
+  change (`scripts/two_host_rollout/skills-assess.mjs`): proven
+  junctions into the rollout checkout (release-installer model; they
+  follow the checkout across revisions, no reinstall) and managed
+  copies with a current `runtime-manifest.json` whose every listed
+  payload file hashes to its entry. Proven stale copies are removed
+  and reinstalled through the existing copy installer after ownership
+  is re-proven against the pre-mutation runtime. `ownership-conflict`
+  (foreign link, missing manifest, changed copy, mixed junction+copy
+  models, unproven stale install) refuses with the checkout untouched
+  when detected pre-mutation, and with the new `HEAD` readback and the
+  skills dir untouched when detected post-mutation. No destructive
+  `git reset --hard` rollback is attempted; post-update `install-failed`
+  reports the moved `HEAD` instead of hiding it.
 - Refusals name the cause and actual state: `dirty-checkout`,
   `diverged`, `wrong-branch`, `revision-mismatch`,
-  `ownership-conflict` (foreign/stale skills, never overwritten),
+  `ownership-conflict` (foreign link, missing manifest, changed copy,
+  mixed models, or unproven stale install — never overwritten),
   `partial-install`, `install-failed`, `git-failed`. Partial success is
   `partial`, never `updated`. Rerun with the same revision is safe;
   success leaves no `*.install-*` or `*.bak` backups and no secrets in
@@ -118,10 +128,13 @@ repository path, branch, `HEAD`, target remote ref plus reachability
 (a time-bounded `ls-remote --heads` probe, never `fetch`: a hung network
 reads as unreachable, never hangs the diagnosis), `HEAD`-to-target
 ancestry (`merge-base --is-ancestor`), dirty/detached flags, and the full
-per-skill link list (`dir`/`symlink`/`missing` with managed-manifest
-state for every skill, even when one of them is an ownership-conflict).
-Unknown facts (`head`, cleanliness, remote ref) are reported as `unknown`,
-never as clean or current.
+per-skill link list (`dir`/`file`/`symlink`/`junction`/`missing` with its
+basis for every skill, even when one of them is an ownership-conflict:
+`current` for a managed junction into the checkout or a copy with a
+current manifest and matching payload, `stale` for a managed copy made
+for another revision, `ownership-conflict` for a foreign link, a missing
+manifest, or a changed copy). Unknown facts (`head`, cleanliness, remote
+ref) are reported as `unknown`, never as clean or current.
 
 Pinned mode (`--is-latest false`) deliberately does not gate on the remote
 or on ancestry: `apply-host` pinned performs `checkout --detach <target>`
@@ -144,6 +157,6 @@ authenticated fetch immediately before any authorized rollout.
 ## Verification (local only)
 
 ```text
-node --test tests/two_host_rollout/rollout-lib.test.mjs tests/two_host_rollout/rollout-scenario.test.mjs tests/two_host_rollout/apply-host.test.mjs tests/two_host_rollout/collect-result.test.mjs tests/two_host_rollout/diagnose-checkouts.test.mjs
+node --test tests/two_host_rollout/rollout-lib.test.mjs tests/two_host_rollout/rollout-scenario.test.mjs tests/two_host_rollout/apply-host.test.mjs tests/two_host_rollout/apply-host-skills.test.mjs tests/two_host_rollout/collect-result.test.mjs tests/two_host_rollout/diagnose-checkouts.test.mjs
 node scripts/check-file-tokens.mjs --all
 ```

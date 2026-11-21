@@ -13,7 +13,6 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
-  readlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -24,6 +23,7 @@ import {
   classifyCheckout,
   selectCheckout,
 } from "./lib.mjs";
+import { assessAllSkills } from "./skills-assess.mjs";
 
 const RUNTIME_FILES = [
   "scripts/jira-protocol.mjs",
@@ -148,28 +148,6 @@ function probeOrigin(checkout) {
   }
 }
 
-function linkKind(path) {
-  let st;
-  try {
-    st = lstatSync(path);
-  } catch (error) {
-    if (error?.code === "ENOENT") return { kind: "missing", linkTarget: null };
-    return { kind: "unknown", linkTarget: null };
-  }
-  if (st.isSymbolicLink()) {
-    let linkTarget = null;
-    try {
-      linkTarget = readlinkSync(path);
-    } catch {
-      linkTarget = null;
-    }
-    return { kind: "symlink", linkTarget };
-  }
-  if (st.isDirectory()) return { kind: "dir", linkTarget: null };
-  if (st.isFile()) return { kind: "file", linkTarget: null };
-  return { kind: "other", linkTarget: null };
-}
-
 function assessSkills(checkout, skillsDir) {
   let fresh = null;
   try {
@@ -181,95 +159,50 @@ function assessSkills(checkout, skillsDir) {
   } catch {
     return { state: "runtime-incomplete", perSkill: [], fresh: null };
   }
-  const expected = { ...fresh };
-  expected["references/jira-protocol.md"] = expected["docs/jira-protocol.md"];
-  expected["references/jira-protocol-subtasks.md"] =
-    expected["docs/jira-protocol-subtasks.md"];
-  expected["references/jira-protocol-batch.md"] =
-    expected["docs/jira-protocol-batch.md"];
-  expected["references/jira-protocol-handoff.md"] =
-    expected["docs/jira-protocol-handoff.md"];
-  expected["references/jira-protocol-read-fields.md"] =
-    expected["docs/jira-protocol-read-fields.md"];
-  delete expected["docs/jira-protocol.md"];
-  delete expected["docs/jira-protocol-subtasks.md"];
-  delete expected["docs/jira-protocol-batch.md"];
-  delete expected["docs/jira-protocol-handoff.md"];
-  delete expected["docs/jira-protocol-read-fields.md"];
-  const keys = Object.keys(expected);
-  const perSkill = [];
-  let current = 0;
-  let missing = 0;
-  // Report every skill link even on conflict: a foreign/stale install never
-  // truncates the rest of the list, so the operator sees all links at once.
-  let conflictDetail = null;
-  for (const name of SKILL_NAMES) {
-    const dir = join(skillsDir, name);
-    const link = linkKind(dir);
-    if (link.kind === "missing") {
-      missing += 1;
-      perSkill.push({
-        name,
-        kind: link.kind,
-        linkTarget: null,
-        state: "missing",
-      });
-      continue;
+  // Same basis as the executable rollout path (see skills-assess.mjs):
+  // proven junctions into this checkout, managed copies with a current
+  // manifest and matching payload, missing entries, and foreign/changed
+  // installs each report their own state and basis. A foreign/stale
+  // install never truncates the rest of the list, so the operator sees
+  // all links at once.
+  const assessed = assessAllSkills({
+    skillsDir,
+    checkout,
+    fresh,
+    names: SKILL_NAMES,
+  });
+  const perSkill = assessed.perSkill.map((s) => {
+    let kind = s.kind;
+    if (s.kind === "link") {
+      try {
+        kind = lstatSync(join(skillsDir, s.name)).isSymbolicLink()
+          ? "symlink"
+          : "junction";
+      } catch {
+        kind = "link";
+      }
     }
-    let manifest = null;
-    try {
-      manifest = JSON.parse(
-        readFileSync(join(dir, "runtime-manifest.json"), "utf8")
-      );
-    } catch {
-      perSkill.push({
-        name,
-        kind: link.kind,
-        linkTarget: link.linkTarget,
-        state: "ownership-conflict",
-        detail: "no managed manifest",
-      });
-      conflictDetail ??= `${name}: no managed manifest`;
-      continue;
-    }
-    if (
-      manifest.schema !== "cli-jira-skill-runtime/1" ||
-      keys.some((k) => manifest.files?.[k] !== expected[k])
-    ) {
-      perSkill.push({
-        name,
-        kind: link.kind,
-        linkTarget: link.linkTarget,
-        state: "ownership-conflict",
-        detail: "foreign or stale install",
-      });
-      conflictDetail ??= `${name}: foreign or stale install`;
-      continue;
-    }
-    current += 1;
-    perSkill.push({
-      name,
-      kind: link.kind,
-      linkTarget: link.linkTarget,
-      state: "current",
-    });
-  }
-  if (conflictDetail !== null)
+    const state =
+      s.state === "junction-current" || s.state === "copy-current"
+        ? "current"
+        : s.state === "copy-stale"
+          ? "stale"
+          : s.state === "foreign"
+            ? "ownership-conflict"
+            : s.state;
     return {
-      state: "ownership-conflict",
-      perSkill,
-      fresh,
-      detail: conflictDetail,
+      name: s.name,
+      kind,
+      linkTarget: s.linkTarget ?? null,
+      state,
+      detail: s.detail ?? null,
     };
-  if (current === SKILL_NAMES.length)
-    return { state: "current", perSkill, fresh };
-  if (missing === SKILL_NAMES.length)
-    return { state: "missing", perSkill, fresh };
+  });
   return {
-    state: "partial-install",
+    state: assessed.state,
     perSkill,
     fresh,
-    detail: "some skills installed, some missing",
+    detail: assessed.detail ?? null,
   };
 }
 

@@ -254,7 +254,11 @@ export function classifyCheckout(facts, { target, isLatest }) {
       nextAction: nextFor("dirty-checkout"),
     };
   const skills = facts.skillsState ?? "unknown";
-  if (skills === "ownership-conflict" || skills === "partial-install")
+  if (
+    skills === "ownership-conflict" ||
+    skills === "partial-install" ||
+    skills === "stale-managed"
+  )
     return {
       status: "not-ready",
       reason: "skills-not-current",
