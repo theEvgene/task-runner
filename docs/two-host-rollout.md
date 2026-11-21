@@ -1,6 +1,12 @@
 # Two-host rollout (issue #133)
 
 One supported scenario updates Dell and Lenovo to one explicitly chosen
+published revision of task-runner. For the dual-repo run (task-runner +
+Personal Agent Toolkit under one verifiable launch, issue #162) use
+`docs/two-host-dual-rollout.md` instead; the per-host rules below are
+shared by both.
+
+One supported scenario updates Dell and Lenovo to one explicitly chosen
 published revision, installs the Jira CLI/skills, and verifies revision and
 installed files per machine. Reuses `scripts/install-cli-jira-skills.mjs`
 and the signed LAN route (`docs/lan-bridge.md`). No live run happens

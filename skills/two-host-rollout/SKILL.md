@@ -6,6 +6,9 @@ description: Roll out one published task-runner revision to Dell and Lenovo and 
 # Two-host rollout
 
 Single entry: `docs/two-host-rollout.md` in the task-runner checkout.
+Dual-repo runs (task-runner + PAT, issue #162): `docs/two-host-dual-rollout.md`
+with `request-dual-rollout` / `apply-dual-host` / `collect-dual-result` /
+`verify-dual-readback` (two pins, four combos, same JOBID rule).
 No second instruction exists. A live run needs separate authorization;
 shipping this skill proves nothing live.
 
