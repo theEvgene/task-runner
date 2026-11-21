@@ -25,6 +25,7 @@ sys.path[:0] = [str(item) for item in (BRIDGE_DIR, WORKER_DIR, HERE)
                 if str(item) not in sys.path]
 
 import lan_bridge as bridge  # noqa: E402
+import installer_env  # noqa: E402
 import reasons  # noqa: E402  (single owner of local refusal reasons)
 import wait as waitmod  # noqa: E402  (single owner of job-state wording)
 # Only the Lenovo-side probe program text lives in ``remote_probe``; this
@@ -93,6 +94,7 @@ def validate_config(raw: dict) -> dict:
     lenovo = raw.get("lenovo")
     if not isinstance(local, dict) or not isinstance(lenovo, dict):
         raise Refusal("local and lenovo configuration objects are required")
+    environment = installer_env.validate_environment(lenovo)
     config = {
         "scenario": scenario,
         "queue": _string(raw, "queue"),
@@ -111,6 +113,8 @@ def validate_config(raw: dict) -> dict:
     }
     if config["keyFormat"] not in ("raw", "base64"):
         raise Refusal("keyFormat must be raw or base64")
+    if environment is not None:
+        config["lenovo"]["environment"] = environment
     if "revision" in (lenovo or {}):
         # Removed blocker: the stale HEAD-vs-configured Task Runner pin no
         # longer gates LAN operation. Old configs may still carry the field;
@@ -122,6 +126,9 @@ def validate_config(raw: dict) -> dict:
     for side in ("local", "lenovo"):
         names = [item["name"] for item in config[side]["components"]]
         names.extend(item["name"] for item in config[side]["tools"])
+        if side == "lenovo":
+            names.extend(installer_env.all_names(
+                config["lenovo"].get("environment")))
         if len(names) != len(set(names)):
             raise Refusal(f"{side} component names must be unique")
     return config
@@ -219,28 +226,6 @@ def _report(config: dict, job_id: str, components: list[dict],
     return report
 
 
-def _revision_evidence(schema: str, item: dict, definition: dict) -> dict:
-    """Bind a directory component's observed SHA to its exact cwd.
-
-    ``/1`` evidence predates the revision field and is legacy, never verified
-    revision evidence.  A malformed SHA or a cwd digest for another path is
-    untrusted.  This field is evidence for the selected check only; it never
-    changes this readiness report's outcome.
-    """
-    if schema != "lenovo-readiness-probe/2":
-        return {"observedRevision": None, "revisionEvidence": "legacy"}
-    digest = hashlib.sha256(definition["path"].encode("utf-8")).hexdigest()
-    observed = item.get("observedRevision")
-    readable = observed is None or (
-        isinstance(observed, str) and len(observed) == 40
-        and all(char in "0123456789abcdef" for char in observed))
-    if item.get("cwdDigest") != digest or not readable:
-        return {"observedRevision": None, "revisionEvidence": "untrusted"}
-    if observed is None:
-        return {"observedRevision": None, "revisionEvidence": "unconfirmed"}
-    return {"observedRevision": observed, "revisionEvidence": "verified"}
-
-
 def _validate_worker(payload: dict, config: dict) -> list[dict]:
     for field in ("timed_out", "output_truncated"):
         if field not in payload or type(payload[field]) is not bool:
@@ -267,15 +252,19 @@ def _validate_worker(payload: dict, config: dict) -> list[dict]:
             or body.get("scenario") != config["scenario"] \
             or not isinstance(body.get("components"), list):
         raise Refusal("verified worker result is not bound to the selected readiness scenario")
+    cmd_defs, rt_defs = installer_env.env_definitions(config)
     allowed = {item["name"] for item in config["lenovo"]["components"]}
     allowed.update(item["name"] for item in config["lenovo"]["tools"])
+    allowed.update(cmd_defs)
+    allowed.update(rt_defs)
     raw_components = body["components"]
     if any(not isinstance(item, dict) or item.get("name") not in allowed
            or item.get("state") not in ("confirmed", "missing", "stale", "unconfirmed")
            for item in raw_components):
         raise Refusal("verified worker result contains an unexpected component")
     expected_count = (len(config["lenovo"]["components"])
-                      + len(config["lenovo"]["tools"]))
+                      + len(config["lenovo"]["tools"])
+                      + len(cmd_defs) + len(rt_defs))
     if (len(raw_components) != expected_count
             or len({x["name"] for x in raw_components}) != expected_count):
         raise Refusal("verified worker result omitted or duplicated a required component")
@@ -292,12 +281,18 @@ def _validate_worker(payload: dict, config: dict) -> list[dict]:
     definitions = {item["name"]: item for item in config["lenovo"]["components"]}
     components = []
     for item in raw_components:
-        entry = _component(item["name"], "lenovo", item["state"],
-                           state_messages[item["state"]][0],
-                           state_messages[item["state"]][1])
-        definition = definitions.get(item["name"])
-        if definition is not None and definition["type"] == "directory":
-            entry.update(_revision_evidence(body["schema"], item, definition))
+        resolved = installer_env.check_item(item, cmd_defs, rt_defs)
+        if resolved is not None:
+            entry = _component(item["name"], "lenovo", item["state"],
+                               resolved[0], resolved[1])
+        else:
+            entry = _component(item["name"], "lenovo", item["state"],
+                               state_messages[item["state"]][0],
+                               state_messages[item["state"]][1])
+            definition = definitions.get(item["name"])
+            if definition is not None and definition["type"] == "directory":
+                entry.update(installer_env.revision_evidence(
+                    body["schema"], item, definition))
         components.append(entry)
     return [_component("lenovo-worker", "lenovo", "confirmed",
                        "MAC-bound worker result verified", "none"), *components]
