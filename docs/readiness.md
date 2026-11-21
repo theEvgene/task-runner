@@ -139,14 +139,58 @@ pre-submit pin. Evidence from the older `lenovo-readiness-probe/1` is still
 accepted here for presence, but it carries no revision and is never verified
 revision evidence for a selected check.
 
+## Installer environment preflight (issue #160)
+
+A present shell is not proof that an installer command resolves in that
+process: PAT rollout on Lenovo failed with PowerShell available but
+`Get-FileHash` absent until the process imported its module. The optional
+`lenovo.environment` block extends the same signed probe with that
+effective installer context. It is read-only and changes nothing on
+either host:
+
+```json
+"lenovo": {
+  ...
+  "environment": {
+    "shell": "<absolute installer shell; default discovers powershell then pwsh>",
+    "commands": [{"name": "Get-FileHash", "module": "Microsoft.PowerShell.Utility"}],
+    "runtimes": [{"name": "node", "command": "node", "minimum": "20.0.0"}]
+  }
+}
+```
+
+`shell` may also be a 1..8 argv prefix when the installer shell needs a
+launcher. `commands` are resolved with `Get-Command` in that shell. When
+the command is absent but `module` lists available, the entry is
+`missing` with cause `module-available`: the installer process must
+`Import-Module` before use (the recorded PAT fix). A missing module is
+`module-missing`; no usable shell is `shell-unavailable` (`unconfirmed`).
+`runtimes` run `<command> --version` against `minimum` when present:
+available (`confirmed`, meets the minimum or no minimum), `missing`
+(executable absent), incompatible (`stale`, below the minimum), or
+unknown (`unconfirmed`, version unreadable), each with its cause.
+
+The probe output carries only names, states, and an allowlisted
+kind/detail code; observed versions, paths, keys, and worker stderr never
+enter the report. Any `missing`, `stale`, or `unconfirmed` environment
+entry makes the report `not-ready` (exit `1`): the dependent install must
+not run. An expired wait stays `unknown` with the same-id resume
+(`--job-id`); the seam never submits a second job while the outcome is
+unknown, and the environment block is part of the bound checklist a
+re-read must match exactly.
+
 ## Local fixture verification
 
 ```text
 <python> -m unittest discover -s tests/readiness -p "test_*.py" -v
 ```
-
 The suite uses temporary files, an ephemeral fake key, and a fake worker. It
 covers success, a stale component, bad MAC, timeout followed by same-ID
 retrieval, and concurrent calls, plus an uncertain preflight that reports one
 path-free reason and publishes no signed job. It performs no network or
-corporate access.
+corporate access. `test_installer_environment.py` adds the installer
+preflight: command contexts through a fake installer shell (including the
+module-available case), the runtime available/missing/incompatible/unknown
+matrix, validation of the environment block, and the gate that keeps a
+non-confirmed environment at `not-ready` with one job and secret-free
+output.
