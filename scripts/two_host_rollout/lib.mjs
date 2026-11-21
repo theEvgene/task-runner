@@ -203,3 +203,201 @@ export function verifyLenovoPayload(payload, { target, isLatest }) {
     );
   return { ok: true, refused: false, receipt };
 }
+
+export const DIAGNOSE_SCHEMA = "two-host-rollout-diagnose/1";
+
+// Read-only classification for issue #161. Pure: facts in, verdict out.
+// facts: { branch (string|null; null = detached), head, originMain|null,
+//   originReachable, clean (boolean|null; null = unknown), ancestorOk|null,
+//   skillsState }. Unknown is never reported as ready: any unproven core
+// fact (head, cleanliness) forces unknown.
+export function classifyCheckout(facts, { target, isLatest }) {
+  const t = String(target ?? "").toLowerCase();
+  const nextFor = (reason) =>
+    ({
+      "dirty-checkout":
+        "commit or stash local changes, then rerun the same revision",
+      diverged:
+        "rebase local commits onto the published revision or pick that revision explicitly; never force",
+      detached:
+        "move to main (latest) or rerun with --is-latest false for a pinned revision",
+      "wrong-branch":
+        "move to main (latest) or rerun with --is-latest false for a pinned revision",
+      "revision-mismatch":
+        "rerun with the verified origin/main SHA, not a guessed one",
+      "remote-unavailable":
+        "restore the origin remote (network/path), then rerun diagnose; nothing was changed",
+      "skills-not-current":
+        "remove only foreign or stale skill dirs manually, then rerun; nothing was overwritten",
+      "runtime-incomplete":
+        "fix the checkout runtime files, then rerun; nothing was changed",
+      unknown:
+        "stop and reconcile before any retry; unknown is never clean or current",
+    })[reason] ?? "stop and reconcile before any retry";
+  if (!SHA_RE.test(t))
+    return {
+      status: "unknown",
+      reason: "bad-target",
+      nextAction: nextFor("unknown"),
+    };
+  const head = String(facts?.head ?? "").toLowerCase();
+  if (!SHA_RE.test(head) || (facts?.clean !== true && facts?.clean !== false))
+    return {
+      status: "unknown",
+      reason: "unknown",
+      nextAction: nextFor("unknown"),
+    };
+  if (facts.clean !== true)
+    return {
+      status: "not-ready",
+      reason: "dirty-checkout",
+      nextAction: nextFor("dirty-checkout"),
+    };
+  const skills = facts.skillsState ?? "unknown";
+  if (skills === "ownership-conflict" || skills === "partial-install")
+    return {
+      status: "not-ready",
+      reason: "skills-not-current",
+      nextAction: nextFor("skills-not-current"),
+    };
+  if (skills === "runtime-incomplete" || skills === "unknown")
+    return {
+      status: "unknown",
+      reason:
+        skills === "runtime-incomplete" ? "runtime-incomplete" : "unknown",
+      nextAction: nextFor(
+        skills === "runtime-incomplete" ? "runtime-incomplete" : "unknown"
+      ),
+    };
+  const branch = facts.branch ?? null;
+  const detached = branch === null || branch === "detached";
+  // Pinned mode never fetches and apply-host moves any clean checkout with
+  // `checkout --detach <target>` (branch refs untouched), so a detached HEAD
+  // away from the target is an actionable pinned move, not a blocker.
+  // Ancestry and remote reachability stay visible in the entry fields but do
+  // not gate pinned readiness, matching the no-fetch pinned rollout path.
+  if (detached && !isLatest) {
+    if (head === t)
+      return {
+        status: "ready",
+        reason: "ready-detached-pinned",
+        nextAction:
+          "facts are point-in-time; reverify with apply-host before any authorized rollout",
+      };
+    return {
+      status: "ready",
+      reason: "ready-pinned-move",
+      nextAction:
+        "facts are point-in-time; reverify with apply-host before any authorized rollout",
+    };
+  }
+  if (detached) {
+    return {
+      status: "not-ready",
+      reason: "detached",
+      nextAction: nextFor("detached"),
+    };
+  }
+  if (isLatest) {
+    if (!facts.originReachable)
+      return {
+        status: "not-ready",
+        reason: "remote-unavailable",
+        nextAction: nextFor("remote-unavailable"),
+      };
+    const originMain = String(facts.originMain ?? "").toLowerCase();
+    if (!SHA_RE.test(originMain))
+      return {
+        status: "unknown",
+        reason: "unknown",
+        nextAction: nextFor("unknown"),
+      };
+    if (originMain !== t)
+      return {
+        status: "not-ready",
+        reason: "revision-mismatch",
+        nextAction: nextFor("revision-mismatch"),
+      };
+    if (branch !== "main")
+      return {
+        status: "not-ready",
+        reason: "wrong-branch",
+        nextAction: nextFor("wrong-branch"),
+      };
+    if (head === t)
+      return {
+        status: "ready",
+        reason: "ready-current",
+        nextAction:
+          "facts are point-in-time; reverify with apply-host before any authorized rollout",
+      };
+    if (facts.ancestorOk !== true)
+      return {
+        status: "not-ready",
+        reason: "diverged",
+        nextAction: nextFor("diverged"),
+      };
+    return {
+      status: "ready",
+      reason: "ready-behind",
+      nextAction:
+        "facts are point-in-time; reverify with apply-host before any authorized rollout",
+    };
+  }
+  if (head === t)
+    return {
+      status: "ready",
+      reason: "ready-pinned",
+      nextAction:
+        "facts are point-in-time; reverify with apply-host before any authorized rollout",
+    };
+  return {
+    status: "ready",
+    reason: "ready-pinned-move",
+    nextAction:
+      "facts are point-in-time; reverify with apply-host before any authorized rollout",
+  };
+}
+
+// Deterministic selection over classified candidates for issue #161.
+// entries: [{ checkout, classification: { status, reason } }]. Sorted by
+// checkout path so the choice never changes silently. One ready entry is a
+// justified choice; several ready entries are ambiguous (caller reruns with
+// a single --checkout); no ready entry reports the top blocker.
+export function selectCheckout(entries, { target, isLatest } = {}) {
+  const sorted = [...(entries ?? [])].sort((a, b) =>
+    String(a?.checkout ?? "").localeCompare(String(b?.checkout ?? ""))
+  );
+  const ranking = sorted.map((e) => ({
+    checkout: e?.checkout ?? null,
+    status: e?.classification?.status ?? "unknown",
+    reason: e?.classification?.reason ?? "unknown",
+  }));
+  const ready = sorted.filter((e) => e?.classification?.status === "ready");
+  if (ready.length === 1)
+    return {
+      choice: ready[0].checkout,
+      outcome: "justified-choice",
+      reason: ready[0].classification.reason,
+      ranking,
+      nextAction: `roll out ${ready[0].checkout} only after apply-host reverifies ${String(target ?? "").toLowerCase()} (isLatest=${Boolean(isLatest)}); reset, force and delete are never used`,
+    };
+  if (ready.length > 1)
+    return {
+      choice: null,
+      outcome: "ambiguous",
+      reason: "ambiguous",
+      ranking,
+      nextAction: `more than one ready checkout (${ready.length}): rerun diagnose with a single --checkout for the intended copy; nothing was changed`,
+    };
+  const first = sorted[0];
+  return {
+    choice: null,
+    outcome: "no-ready-candidate",
+    reason: first?.classification?.reason ?? "unknown",
+    ranking,
+    nextAction:
+      first?.classification?.nextAction ??
+      "stop and reconcile before any retry",
+  };
+}

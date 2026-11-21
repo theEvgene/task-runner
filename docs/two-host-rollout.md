@@ -52,21 +52,22 @@ declared current. Final verification on both hosts is branch `main` with
    target cannot be pinned: the job then stays `unverified-target`. Observe
    the SAME id every 30 s for 10 min (`docs/lan-bridge.md` observation
    rule: `fetch --timeout 600 --poll 30` or `get.py --window 60 --poll 30
-   --max-windows 10`). A short-timeout expiry is **unknown** with the
+--max-windows 10`). A short-timeout expiry is **unknown** with the
    same-id resume action: re-fetch the SAME id, never submit a new id while
    unknown. Report `no response` only after the full 600 s watch.
+
 3. Run the Dell host step locally with the same target:
    `node scripts/two_host_rollout/apply-host.mjs --checkout <dell> ...`.
 4. Collect the Lenovo receipt ONLY from the MAC-verified same-job fetch
    stdout (never hand-copy a receipt file) with the exact flags:
    `node scripts/two_host_rollout/collect-lenovo-result.mjs --queue
-   <queue> --key-file <key> [--key-format raw|base64] --job-id <JOBID>
-   --target-sha <sha> --is-latest true|false --out <lenovo.receipt.json>
-   --bridge scripts/lan_bridge/lan_bridge.py --python <python>
-   --fetch-timeout 600 --poll 30`.
+<queue> --key-file <key> [--key-format raw|base64] --job-id <JOBID>
+--target-sha <sha> --is-latest true|false --out <lenovo.receipt.json>
+--bridge scripts/lan_bridge/lan_bridge.py --python <python>
+--fetch-timeout 600 --poll 30`.
    The fetch inside is the signed `lan_bridge.py fetch --queue <queue-dir>
-   --key-file <key-path> [--key-format raw|base64] --id <same-job-id>
-   --timeout 600 --poll 30`. The script binds the sealed job command to
+--key-file <key-path> [--key-format raw|base64] --id <same-job-id>
+--timeout 600 --poll 30`. The script binds the sealed job command to
    this rollout, checks transport (`timed_out`, `output_truncated`,
    status) then the stdout receipt (schema, target, flag, per-host rules
    including `branch/main` and `originMain` for latest), and writes
@@ -76,8 +77,8 @@ declared current. Final verification on both hosts is branch `main` with
    re-fetch the SAME id with the same `fetch --timeout/--poll`).
 5. Combine both receipts:
    `node scripts/two_host_rollout/verify-readback.mjs --dell-receipt
-   <dell.receipt.json> --lenovo-receipt <lenovo.receipt.json
-   (collect --out)> --target-sha <sha> --is-latest true|false`.
+<dell.receipt.json> --lenovo-receipt <lenovo.receipt.json
+(collect --out)> --target-sha <sha> --is-latest true|false`.
    Report `updated` only when both receipts verify against the same
    target.
 
@@ -95,7 +96,7 @@ declared current. Final verification on both hosts is branch `main` with
   `ownership-conflict` (foreign/stale skills, never overwritten) refuses
   with the checkout untouched when detected pre-mutation, and with the new
   `HEAD` readback when detected post-mutation. No destructive `git reset
-  --hard` rollback is attempted; post-update `install-failed` reports the
+--hard` rollback is attempted; post-update `install-failed` reports the
   moved `HEAD` instead of hiding it.
 - Refusals name the cause and actual state: `dirty-checkout`,
   `diverged`, `wrong-branch`, `revision-mismatch`,
@@ -105,9 +106,44 @@ declared current. Final verification on both hosts is branch `main` with
   success leaves no `*.install-*` or `*.bak` backups and no secrets in
   argv or receipts.
 
+## Diagnose (read-only, issue #161)
+
+```text
+node scripts/two_host_rollout/diagnose-checkouts.mjs --checkout <dir> [--checkout <dir> ...] --target-sha <sha> --is-latest true|false --skills-dir <dir> [--skills-dir <dir> ...] [--origin-ref refs/remotes/origin/main] [--out <file>]
+```
+
+One `--skills-dir` is shared by every candidate; one per `--checkout` in
+the same order selects distinct skill dirs. The report shows per checkout:
+repository path, branch, `HEAD`, target remote ref plus reachability
+(a time-bounded `ls-remote --heads` probe, never `fetch`: a hung network
+reads as unreachable, never hangs the diagnosis), `HEAD`-to-target
+ancestry (`merge-base --is-ancestor`), dirty/detached flags, and the full
+per-skill link list (`dir`/`symlink`/`missing` with managed-manifest
+state for every skill, even when one of them is an ownership-conflict).
+Unknown facts (`head`, cleanliness, remote ref) are reported as `unknown`,
+never as clean or current.
+
+Pinned mode (`--is-latest false`) deliberately does not gate on the remote
+or on ancestry: `apply-host` pinned performs `checkout --detach <target>`
+without any fetch and leaves branch refs untouched, so a clean detached
+checkout away from the target is a `ready-pinned-move`, and remote/ancestry
+stay visible in the entry fields without blocking. Latest mode still
+requires a reachable remote, `target == origin/main`, branch `main`, and
+ancestry (else `diverged`).
+
+With several candidates the report carries a deterministic selection
+(sorted by checkout path): one ready copy is a `justified-choice`, more
+than one ready copy is `ambiguous` (rerun with a single `--checkout`),
+and no ready copy reports the top blocker (`no-ready-candidate`).
+Dirty, diverged, detached, wrong branch, revision mismatch and
+unreachable remote are explicit; no branch or user data changes.
+`reset`, `force`, `fetch`, `checkout` and deletion never run here:
+facts are point-in-time and `apply-host` reverifies via its
+authenticated fetch immediately before any authorized rollout.
+
 ## Verification (local only)
 
 ```text
-node --test tests/two_host_rollout/rollout-lib.test.mjs tests/two_host_rollout/rollout-scenario.test.mjs tests/two_host_rollout/apply-host.test.mjs tests/two_host_rollout/collect-result.test.mjs
+node --test tests/two_host_rollout/rollout-lib.test.mjs tests/two_host_rollout/rollout-scenario.test.mjs tests/two_host_rollout/apply-host.test.mjs tests/two_host_rollout/collect-result.test.mjs tests/two_host_rollout/diagnose-checkouts.test.mjs
 node scripts/check-file-tokens.mjs --all
 ```
