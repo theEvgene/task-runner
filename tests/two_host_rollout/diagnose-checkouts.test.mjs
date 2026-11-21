@@ -164,6 +164,57 @@ test("pure: unknown is never ready; dirty/diverged/detached/remote explicit", ()
   );
 });
 
+test("pure: pinned mode handles detached/diverged/unreachable explicitly, never unknown as ready", () => {
+  const t = "a".repeat(40);
+  const other = "b".repeat(40);
+  const base = {
+    originMain: null,
+    originReachable: false,
+    clean: true,
+    ancestorOk: false,
+    skillsState: "missing",
+  };
+  // Detached away from the target is an actionable pinned move
+  // (apply-host checkout --detach leaves branch refs untouched).
+  const moved = classifyCheckout(
+    { branch: null, head: other, ...base },
+    { target: t, isLatest: false }
+  );
+  assert.equal(moved.status, "ready");
+  assert.equal(moved.reason, "ready-pinned-move");
+  assert.equal(
+    classifyCheckout(
+      { branch: null, head: t, ...base },
+      { target: t, isLatest: false }
+    ).reason,
+    "ready-detached-pinned"
+  );
+  // Pinned never fetches: unreachable remote and non-ancestor HEAD do not
+  // block, and the branched HEAD at target is still ready-pinned.
+  assert.equal(
+    classifyCheckout(
+      { branch: "feature", head: t, ...base },
+      { target: t, isLatest: false }
+    ).reason,
+    "ready-pinned"
+  );
+  // Unknown core facts are never ready, even pinned.
+  assert.equal(
+    classifyCheckout(
+      { branch: "main", head: t, ...base, clean: null },
+      { target: t, isLatest: false }
+    ).status,
+    "unknown"
+  );
+  assert.equal(
+    classifyCheckout(
+      { branch: "main", head: "bad", ...base },
+      { target: t, isLatest: false }
+    ).status,
+    "unknown"
+  );
+});
+
 test("pure: selection is deterministic; ambiguity needs explicit rerun", () => {
   const ready = (checkout) => ({
     checkout,
@@ -388,6 +439,33 @@ test("cli: foreign skills refuse as ownership-conflict and unknown origin is nev
   assert.equal(existsSync(join(foreign, "runtime-manifest.json")), false);
 });
 
+test("cli: ownership-conflict still reports every skill link", () => {
+  const { work } = makeCheckout();
+  const target = git(["rev-parse", "HEAD"], work);
+  const skills = join(work, "..", "skills-all");
+  // Conflict on the FIRST skill name: entries after it must still appear.
+  const first = join(skills, "cli-create-lel-service-backlog-issue");
+  mkdirSync(first, { recursive: true });
+  writeFileSync(join(first, "foreign.txt"), "not managed\n");
+  const r = run([
+    "--checkout",
+    work,
+    "--target-sha",
+    target,
+    "--is-latest",
+    "true",
+    "--skills-dir",
+    skills,
+  ]);
+  assert.equal(r.json.checkouts[0].skills.state, "ownership-conflict");
+  assert.equal(r.json.checkouts[0].status, "not-ready");
+  const perSkill = r.json.checkouts[0].skills.perSkill;
+  assert.equal(perSkill.length, 10); // one entry per skill, none truncated
+  assert.equal(new Set(perSkill.map((s) => s.name)).size, 10);
+  assert.equal(perSkill[0].state, "ownership-conflict");
+  for (const rest of perSkill.slice(1)) assert.equal(rest.state, "missing");
+});
+
 test("cli: diagnose script performs no mutation verbs", () => {
   const text = readFileSync(diagnose, "utf8");
   for (const verb of [
@@ -406,4 +484,11 @@ test("cli: diagnose script performs no mutation verbs", () => {
   }
   assert.ok(text.includes("ls-remote"));
   assert.ok(!text.includes("reset --hard"));
+});
+
+test("cli: remote probe is time-bounded so a hung network reads as unreachable", () => {
+  const text = readFileSync(diagnose, "utf8");
+  assert.match(text, /ls-remote/);
+  assert.match(text, /LS_REMOTE_TIMEOUT_MS/);
+  assert.match(text, /timeout:\s*LS_REMOTE_TIMEOUT_MS/);
 });

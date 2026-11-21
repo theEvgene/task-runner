@@ -2,7 +2,8 @@
 // Read-only checkout diagnosis for issue #161. Inspects one or more local
 // candidate checkouts plus their skills dirs and selects the operational
 // copy for a later authorized rollout. Never mutates: only git rev-parse,
-// status --porcelain, merge-base --is-ancestor and ls-remote --heads run;
+// status --porcelain, merge-base --is-ancestor and a time-bounded
+// ls-remote --heads probe run; a hung network surfaces as unreachable
 // no checkout, fetch, pull, merge, reset, clean, force or delete, no writes
 // inside any checkout or skills dir. Facts are point-in-time: apply-host
 // reverifies via its authenticated fetch immediately before any rollout.
@@ -130,6 +131,23 @@ function runGit(checkout, args) {
   return execFileSync("git", args, { cwd: checkout, encoding: "utf8" }).trim();
 }
 
+// Bounded remote probe: a hung network must surface as unreachable
+// (unavailable/unknown), never hang the read-only diagnosis.
+const LS_REMOTE_TIMEOUT_MS = 20000;
+
+function probeOrigin(checkout) {
+  try {
+    execFileSync("git", ["ls-remote", "--heads", "origin"], {
+      cwd: checkout,
+      encoding: "utf8",
+      timeout: LS_REMOTE_TIMEOUT_MS,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function linkKind(path) {
   let st;
   try {
@@ -182,6 +200,9 @@ function assessSkills(checkout, skillsDir) {
   const perSkill = [];
   let current = 0;
   let missing = 0;
+  // Report every skill link even on conflict: a foreign/stale install never
+  // truncates the rest of the list, so the operator sees all links at once.
+  let conflictDetail = null;
   for (const name of SKILL_NAMES) {
     const dir = join(skillsDir, name);
     const link = linkKind(dir);
@@ -208,12 +229,8 @@ function assessSkills(checkout, skillsDir) {
         state: "ownership-conflict",
         detail: "no managed manifest",
       });
-      return {
-        state: "ownership-conflict",
-        perSkill,
-        fresh,
-        detail: `${name}: no managed manifest`,
-      };
+      conflictDetail ??= `${name}: no managed manifest`;
+      continue;
     }
     if (
       manifest.schema !== "cli-jira-skill-runtime/1" ||
@@ -226,12 +243,8 @@ function assessSkills(checkout, skillsDir) {
         state: "ownership-conflict",
         detail: "foreign or stale install",
       });
-      return {
-        state: "ownership-conflict",
-        perSkill,
-        fresh,
-        detail: `${name}: foreign or stale install`,
-      };
+      conflictDetail ??= `${name}: foreign or stale install`;
+      continue;
     }
     current += 1;
     perSkill.push({
@@ -241,6 +254,13 @@ function assessSkills(checkout, skillsDir) {
       state: "current",
     });
   }
+  if (conflictDetail !== null)
+    return {
+      state: "ownership-conflict",
+      perSkill,
+      fresh,
+      detail: conflictDetail,
+    };
   if (current === SKILL_NAMES.length)
     return { state: "current", perSkill, fresh };
   if (missing === SKILL_NAMES.length)
@@ -297,8 +317,7 @@ function diagnoseOne(checkout, skillsDir) {
     entry.originMain = null;
   }
   try {
-    runGit(checkout, ["ls-remote", "--heads", "origin"]);
-    entry.originReachable = true;
+    entry.originReachable = probeOrigin(checkout);
   } catch {
     entry.originReachable = false;
   }

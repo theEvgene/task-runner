@@ -115,11 +115,21 @@ node scripts/two_host_rollout/diagnose-checkouts.mjs --checkout <dir> [--checkou
 One `--skills-dir` is shared by every candidate; one per `--checkout` in
 the same order selects distinct skill dirs. The report shows per checkout:
 repository path, branch, `HEAD`, target remote ref plus reachability
-(`ls-remote --heads`, never `fetch`), `HEAD`-to-target ancestry
-(`merge-base --is-ancestor`), dirty/detached flags, and per-skill link
-kind (`dir`/`symlink`/`missing`) with managed-manifest state. Unknown
-facts (`head`, cleanliness, remote ref) are reported as `unknown`, never
-as clean or current.
+(a time-bounded `ls-remote --heads` probe, never `fetch`: a hung network
+reads as unreachable, never hangs the diagnosis), `HEAD`-to-target
+ancestry (`merge-base --is-ancestor`), dirty/detached flags, and the full
+per-skill link list (`dir`/`symlink`/`missing` with managed-manifest
+state for every skill, even when one of them is an ownership-conflict).
+Unknown facts (`head`, cleanliness, remote ref) are reported as `unknown`,
+never as clean or current.
+
+Pinned mode (`--is-latest false`) deliberately does not gate on the remote
+or on ancestry: `apply-host` pinned performs `checkout --detach <target>`
+without any fetch and leaves branch refs untouched, so a clean detached
+checkout away from the target is a `ready-pinned-move`, and remote/ancestry
+stay visible in the entry fields without blocking. Latest mode still
+requires a reachable remote, `target == origin/main`, branch `main`, and
+ancestry (else `diverged`).
 
 With several candidates the report carries a deterministic selection
 (sorted by checkout path): one ready copy is a `justified-choice`, more

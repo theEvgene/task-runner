@@ -271,14 +271,27 @@ export function classifyCheckout(facts, { target, isLatest }) {
     };
   const branch = facts.branch ?? null;
   const detached = branch === null || branch === "detached";
-  if (detached) {
-    if (head === t && !isLatest)
+  // Pinned mode never fetches and apply-host moves any clean checkout with
+  // `checkout --detach <target>` (branch refs untouched), so a detached HEAD
+  // away from the target is an actionable pinned move, not a blocker.
+  // Ancestry and remote reachability stay visible in the entry fields but do
+  // not gate pinned readiness, matching the no-fetch pinned rollout path.
+  if (detached && !isLatest) {
+    if (head === t)
       return {
         status: "ready",
         reason: "ready-detached-pinned",
         nextAction:
           "facts are point-in-time; reverify with apply-host before any authorized rollout",
       };
+    return {
+      status: "ready",
+      reason: "ready-pinned-move",
+      nextAction:
+        "facts are point-in-time; reverify with apply-host before any authorized rollout",
+    };
+  }
+  if (detached) {
     return {
       status: "not-ready",
       reason: "detached",
