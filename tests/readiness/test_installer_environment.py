@@ -44,6 +44,8 @@ if mode == "all-present":
     sys.exit(0)
 if mode == "import-fixes":
     sys.exit(0 if ("Import-Module" in code or "Get-Module" in code) else 1)
+if mode == "import-broken":
+    sys.exit(0 if ("Get-Module" in code and "Import-Module" not in code) else 1)
 sys.exit(1)
 """
 
@@ -133,6 +135,37 @@ class ProbeProgramTests(unittest.TestCase):
         item = found["Get-FileHash"]
         self.assertEqual((item["state"], item["detail"]),
                          ("unconfirmed", "shell-unavailable"))
+
+    def _observed(self, text: str):
+        program = remote_probe.PROGRAM
+        block = program[program.index("VERSION_RE="):
+                        program.index('for item in env.get("commands")')]
+        namespace: dict = {}
+        exec("import re\n" + block, namespace)
+        return namespace["parse_observed_version"](text)
+
+    def test_bare_year_does_not_mask_old_dotted_version(self):
+        self.assertEqual(self._observed("Copyright 2024\nv18.0.0\n"),
+                         (18, 0, 0))
+        self.assertLess(self._observed("Copyright 2024\nv18.0.0\n"),
+                        (20, 0, 0))
+
+    def test_bare_year_only_is_unknown(self):
+        self.assertIsNone(self._observed("Copyright 2024\nAll rights reserved\n"))
+
+    def test_ambiguous_versions_are_unknown(self):
+        self.assertIsNone(self._observed("20.0.0\n21.0.0\n"))
+
+    def test_failed_import_is_not_module_available(self):
+        shell = [PY, str(self.shell)]
+        found = self._run(
+            {"shell": shell, "commands": [
+                {"name": "Get-FileHash",
+                 "module": "Microsoft.PowerShell.Utility"}]},
+            {"FAKE_INSTALLER_SHELL": "import-broken"})
+        item = found["Get-FileHash"]
+        self.assertEqual((item["state"], item["detail"]),
+                         ("missing", "command-absent"))
 
 
 class ConfigValidationTests(unittest.TestCase):

@@ -149,11 +149,6 @@ def details(kind: str) -> tuple[str, ...]:
     return COMMAND_DETAILS if kind == "command" else RUNTIME_DETAILS
 
 
-def expected_state(detail: str) -> str:
-    """The only worker state a detail code may arrive with."""
-    return _DETAIL_STATE[detail]
-
-
 def describe(kind: str, detail: str, definition: dict) -> tuple[str, str]:
     """Bounded (reason, nextAction) rebuilt from the trusted configuration."""
     if kind == "command":

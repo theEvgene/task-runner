@@ -12,9 +12,12 @@ components the observed 40-hex checkout revision plus a digest of that cwd.
 Issue #160 adds the optional ``environment`` input: installer commands are
 resolved with ``Get-Command`` in the installer shell (naming the
 module-available-but-command-missing case that broke PAT rollout), and
-runtime executables are version-checked against an owner minimum.  Output
-for those entries carries only an allowlisted ``kind``/``detail`` pair;
-observed versions and paths are never emitted.
+runtime executables are version-checked against an owner minimum.  Those
+entries emit an allowlisted ``kind``/``detail`` pair for the Dell gate;
+the probe's reason/nextAction strings are advisory only.  The Dell
+report rebuilds every bounded reason from the trusted configuration
+and never relays worker text; observed versions, paths, keys, and
+worker stderr never enter the report.
 """
 
 PROGRAM = r'''import hashlib,json,re,shutil,subprocess,sys
@@ -72,10 +75,16 @@ def ps_run(code):
  except Exception:
   return None
 VERSION_RE=re.compile(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?")
+OBSERVED_VERSION_RE=re.compile(r"v?(\d+)\.(\d+)(?:\.(\d+))?")
 def parse_version(text):
  found=VERSION_RE.search(text or "")
  if not found: return None
  return (int(found.group(1)),int(found.group(2) or 0),int(found.group(3) or 0))
+def parse_observed_version(text):
+ found=OBSERVED_VERSION_RE.findall(text or "")
+ versions=[(int(major),int(minor),int(patch or 0)) for major,minor,patch in found]
+ distinct=list(dict.fromkeys(versions))
+ return distinct[0] if len(distinct)==1 else None
 for item in env.get("commands") or []:
  name=item.get("name") if isinstance(item,dict) else None
  module=item.get("module") if isinstance(item,dict) else None
@@ -97,10 +106,12 @@ for item in env.get("commands") or []:
   add(name,"unconfirmed","installer module check failed","repair or separately verify the required condition",kind="command",detail="probe-error"); continue
  if listed!=0:
   add(name,"missing","required command and its module are absent","provide the required module on the target host",kind="command",detail="module-missing"); continue
- after=ps_run("Import-Module '"+module+"'; Get-Command -Name '"+name+"' -ErrorAction Stop | Out-Null")
+ after=ps_run("Import-Module '"+module+"' -ErrorAction Stop; Get-Command -Name '"+name+"' -ErrorAction Stop | Out-Null")
  if after is None:
   add(name,"unconfirmed","installer module check failed","repair or separately verify the required condition",kind="command",detail="probe-error"); continue
- add(name,"missing","required command needs its module imported in the installer process","import the module in the installer process before use",kind="command",detail="module-available")
+ if after==0:
+  add(name,"missing","required command needs its module imported in the installer process","import the module in the installer process before use",kind="command",detail="module-available"); continue
+ add(name,"missing","required command is absent even after importing its listed module","provide the required command on the target host",kind="command",detail="command-absent")
 for item in env.get("runtimes") or []:
  name=item.get("name") if isinstance(item,dict) else None
  command=item.get("command") if isinstance(item,dict) else None
@@ -115,7 +126,7 @@ for item in env.get("runtimes") or []:
   add(name,"missing","required runtime executable is absent","install or select the required runtime on the target host",kind="runtime",detail="absent"); continue
  except Exception:
   add(name,"unconfirmed","required runtime version could not be read","repair or separately verify the required runtime",kind="runtime",detail="unreadable"); continue
- observed=parse_version((run.stdout or "")+"\n"+(run.stderr or ""))
+ observed=parse_observed_version((run.stdout or "")+"\n"+(run.stderr or ""))
  if run.returncode!=0 or observed is None:
   add(name,"unconfirmed","required runtime version could not be read","repair or separately verify the required runtime",kind="runtime",detail="unreadable"); continue
  if wanted is not None and observed<wanted:

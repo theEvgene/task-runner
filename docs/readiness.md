@@ -170,9 +170,11 @@ available (`confirmed`, meets the minimum or no minimum), `missing`
 (executable absent), incompatible (`stale`, below the minimum), or
 unknown (`unconfirmed`, version unreadable), each with its cause.
 
-The probe output carries only names, states, and an allowlisted
-kind/detail code; observed versions, paths, keys, and worker stderr never
-enter the report. Any `missing`, `stale`, or `unconfirmed` environment
+The probe emits names, states, an allowlisted kind/detail code, and
+advisory reason/nextAction text; the Dell report discards that worker
+text and rebuilds every bounded reason from the trusted configuration.
+Observed versions, paths, keys, and worker stderr never enter the
+report. Any `missing`, `stale`, or `unconfirmed` environment
 entry makes the report `not-ready` (exit `1`): the dependent install must
 not run. An expired wait stays `unknown` with the same-id resume
 (`--job-id`); the seam never submits a second job while the outcome is
