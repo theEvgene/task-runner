@@ -310,6 +310,10 @@ def _validate_submitted_checklist(config: dict, key: bytes, job_id: str) -> None
             max_output_bytes=payload.get("max_output_bytes"),
             return_files=payload.get("return_files"),
             dialect=payload.get("dialect"),
+            # A readiness job signed before the 600 s cap carries a legacy
+            # timeout up to 3600; the worker clamps it. Same-id recovery must
+            # still bind that exact signed job instead of resubmitting.
+            allow_legacy_timeout=True,
         )
     except (TypeError, ValueError) as error:
         raise Refusal(

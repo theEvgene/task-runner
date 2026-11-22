@@ -37,8 +37,10 @@ command accordingly. There is no list of checks: one descriptor is one check.
 - `argv` is a real argument vector, not a shell line. It is length-bounded and
   executed without a shell. Child stdout/stderr are discarded, so the receipt
   is the only output and no private check output is relayed.
-- `timeoutSeconds` is capped at 600 by this seam. A timeout is a failed check,
-  never a pass.
+- `timeoutSeconds` is capped at 600 by this seam, and the signed Lenovo job
+  budget is this value plus a 60 s bounded stop window, capped at 600: a 30 s
+  check submits 90 s, and a 540..600 s check submits exactly 600 s. A timeout is
+  a failed check, never a pass.
 - `expectedRevision` is the pinned 40-hex checkout SHA. A different local SHA
   is `NOT_RUN`, not success.
 - `dell.revisionRepository` must be the checkout that contains `check.cwd`.
@@ -98,7 +100,12 @@ whose expiry is `UNKNOWN`.
 it re-reads exactly one existing Lenovo job and never submits. The named job
 must be the exact selected check (same signed command, cwd, timeout, output
 bound and dialect); otherwise the run is `NOT_RUN` (`job-unbound`) and still
-submits nothing. A Dell descriptor refuses `--job-id`.
+submits nothing. A job signed by an older producer, whose timeout is the
+pre-cap `timeoutSeconds + 60` value (601..660 for a 541..600 s check), is also
+the exact selected check: the worker clamps its execution to 600 s, so it is
+read and never resubmitted. Any other timeout is `job-unbound`, and so is a job
+with a different command, cwd, output bound or dialect. A Dell descriptor
+refuses `--job-id`.
 
 Exit `0` is `PASS`; exit `1` is a verified `FAIL` or `NOT_RUN` receipt; exit
 `2` is a descriptor, policy, or protocol refusal that happens before any
@@ -214,4 +221,9 @@ revision that publishes no check job, legacy evidence that is never verified,
 an untrusted cwd binding, a refused target preamble, nonzero exit, `UNKNOWN`
 without resubmission, same-id recovery without a second submit, an
 unverifiable result that keeps its job id, and refused or tampered readiness
-evidence. It performs no network, SMB, or corporate access.
+evidence. It also proves the derived signed-job timeout for every 1..600 s
+check budget (540/541/599/600 submit 600, smaller budgets keep `budget + 60`),
+that a genuinely old signed job carrying 601..660 is read by exact id and
+resumed without a second submit, and that any other timeout or a different
+command, cwd or output bound is `job-unbound`. It performs no network, SMB, or
+corporate access.

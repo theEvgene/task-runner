@@ -94,7 +94,15 @@ def build_job_payload(job_id: str, command: str, working_directory: str,
                       timeout_seconds: int = 300, max_output_bytes: int = 65536,
                       return_files: list | None = None, dialect: str | None = None,
                       receipt_script_path: str | None = None,
-                      expected_working_directory: str | None = None) -> dict:
+                      expected_working_directory: str | None = None,
+                      allow_legacy_timeout: bool = False) -> dict:
+    """Build the canonical payload; this is the new-submission gate.
+
+    ``allow_legacy_timeout`` is for readback only: it admits the legacy
+    ``MAX_LEGACY_TIMEOUT_SECONDS`` range so an already-signed job can be
+    rebuilt and compared field by field. It never widens what a producer may
+    seal, because no submission path sets it.
+    """
     if not isinstance(job_id, str) or _HEX32.fullmatch(job_id) is None:
         raise ValueError("job_id must be 32 lowercase hex")
     if not isinstance(command, str) or not command.strip():
@@ -102,7 +110,9 @@ def build_job_payload(job_id: str, command: str, working_directory: str,
     if not isinstance(working_directory, str) or not working_directory:
         raise ValueError("working_directory is required")
     if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int)
-            or not 1 <= timeout_seconds <= MAX_EXECUTION_TIMEOUT_SECONDS):
+            or not 1 <= timeout_seconds <= (MAX_LEGACY_TIMEOUT_SECONDS
+                                            if allow_legacy_timeout
+                                            else MAX_EXECUTION_TIMEOUT_SECONDS)):
         raise ValueError("timeout_seconds out of range")
     if (isinstance(max_output_bytes, bool) or not isinstance(max_output_bytes, int)
             or not 1 <= max_output_bytes <= 262144):

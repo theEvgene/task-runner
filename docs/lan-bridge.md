@@ -221,21 +221,9 @@ per-stage user updates. From the repository root this is
 
 ## Execution cap (600 s from spawn)
 
-One Lenovo command runs at most 600 seconds measured from actual spawn,
-plus the bounded tree-stop settle (`OwnedProcess.SETTLE_SECONDS`, 3 s).
-A smaller `submit --timeout` is preserved exactly; anything larger is
-refused for new submissions (`timeout_seconds` valid range is 1..600).
-Already-signed jobs carrying up to the legacy 3600 are not refused and
-never run longer: the worker clamps them to 600 at prepare time and the
-lifecycle clamps again at wait time, so the bound holds even for jobs
-signed before this cap. Queue waiting consumes none of the budget: the
-timer starts at spawn, and `wait.py` reports the enforced 600 s
-(`deadline.seconds`, with `requested_seconds` kept for transparency).
-A confirmed tree kill seals terminal `timed_out` (`exit_code: 124`,
-`termination: timeout`); a kill that cannot be proven seals nothing and
-keeps the claim (`owned`/`unknown`, same-id resume, never a second
-submit). Parallelism is unchanged: at most two actives, admitted only by
-reservation proof.
+See [execution cap](lan-bridge-execution-cap.md): one job runs at most 600 s
+from spawn, a smaller `submit --timeout` is preserved, and anything larger is
+refused; legacy signed jobs clamp to 600 s and queue waiting is free.
 
 ## Boundaries
 

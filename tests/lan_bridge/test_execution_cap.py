@@ -56,6 +56,25 @@ class ExecutionCapValidationTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=repr(bad)):
                 payload.effective_timeout_seconds(bad)
 
+    def test_legacy_readback_rebuild_never_widens_the_submit_gate(self):
+        """Only a same-id readback may rebuild a legacy 601..3600 payload."""
+        legacy = payload.build_job_payload(
+            job_id="e" * 32, command="echo hi",
+            working_directory="C:\\work", timeout_seconds=660,
+            allow_legacy_timeout=True)
+        self.assertEqual(legacy["timeout_seconds"], 660)
+        for bad in (0, 601, 3600, 3601, True):
+            with self.assertRaises((ValueError, TypeError), msg=repr(bad)):
+                payload.build_job_payload(
+                    job_id="e" * 32, command="echo hi",
+                    working_directory="C:\\work", timeout_seconds=bad)
+        for bad in (0, 3601, True):
+            with self.assertRaises((ValueError, TypeError), msg=repr(bad)):
+                payload.build_job_payload(
+                    job_id="e" * 32, command="echo hi",
+                    working_directory="C:\\work", timeout_seconds=bad,
+                    allow_legacy_timeout=True)
+
     def test_signed_deadline_reports_effective_cap(self):
         capped = wait._signed_deadline({"timeout_seconds": 3600})
         self.assertIsNotNone(capped)
