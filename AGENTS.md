@@ -22,6 +22,7 @@ Externally invoked agents start here explicitly; this repo assumes no global aut
 - Check readiness for one selected Dell-to-Lenovo scenario -> `docs/readiness.md` + `scripts/readiness/check.py`.
 - Run exactly one bounded host-bound check (Dell local or consented Lenovo) with a real exit and one receipt -> `docs/selected-check.md` + `scripts/readiness/selected.py`.
 - Start the Lenovo worker and cleaner with one shortcut after a reboot (existing SMB share, local credentials) -> `docs/lenovo-worker-shortcut.md`.
+- Watch the Lenovo signed queue and worker state on a local auto-refreshing read-only screen (no stop/restart/retry) -> `docs/lenovo-queue-screen.md`.
 - Recover one retained owned/unknown Lenovo job with an evidence-gated Windows exe (dry-run, then canonical-worker settle, no queue mutation except via the worker) -> `docs/lenovo-job-recovery.md`.
 - Import the first verified copy of a remote branch with no Lenovo checkout -> `docs/first-import.md`.
 - Run the full Dell-to-Lenovo dev loop (base, local work, publish, readback) -> `docs/dell-lan.md`.
