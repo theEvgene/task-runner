@@ -302,23 +302,11 @@ def _validate_submitted_checklist(config: dict, key: bytes, job_id: str) -> None
     """Bind same-ID recovery to the exact checklist submitted originally."""
     raw = bridge.read(Path(config["queue"]) / "jobs", job_id)
     payload = bridge.open_envelope(raw, key, "job", job_id)
-    # New submissions stay capped at 600 s via build_job_payload/submit_job.
-    # Same-ID recovery additionally accepts valid historical signed envelopes
-    # with timeout 601..3600 (legacy wire max): MAC already verified above,
-    # exact binding below still applies, nothing is resubmitted.
-    timeout = payload.get("timeout_seconds")
-    if (isinstance(timeout, bool) or not isinstance(timeout, int)
-            or not 1 <= timeout <= 3600):
-        raise Refusal(
-            "existing job is not bound to the exact selected readiness checklist"
-        )
-    capped = timeout if timeout <= bridge.MAX_EXECUTION_TIMEOUT_SECONDS else \
-        bridge.MAX_EXECUTION_TIMEOUT_SECONDS
     try:
         canonical_payload = bridge.build_job_payload(
             payload.get("id"), payload.get("command"),
             payload.get("working_directory"),
-            timeout_seconds=capped,
+            timeout_seconds=payload.get("timeout_seconds"),
             max_output_bytes=payload.get("max_output_bytes"),
             return_files=payload.get("return_files"),
             dialect=payload.get("dialect"),
@@ -327,8 +315,6 @@ def _validate_submitted_checklist(config: dict, key: bytes, job_id: str) -> None
         raise Refusal(
             "existing job is not bound to the exact selected readiness checklist"
         ) from error
-    if timeout != capped:
-        canonical_payload["timeout_seconds"] = timeout
     expected_shape = {
         "kind", "id", "command", "working_directory", "timeout_seconds",
         "max_output_bytes", "return_files", "dialect",
