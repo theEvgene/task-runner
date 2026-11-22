@@ -102,8 +102,8 @@ def build_request(mr_url: str, expected_sha: str, profile: str,
         _shell_safe(client_dir, "--lenovo-client-dir")
     if not profile:
         raise GateInputError("--profile is required")
-    if not 1 <= timeout_seconds <= 3600:
-        raise GateInputError("--job-timeout must be within 1..3600")
+    if not 1 <= timeout_seconds <= 600:
+        raise GateInputError("--job-timeout must be within 1..600")
     if not 1 <= max_output_bytes <= 262144:
         raise GateInputError("--job-max-output must be within 1..262144")
     command = build_command(python, flow_dir, canonical, profile, want,

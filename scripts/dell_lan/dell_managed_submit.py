@@ -248,7 +248,7 @@ def unknown_receipt(request: dict, request_path: Path, digest: str,
 def submit_managed(bridge, queue: Path, key: bytes, *, request_path: Path,
                    request_sha256: str, command: str, cwd: str | None,
                    dialect: str, receipt_script_path: str,
-                   timeout_seconds: int = 900,
+                   timeout_seconds: int = 600,
                    max_output_bytes: int = 65536,
                    published=None) -> dict:
     """Reserve the proven footprint and publish the signed job atomically."""
@@ -306,7 +306,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="the request's absolute Lenovo checkout")
     parser.add_argument("--dialect", required=True, choices=("cmd", "powershell"))
     parser.add_argument("--receipt-script-path", required=True)
-    parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--max-output", type=int, default=65536)
     parser.add_argument("--shared", required=True,
                         help="owner-provided LAN share (key custody proof)")

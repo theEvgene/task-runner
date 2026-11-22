@@ -39,7 +39,7 @@ python scripts/lan_bridge/lan_bridge.py submit \
   --queue <queue-dir> --key-file <key-path> [--key-format raw|base64] \
   --command-file <command.txt> --cwd <Lenovo checkout> \
   --dialect powershell \
-  --timeout 1800 --max-output 262144 \
+  --timeout 600 --max-output 262144 \
   --receipt-script-path <request.json receipt_script_path>
 ```
 
