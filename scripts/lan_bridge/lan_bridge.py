@@ -38,7 +38,9 @@ from bridge_errors import (
 from file_queue import (
     DEFAULT_READ_MAX, JOB_ID_RE, _validate_job_id, publish, read,
 )
-from job_payload import build_job_payload
+from job_payload import (
+    MAX_EXECUTION_TIMEOUT_SECONDS, build_job_payload,
+)
 
 MAX_ENVELOPE_BYTES = 2 * 1024 * 1024
 KEY_BYTES = 32
@@ -146,7 +148,7 @@ def generate_job_id() -> str:
 def validate_timeout(value: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError("timeout_seconds must be int")
-    if value < 1 or value > 3600:
+    if value < 1 or value > MAX_EXECUTION_TIMEOUT_SECONDS:
         raise ValueError("timeout_seconds out of range")
     return value
 

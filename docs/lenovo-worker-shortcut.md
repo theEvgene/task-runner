@@ -174,6 +174,13 @@ local directory that must already exist for both spawned roles.
   unproven containment/termination, or unsettled pipes returns promptly as
   owned/unknown and publishes no terminal result. Neighboring jobs are not
   addressed.
+- Execution cap: one command runs at most 600 s from spawn plus the bounded
+  settle; a smaller signed timeout is preserved exactly. New submissions
+  above 600 s refuse at submit; already-signed jobs carrying up to the
+  legacy 3600 clamp to 600 at prepare and again at wait, so they never run
+  longer and a timeout still seals timed_out/124. Queue waiting consumes
+  none of the budget. A normal command finishes as before; the two-active
+  maximum and reservation admission are unchanged.
 - Key custody: a key inside the queue, the checkout, or the share refuses
   before any work. The password travels only inside a PowerShell
   `-File` script that reads it from the local file; it never appears in
@@ -268,7 +275,7 @@ issue when done; until then treat this scenario as fixture-verified only.
 <python> -m unittest discover -s tests/lenovo_worker -v
 ```
 
-Covers: worker seals one result and skips sealed/foreign ids; authenticated
+Covers: the execution-cap suite (test_execution_cap.py): legacy 601..3600 clamp to 600 with smaller values preserved, capped wait with queue waiting outside the budget, confirmed timeout (124) vs unproven-kill unknown with no result, normal completion and the intact two-active bound; worker seals one result and skips sealed/foreign ids; authenticated
 durable claims prevent duplicate execution after a worker crash; retained
 claims make finite batches exit unknown and reconcile only from a claim-bound
 typed proof while the owner is dead and the recorded tree is proven absent,

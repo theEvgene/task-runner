@@ -219,9 +219,28 @@ directory): same id every 30 s for 10 min, timeout stays unknown,
 per-stage user updates. From the repository root this is
 `docs/lan-queue-diagnosis.md` (entry: `AGENTS.md`).
 
+## Execution cap (600 s from spawn)
+
+One Lenovo command runs at most 600 seconds measured from actual spawn,
+plus the bounded tree-stop settle (`OwnedProcess.SETTLE_SECONDS`, 3 s).
+A smaller `submit --timeout` is preserved exactly; anything larger is
+refused for new submissions (`timeout_seconds` valid range is 1..600).
+Already-signed jobs carrying up to the legacy 3600 are not refused and
+never run longer: the worker clamps them to 600 at prepare time and the
+lifecycle clamps again at wait time, so the bound holds even for jobs
+signed before this cap. Queue waiting consumes none of the budget: the
+timer starts at spawn, and `wait.py` reports the enforced 600 s
+(`deadline.seconds`, with `requested_seconds` kept for transparency).
+A confirmed tree kill seals terminal `timed_out` (`exit_code: 124`,
+`termination: timeout`); a kill that cannot be proven seals nothing and
+keeps the claim (`owned`/`unknown`, same-id resume, never a second
+submit). Parallelism is unchanged: at most two actives, admitted only by
+reservation proof.
+
 ## Boundaries
 
-- One command per job, one working directory, one timeout, bounded
+- One command per job, one working directory, one timeout (1..600 s, new
+  submissions; legacy signed jobs up to 3600 execute clamped to 600),
   stdout/stderr, declared return files. The bridge never uploads repository
   content by itself; jobs carry commands, and small result files ride back
   only when declared with `--return-file`.
@@ -370,7 +389,10 @@ See [local fixture measurements](lan-bridge-delay-diagnosis.md).
 <python> -m unittest discover -s tests/lan_bridge -v
 ```
 
-Includes `test_lan_bridge_status.py` for verified job state and claim evidence.
+Includes `test_lan_bridge_status.py` for verified job state and claim evidence,
+and `test_execution_cap.py` for the 600 s contract (599/600/601 submit and
+payload boundaries, smaller-timeout preservation, legacy clamping to 600,
+enforced-600 deadline readback with queue waiting outside the budget).
 Covers the published interop vector byte-for-byte, MAC tamper and wrong-id
 refusal, command-in-payload transmission, result id binding,
 duplicate-publish refusal, key handling, a fixture submit/worker/fetch

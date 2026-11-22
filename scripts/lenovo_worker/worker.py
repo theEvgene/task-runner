@@ -182,6 +182,29 @@ def _seal_result(queue: Path, key: bytes, job_id: str, **fields) -> str:
 def _execute(command: str, workdir: str, timeout_s: int, limit: int,
              dialect: str | None = None, on_start=None) -> dict:
     started = _now()
+    # Defense in depth: never execute longer than the cap even when called
+    # with a legacy value; smaller timeouts pass through unchanged.
+    if isinstance(timeout_s, bool):
+        detail = "execution failed on the worker"
+        return {"status": "error", "exit_code": 2,
+                "stdout": "", "stderr": detail[:limit],
+                "started_at": started, "timed_out": False,
+                "output_truncated": len(detail) > limit}
+    try:
+        timeout_s = min(int(timeout_s),
+                        payload_rules.MAX_EXECUTION_TIMEOUT_SECONDS)
+    except (TypeError, ValueError):
+        detail = "execution failed on the worker"
+        return {"status": "error", "exit_code": 2,
+                "stdout": "", "stderr": detail[:limit],
+                "started_at": started, "timed_out": False,
+                "output_truncated": len(detail) > limit}
+    if timeout_s < 1:
+        detail = "execution failed on the worker"
+        return {"status": "error", "exit_code": 2,
+                "stdout": "", "stderr": detail[:limit],
+                "started_at": started, "timed_out": False,
+                "output_truncated": len(detail) > limit}
     try:
         effective = _effective_command(command, dialect)
     except ExecutorRefused as error:
@@ -279,9 +302,13 @@ def _prepare_job(queue: Path, key: bytes,
     except (TypeError, ValueError):
         return _seal_result(queue, key, job_id, status="error", exit_code=2,
                             stderr="job-unverifiable: bad timeout/max_output")
-    if not (1 <= timeout_s <= 3600 and 1 <= limit <= 262144):
+    if (isinstance(job.get("timeout_seconds", 300), bool)
+            or not (1 <= timeout_s <= 3600 and 1 <= limit <= 262144)):
         return _seal_result(queue, key, job_id, status="error", exit_code=2,
                             stderr="job-unverifiable: timeout/max_output out of range")
+    # Single execution contract: already-signed jobs carrying more than
+    # 600 s are clamped, never run longer. Smaller timeouts pass through.
+    timeout_s = min(timeout_s, payload_rules.MAX_EXECUTION_TIMEOUT_SECONDS)
     declared = job.get("return_files")
     return_files_invalid = not isinstance(declared, list)
     if not isinstance(declared, list):

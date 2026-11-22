@@ -9,6 +9,16 @@ from pathlib import PureWindowsPath
 _HEX32 = re.compile(r"^[0-9a-f]{32}$")
 _NOT_COMPARABLE = (".", "..")
 
+#: Single execution contract: one Lenovo command may run at most ten
+#: minutes measured from actual spawn. Queue waiting never consumes this
+#: budget. A smaller requested timeout is preserved; anything larger is
+#: clamped to this cap at submit (refused) and at execution (legacy jobs).
+MAX_EXECUTION_TIMEOUT_SECONDS = 600
+#: Largest ``timeout_seconds`` ever accepted on the wire. Legacy signed
+#: jobs may carry up to this value; the worker clamps them to
+#: ``MAX_EXECUTION_TIMEOUT_SECONDS`` instead of refusing them.
+MAX_LEGACY_TIMEOUT_SECONDS = 3600
+
 
 def canonical_windows_path(value: object) -> str | None:
     """Return a canonical case-folded Windows path, or None when unusable.
@@ -65,6 +75,21 @@ def target_decision(expected: object,
     return "cwd-mismatch", expected_id, actual_id
 
 
+def effective_timeout_seconds(timeout_seconds: int) -> int:
+    """Clamp a signed value to the execution cap, preserving smaller ones.
+
+    New submissions are validated to ``<= MAX`` before sealing; this helper
+    is for already-signed (legacy) values up to ``MAX_LEGACY`` so they never
+    run longer than the cap. Raises ``ValueError`` outside ``1..LEGACY``.
+    """
+
+    if (isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, int)
+            or not 1 <= timeout_seconds <= MAX_LEGACY_TIMEOUT_SECONDS):
+        raise ValueError("timeout_seconds out of range")
+    return min(timeout_seconds, MAX_EXECUTION_TIMEOUT_SECONDS)
+
+
 def build_job_payload(job_id: str, command: str, working_directory: str,
                       timeout_seconds: int = 300, max_output_bytes: int = 65536,
                       return_files: list | None = None, dialect: str | None = None,
@@ -77,7 +102,7 @@ def build_job_payload(job_id: str, command: str, working_directory: str,
     if not isinstance(working_directory, str) or not working_directory:
         raise ValueError("working_directory is required")
     if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int)
-            or not 1 <= timeout_seconds <= 3600):
+            or not 1 <= timeout_seconds <= MAX_EXECUTION_TIMEOUT_SECONDS):
         raise ValueError("timeout_seconds out of range")
     if (isinstance(max_output_bytes, bool) or not isinstance(max_output_bytes, int)
             or not 1 <= max_output_bytes <= 262144):
