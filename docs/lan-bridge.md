@@ -219,9 +219,16 @@ directory): same id every 30 s for 10 min, timeout stays unknown,
 per-stage user updates. From the repository root this is
 `docs/lan-queue-diagnosis.md` (entry: `AGENTS.md`).
 
+## Execution cap (600 s from spawn)
+
+See [execution cap](lan-bridge-execution-cap.md): one job runs at most 600 s
+from spawn, a smaller `submit --timeout` is preserved, and anything larger is
+refused; legacy signed jobs clamp to 600 s and queue waiting is free.
+
 ## Boundaries
 
-- One command per job, one working directory, one timeout, bounded
+- One command per job, one working directory, one timeout (1..600 s, new
+  submissions; legacy signed jobs up to 3600 execute clamped to 600),
   stdout/stderr, declared return files. The bridge never uploads repository
   content by itself; jobs carry commands, and small result files ride back
   only when declared with `--return-file`.
@@ -370,7 +377,10 @@ See [local fixture measurements](lan-bridge-delay-diagnosis.md).
 <python> -m unittest discover -s tests/lan_bridge -v
 ```
 
-Includes `test_lan_bridge_status.py` for verified job state and claim evidence.
+Includes `test_lan_bridge_status.py` for verified job state and claim evidence,
+and `test_execution_cap.py` for the 600 s contract (599/600/601 submit and
+payload boundaries, smaller-timeout preservation, legacy clamping to 600,
+enforced-600 deadline readback with queue waiting outside the budget).
 Covers the published interop vector byte-for-byte, MAC tamper and wrong-id
 refusal, command-in-payload transmission, result id binding,
 duplicate-publish refusal, key handling, a fixture submit/worker/fetch

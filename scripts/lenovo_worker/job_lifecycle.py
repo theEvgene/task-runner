@@ -301,6 +301,15 @@ class OwnedProcess:
 
 def execute(command: str, working_directory: str, timeout_seconds: int,
             output_limit: int, on_start=None) -> dict:
+    # Single execution contract: never run longer than the cap, measured
+    # from spawn. Queue waiting happened before this call and consumed
+    # nothing. Smaller requested timeouts pass through unchanged.
+    effective_timeout = timeout_seconds
+    if isinstance(effective_timeout, bool):
+        raise ValueError("timeout_seconds must be int")
+    effective_timeout = min(int(effective_timeout), 600)
+    if effective_timeout < 1:
+        raise ValueError("timeout_seconds out of range")
     started = time.monotonic()
     owned = OwnedProcess(command, working_directory)
     # The start hook is part of the ownership boundary: on Windows it
@@ -309,10 +318,10 @@ def execute(command: str, working_directory: str, timeout_seconds: int,
     # nothing.
     owned.start(on_start)
     try:
-        stdout, stderr, code = owned.wait(timeout_seconds)
+        stdout, stderr, code = owned.wait(effective_timeout)
     except subprocess.TimeoutExpired:
         stdout, stderr, process_code, signal_name = owned.stop()
-        detail = f"timed out on the worker after {timeout_seconds}s"
+        detail = f"timed out on the worker after {effective_timeout}s"
         if stderr:
             detail += "\n" + stderr
         return {

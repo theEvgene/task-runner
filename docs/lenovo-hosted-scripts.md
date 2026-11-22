@@ -107,6 +107,7 @@ and `--dialect powershell` placeholders):
 python scripts/lan_bridge/lan_bridge.py submit --queue <queue-dir> --key-file <key-path> \
   --command-file <command-file> --cwd <lenovo-checkout> --timeout <seconds> --max-output <bytes> \
   --dialect powershell
+  (Execution cap: --timeout is at most 600 s; already-signed jobs above it clamp to 600 from spawn.)
 python scripts/lan_bridge/lan_bridge.py fetch --queue <queue-dir> --key-file <key-path> --id <JOBID>
 python scripts/lan_bridge/get.py --queue <queue-dir> --key-file <key-path> --id <JOBID>
 ```

@@ -187,14 +187,22 @@ def _observed_claim(queue_dir: str, key: bytes, job_id: str,
 
 
 def _signed_deadline(job: dict | None) -> dict | None:
-    """Deadline basis from the signed request; never an invented clock."""
+    """Deadline basis from the signed request; never an invented clock.
+
+    Accepts legacy signed values up to 3600 but reports the enforced
+    execution cap (600 s): already-signed jobs never run longer than the
+    cap even when their sealed value is larger. Queue waiting never
+    consumes this budget; it starts at spawn.
+    """
     if job is None:
         return None
     seconds = job.get("timeout_seconds")
     if (isinstance(seconds, int) and not isinstance(seconds, bool)
             and 1 <= seconds <= 3600):
-        return {"basis": "signed job timeout_seconds (worker execution limit)",
-                "seconds": seconds}
+        effective = min(seconds, 600)
+        return {"basis": "signed job timeout_seconds (worker execution limit, capped at 600 s)",
+                "seconds": effective,
+                "requested_seconds": seconds}
     return None
 
 

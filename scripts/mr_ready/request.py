@@ -100,7 +100,7 @@ def build_request(
     previous_head: str | None = None,
     max_retries: int = 2,
     wait_seconds: float = 0.0,
-    timeout_seconds: int = 1800,
+    timeout_seconds: int = 600,
     max_output_bytes: int = 262144,
 ) -> tuple[dict, str]:
     canonical = canonical_url(mr_url)
@@ -114,8 +114,8 @@ def build_request(
         raise GateInputError("--max-retries must be within 0..2")
     if not 0 <= wait_seconds <= 3600:
         raise GateInputError("--wait-seconds must be within 0..3600")
-    if not 1 <= timeout_seconds <= 3600:
-        raise GateInputError("--job-timeout must be within 1..3600")
+    if not 1 <= timeout_seconds <= 600:
+        raise GateInputError("--job-timeout must be within 1..600")
     if not 1 <= max_output_bytes <= 262144:
         raise GateInputError("--job-max-output must be within 1..262144")
 
@@ -186,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--previous-head")
     parser.add_argument("--max-retries", type=int, default=2)
     parser.add_argument("--wait-seconds", type=float, default=0.0)
-    parser.add_argument("--job-timeout", type=int, default=1800)
+    parser.add_argument("--job-timeout", type=int, default=600)
     parser.add_argument("--job-max-output", type=int, default=262144)
     parser.add_argument("--request-file", type=Path, required=True)
     parser.add_argument("--command-file", type=Path, required=True)

@@ -164,8 +164,8 @@ def build_request(node: str, entrypoint: str, checkout: str,
         raise ReleaseInputError("--lenovo-checkout must not contain line breaks")
     _no_bridge_chars(checkout, "--lenovo-checkout")
     _no_cmd_chars(checkout, "--lenovo-checkout")
-    if not 1 <= timeout_seconds <= 3600:
-        raise ReleaseInputError("--job-timeout must be within 1..3600")
+    if not 1 <= timeout_seconds <= 600:
+        raise ReleaseInputError("--job-timeout must be within 1..600")
     if not 1 <= max_output_bytes <= 262144:
         raise ReleaseInputError("--job-max-output must be within 1..262144")
     command = build_command(node, entrypoint, version, confirm)

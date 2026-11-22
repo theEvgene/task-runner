@@ -206,8 +206,32 @@ def execute_dell(desc: dict) -> dict:
             "reason": "completed" if code == 0 else "nonzero-exit"}
 
 
+STOP_WINDOW_SECONDS = 60
+
+
 def _job_timeout(check: dict) -> int:
-    return min(3600, check["timeoutSeconds"] + 60)
+    """Signed job budget: the check budget plus a bounded stop window.
+
+    One job may run at most 600 s from actual spawn (#168), so a check budget
+    of 541..600 s submits exactly 600 s; a smaller budget keeps its own value
+    plus the stop window, unchanged.
+    """
+    return min(bridge.MAX_EXECUTION_TIMEOUT_SECONDS,
+               check["timeoutSeconds"] + STOP_WINDOW_SECONDS)
+
+
+def _job_timeouts(check: dict) -> tuple[int, ...]:
+    """Exact signed timeouts this descriptor may be bound to.
+
+    Producers before the 600 s cap sealed ``timeoutSeconds + 60`` without a
+    cap, so a genuinely old selected job for a 541..600 s check carries
+    601..660. The worker clamps any such value to 600 s, so same-id readback
+    accepts that exact legacy value as well - never another timeout, and never
+    a differently shaped job.
+    """
+    legacy = check["timeoutSeconds"] + STOP_WINDOW_SECONDS
+    current = _job_timeout(check)
+    return (current,) if legacy == current else (current, legacy)
 
 
 def _validate_submitted_job(desc: dict, key: bytes, job_id: str) -> None:
@@ -216,14 +240,18 @@ def _validate_submitted_job(desc: dict, key: bytes, job_id: str) -> None:
     check = desc["check"]
     raw = bridge.read(Path(block["queue"]) / "jobs", job_id)
     payload = bridge.open_envelope(raw, key, "job", job_id)
+    signed_timeout = payload.get("timeout_seconds")
+    if signed_timeout not in _job_timeouts(check):
+        raise Refusal("existing job is not the exact selected check")
     try:
         canonical = bridge.build_job_payload(
             payload.get("id"), payload.get("command"),
             payload.get("working_directory"),
-            timeout_seconds=payload.get("timeout_seconds"),
+            timeout_seconds=signed_timeout,
             max_output_bytes=payload.get("max_output_bytes"),
             return_files=payload.get("return_files"),
-            dialect=payload.get("dialect"))
+            dialect=payload.get("dialect"),
+            allow_legacy_timeout=True)
     except (TypeError, ValueError) as error:
         raise Refusal("existing job is not the exact selected check") from error
     expected_shape = {"kind", "id", "command", "working_directory",
@@ -232,7 +260,6 @@ def _validate_submitted_job(desc: dict, key: bytes, job_id: str) -> None:
     if (payload != canonical or set(payload) != expected_shape
             or payload.get("command") != remote_command(desc)
             or payload.get("working_directory") != check["cwd"]
-            or payload.get("timeout_seconds") != _job_timeout(check)
             or payload.get("max_output_bytes") != check["maxOutputBytes"]
             or payload.get("return_files") != []
             or payload.get("dialect") != "cmd"):
